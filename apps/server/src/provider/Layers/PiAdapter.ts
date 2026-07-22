@@ -365,9 +365,6 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       if (message.type === "response") {
         const responseId = readString(message.id);
         const pendingResponse = responseId ? context.pendingRpc.get(responseId) : undefined;
-        if (pendingResponse) {
-          yield* Deferred.succeed(pendingResponse, message).pipe(Effect.ignore);
-        }
         const command = readString(message.command);
         if (command === "get_state" && message.success === true && isRecord(message.data)) {
           const sessionFile = readString(message.data.sessionFile);
@@ -394,9 +391,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
               payload: { providerThreadId: sessionId },
             });
           }
-          return;
-        }
-        if (command === "prompt" && message.success === false) {
+        } else if (command === "prompt" && message.success === false) {
           const error = readString(message.error) ?? "Pi rejected the prompt.";
           context.turnFailure = error;
           yield* emit({
@@ -405,6 +400,9 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             payload: { message: error, class: "provider_error" },
           });
           yield* completeTurn(context, "failed", error);
+        }
+        if (pendingResponse) {
+          yield* Deferred.succeed(pendingResponse, message).pipe(Effect.ignore);
         }
         return;
       }
@@ -846,7 +844,17 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         type: "session.started",
         payload: { message: "Pi / Takomi RPC session started" },
       });
-      yield* sendRpc(context, { id: `state-${yield* randomId}`, type: "get_state" });
+      const stateResponse = yield* requestRpc(context, { type: "get_state" });
+      if (stateResponse.success !== true || context.session.resumeCursor === undefined) {
+        yield* stopContext(context, false);
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "get_state",
+          detail:
+            readString(stateResponse.error) ??
+            "Pi started but did not provide a persistent session file for resumption.",
+        });
+      }
       return context.session;
     });
 
