@@ -33,19 +33,7 @@ const PI_PRESENTATION = {
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "pi-default",
-    name: "Pi / Takomi Default",
-    isCustom: false,
-    capabilities: DEFAULT_PI_MODEL_CAPABILITIES,
-  },
-  {
-    slug: "claude-3-7-sonnet",
-    name: "Claude 3.7 Sonnet (Pi)",
-    isCustom: false,
-    capabilities: DEFAULT_PI_MODEL_CAPABILITIES,
-  },
-  {
-    slug: "gpt-4o",
-    name: "GPT-4o (Pi)",
+    name: "Pi configured default",
     isCustom: false,
     capabilities: DEFAULT_PI_MODEL_CAPABILITIES,
   },
@@ -65,7 +53,7 @@ export function makePendingPiProvider(enabled = true): Effect.Effect<ServerProvi
         installed: false,
         version: null,
         status: "ready",
-        auth: { status: "authenticated" },
+        auth: { status: "unknown" },
       },
     });
   });
@@ -91,7 +79,7 @@ export function checkPiProviderStatus(
           installed: false,
           version: null,
           status: "ready",
-          auth: { status: "unauthenticated" },
+          auth: { status: "unknown" },
         },
       });
     }
@@ -124,7 +112,7 @@ export function checkPiProviderStatus(
           installed: false,
           version: null,
           status: "error",
-          auth: { status: "unauthenticated" },
+          auth: { status: "unknown" },
           message: detail,
         },
       });
@@ -149,7 +137,7 @@ export function checkPiProviderStatus(
         installed: true,
         version,
         status: "ready",
-        auth: { status: "authenticated" },
+        auth: { status: "unknown" },
       },
     });
   });
