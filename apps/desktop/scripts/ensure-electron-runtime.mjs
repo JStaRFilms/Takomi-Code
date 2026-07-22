@@ -100,6 +100,10 @@ function invalidRuntimePaths(electronDir, platformPath) {
   ].filter((runtimePath) => NodeFS.existsSync(runtimePath) && !isMachO(runtimePath));
 }
 
+function quotePowerShellLiteral(value) {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
 function runChecked(command, args) {
   const result = NodeChildProcess.spawnSync(command, args, {
     encoding: "utf8",
@@ -126,14 +130,23 @@ function installElectronRuntime(electronDir, version) {
       "-o",
       zipPath,
     ]);
+    const destinationPath = NodePath.join(electronDir, "dist");
     if (hostPlatform === "darwin") {
-      runChecked("ditto", ["-x", "-k", zipPath, NodePath.join(electronDir, "dist")]);
+      runChecked("ditto", ["-x", "-k", zipPath, destinationPath]);
+    } else if (hostPlatform === "win32") {
+      runChecked("powershell.exe", [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `Expand-Archive -LiteralPath ${quotePowerShellLiteral(zipPath)} -DestinationPath ${quotePowerShellLiteral(destinationPath)} -Force`,
+      ]);
     } else {
       runChecked("python3", [
         "-c",
         "import os, sys, zipfile; os.makedirs(sys.argv[2], exist_ok=True); zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])",
         zipPath,
-        NodePath.join(electronDir, "dist"),
+        destinationPath,
       ]);
     }
   } finally {
