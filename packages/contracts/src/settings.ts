@@ -417,17 +417,34 @@ export const PiSettings = makeProviderSettingsSchema(
     homePath: TrimmedString.pipe(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
-        title: "PI_HOME path",
-        description: "Custom Pi configuration directory (defaults to ~/.pi).",
-        providerSettingsForm: { placeholder: "~/.pi", clearWhenEmpty: "omit" },
+        title: "Pi agent directory",
+        description:
+          "Custom PI_CODING_AGENT_DIR containing settings, credentials, extensions, prompts, and themes.",
+        providerSettingsForm: { placeholder: "~/.pi/agent", clearWhenEmpty: "omit" },
+      }),
+    ),
+    suiteRoot: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Takomi suite root",
+        description:
+          "Optional VibeCode Protocol Suite checkout. When set, T3 Code loads its Takomi runtime, subagents, OAuth router, context manager, notifications, and prompt templates directly.",
+        providerSettingsForm: {
+          placeholder: "/path/to/VibeCode-Protocol-Suite",
+          clearWhenEmpty: "omit",
+        },
       }),
     ),
     launchArgs: TrimmedString.pipe(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
         title: "Launch arguments",
-        description: "Additional CLI arguments passed to pi on session start.",
-        providerSettingsForm: { placeholder: "e.g. --extension ...", clearWhenEmpty: "omit" },
+        description:
+          "Additional CLI arguments passed to Pi before T3 Code's required --mode rpc arguments.",
+        providerSettingsForm: {
+          placeholder: "e.g. --extension /path/to/extension.ts",
+          clearWhenEmpty: "omit",
+        },
       }),
     ),
     customModels: Schema.Array(Schema.String).pipe(
@@ -436,7 +453,7 @@ export const PiSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "launchArgs"],
+    order: ["binaryPath", "homePath", "suiteRoot", "launchArgs"],
   },
 );
 export type PiSettings = typeof PiSettings.Type;
@@ -617,6 +634,7 @@ const PiSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
   homePath: Schema.optionalKey(TrimmedString),
+  suiteRoot: Schema.optionalKey(TrimmedString),
   launchArgs: Schema.optionalKey(TrimmedString),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });

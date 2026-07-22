@@ -5,7 +5,12 @@
  *
  * @module provider/Drivers/PiDriver
  */
-import { PiSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import {
+  PiSettings,
+  ProviderDriverKind,
+  type ServerProvider,
+  TextGenerationError,
+} from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -39,6 +44,7 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
+import type * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
 
@@ -152,15 +158,18 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         ),
       );
 
-      const dummyTextGen: any = {
-        generateText: () =>
-          Effect.fail(
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: "Direct text generation not supported for Pi driver",
-            }),
-          ),
+      const unsupportedTextGeneration = (operation: string) =>
+        Effect.fail(
+          new TextGenerationError({
+            operation,
+            detail: "The Pi driver does not yet provide utility text generation.",
+          }),
+        );
+      const textGeneration: TextGeneration.TextGeneration["Service"] = {
+        generateCommitMessage: () => unsupportedTextGeneration("generateCommitMessage"),
+        generatePrContent: () => unsupportedTextGeneration("generatePrContent"),
+        generateBranchName: () => unsupportedTextGeneration("generateBranchName"),
+        generateThreadTitle: () => unsupportedTextGeneration("generateThreadTitle"),
       };
 
       return {
@@ -172,7 +181,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         enabled,
         snapshot,
         adapter,
-        textGeneration: dummyTextGen,
+        textGeneration,
       } satisfies ProviderInstance;
     }),
 };
