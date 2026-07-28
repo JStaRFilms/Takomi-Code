@@ -1,3 +1,9 @@
+# Takomi Code
+
+> **Fork of [T3 Code](https://github.com/pingdotgg/t3code)** by [JStaRFilms](https://github.com/JStaRFilms), adding the Pi/Takomi provider and custom branding.
+
+---
+
 # T3 Code
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app, [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
@@ -102,3 +108,16 @@ vp i
 Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening an issue or PR.
 
 Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
+
+---
+
+## Old Tries
+
+Previous Takomi experiments that led to this fork. Kept for historical reference.
+
+| Project                    | Stack                                | Dates           | Repo                                                                                      |
+| -------------------------- | ------------------------------------ | --------------- | ----------------------------------------------------------------------------------------- |
+| **TakomiDX** (TakomiUX)    | Next.js + agentd monorepo, CLI-first | Mar 7–8, 2026   | [JStaRFilms/TakomiDX](https://github.com/JStaRFilms/TakomiDX)                             |
+| **Takomi Code**            | WinUI 3 / C# + Codex SDK             | Mar 10–19, 2026 | [JStaRFilms/Takomi_Code](https://github.com/JStaRFilms/Takomi_Code)                       |
+| **Takomi Code Remastered** | Electron + React 19 + TypeScript     | Mar 20–21, 2026 | [JStaRFilms/Takomi_Code_Remastered](https://github.com/JStaRFilms/Takomi_Code_Remastered) |
+| **Takomi Mobile**          | Expo + local worker + Pi SDK         | Jun 13–14, 2026 | [JStaRFilms/Takomi_Mobile](https://github.com/JStaRFilms/Takomi_Mobile)                   |
