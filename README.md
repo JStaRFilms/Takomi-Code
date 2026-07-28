@@ -115,9 +115,9 @@ Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
 
 Previous Takomi experiments that led to this fork. Kept for historical reference.
 
-| Project                    | Stack                                | Dates           | Repo                                                                                      |
-| -------------------------- | ------------------------------------ | --------------- | ----------------------------------------------------------------------------------------- |
-| **TakomiDX** (TakomiUX)    | Next.js + agentd monorepo, CLI-first | Mar 7–8, 2026   | [JStaRFilms/TakomiDX](https://github.com/JStaRFilms/TakomiDX)                             |
-| **Takomi Code**            | WinUI 3 / C# + Codex SDK             | Mar 10–19, 2026 | [JStaRFilms/Takomi_Code](https://github.com/JStaRFilms/Takomi_Code)                       |
-| **Takomi Code Remastered** | Electron + React 19 + TypeScript     | Mar 20–21, 2026 | [JStaRFilms/Takomi_Code_Remastered](https://github.com/JStaRFilms/Takomi_Code_Remastered) |
-| **Takomi Mobile**          | Expo + local worker + Pi SDK         | Jun 13–14, 2026 | [JStaRFilms/Takomi_Mobile](https://github.com/JStaRFilms/Takomi_Mobile)                   |
+| Project                    | Stack                                | Dates           | Repo                                                                                                            |
+| -------------------------- | ------------------------------------ | --------------- | --------------------------------------------------------------------------------------------------------------- |
+| **TakomiDX** (TakomiUX)    | Next.js + agentd monorepo, CLI-first | Mar 7–8, 2026   | [JStaRFilms/deprecated-TakomiDX](https://github.com/JStaRFilms/deprecated-TakomiDX)                             |
+| **Takomi Code**            | WinUI 3 / C# + Codex SDK             | Mar 10–19, 2026 | [JStaRFilms/deprecated-Takomi_Code](https://github.com/JStaRFilms/deprecated-Takomi_Code)                       |
+| **Takomi Code Remastered** | Electron + React 19 + TypeScript     | Mar 20–21, 2026 | [JStaRFilms/deprecated-Takomi_Code_Remastered](https://github.com/JStaRFilms/deprecated-Takomi_Code_Remastered) |
+| **Takomi Mobile**          | Expo + local worker + Pi SDK         | Jun 13–14, 2026 | [JStaRFilms/deprecated-Takomi_Mobile](https://github.com/JStaRFilms/deprecated-Takomi_Mobile)                   |
