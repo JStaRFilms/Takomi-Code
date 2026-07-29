@@ -139,6 +139,7 @@ const TAKOMI_TOOL_FAMILIES = {
   policy_manifest: "collection",
   policy_load: "collection",
   context_report: "report",
+  todo: "lifecycle",
 } as const;
 
 type TakomiToolName = keyof typeof TAKOMI_TOOL_FAMILIES;
@@ -316,6 +317,7 @@ function normalizePresentationItems(value: unknown): ToolPresentationItem[] {
     const label = boundedText(
       record?.label ??
         record?.name ??
+        record?.subject ??
         record?.title ??
         record?.agent ??
         record?.task ??
@@ -324,7 +326,8 @@ function normalizePresentationItems(value: unknown): ToolPresentationItem[] {
       160,
     );
     if (!label) return [];
-    const id = boundedText(record?.id ?? record?.taskId ?? record?.agentId ?? `${index}`, 120)!;
+    const rawId = record?.id ?? record?.taskId ?? record?.agentId ?? `${index}`;
+    const id = boundedText(typeof rawId === "number" ? String(rawId) : rawId, 120)!;
     const exitCode = typeof record?.exitCode === "number" ? record.exitCode : undefined;
     const status =
       boundedText(record?.status ?? record?.state, 80) ??
@@ -334,8 +337,15 @@ function normalizePresentationItems(value: unknown): ToolPresentationItem[] {
       .filter((value): value is string => value !== undefined)
       .join(" · ");
     const detail =
-      boundedText(record?.detail ?? record?.message ?? record?.reason ?? record?.task, 180) ??
-      metadata;
+      boundedText(
+        record?.detail ??
+          record?.description ??
+          record?.activeForm ??
+          record?.message ??
+          record?.reason ??
+          record?.task,
+        180,
+      ) ?? metadata;
     return [{ id, label, ...(status ? { status } : {}), ...(detail ? { detail } : {}) }];
   });
 }
@@ -503,8 +513,12 @@ function normalizeTakomiPresentation(input: {
   const structuredContent = firstRecord(result.structuredContent, result.details) ?? {};
   const source = { ...args, ...result, ...structuredContent };
   const takomiUx = firstRecord(source.takomiUx);
+  const sourceTasks =
+    input.toolName === "todo" && Array.isArray(source.tasks)
+      ? source.tasks.filter((task) => !isRecord(task) || task.status !== "deleted")
+      : source.tasks;
   const items = normalizePresentationItems(
-    source.tasks ??
+    sourceTasks ??
       takomiUx?.tasks ??
       source.stages ??
       source.agents ??
@@ -540,6 +554,8 @@ function normalizeTakomiPresentation(input: {
       ? normalizeSubagentActivity(source, input.lifecycleStatus)
       : [];
   const action = boundedText(source.action ?? source.operation ?? source.phase, 120);
+  const todoCompleted = items.filter((item) => item.status === "completed").length;
+  const todoInProgress = items.some((item) => item.status === "in_progress");
   const status = boundedText(
     source.status ??
       source.state ??
@@ -547,7 +563,13 @@ function normalizeTakomiPresentation(input: {
         ? source.mode
         : input.toolName === "takomi_subagent"
           ? input.lifecycleStatus
-          : undefined),
+          : input.toolName === "todo"
+            ? todoInProgress
+              ? "in_progress"
+              : items.length > 0 && todoCompleted === items.length
+                ? "completed"
+                : "pending"
+            : undefined),
     80,
   );
   const sessionId = boundedText(source.sessionId ?? source.session ?? source.boardId, 120);
@@ -560,8 +582,12 @@ function normalizeTakomiPresentation(input: {
     80,
   );
   const count = readFiniteCount(source.count ?? source.totalCount);
-  const completed = readFiniteCount(source.completed ?? source.completedCount);
-  const total = readFiniteCount(source.total ?? source.totalCount);
+  const completed =
+    input.toolName === "todo"
+      ? todoCompleted
+      : readFiniteCount(source.completed ?? source.completedCount);
+  const total =
+    input.toolName === "todo" ? items.length : readFiniteCount(source.total ?? source.totalCount);
   const summary = {
     ...(sessionId ? { sessionId } : {}),
     ...(runId ? { runId } : {}),

@@ -1122,6 +1122,9 @@ function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | un
   if (presentation?.toolName === "takomi_board" && presentation.summary?.sessionId) {
     return `takomi-state:board:${presentation.summary.sessionId}`;
   }
+  if (presentation?.toolName === "todo") {
+    return "takomi-state:todo";
+  }
   if (entry.toolCallId) {
     return `tool:${entry.toolCallId}`;
   }

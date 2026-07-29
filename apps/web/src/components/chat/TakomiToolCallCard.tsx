@@ -24,6 +24,7 @@ const TOOL_DESCRIPTORS = {
   policy_manifest: { label: "Policy manifest", family: "collection" },
   policy_load: { label: "Load policy", family: "collection" },
   context_report: { label: "Context report", family: "report" },
+  todo: { label: "Todo progress", family: "lifecycle" },
 } as const;
 
 function descriptorFor(toolName: string, family: ToolPresentationEnvelope["family"]) {
