@@ -128,6 +128,116 @@ const TAKOMI_TOOL_FAMILIES = {
 
 type TakomiToolName = keyof typeof TAKOMI_TOOL_FAMILIES;
 
+type PiResourceSettings = {
+  readonly extensions: readonly string[];
+  readonly packages: readonly string[];
+};
+
+function parsePiResourceSettings(raw: string): PiResourceSettings {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      extensions: Array.isArray(parsed.extensions)
+        ? parsed.extensions.filter((value): value is string => typeof value === "string")
+        : [],
+      packages: Array.isArray(parsed.packages)
+        ? parsed.packages.filter((value): value is string => typeof value === "string")
+        : [],
+    };
+  } catch {
+    return { extensions: [], packages: [] };
+  }
+}
+
+function npmPackageName(source: string): string | undefined {
+  if (!source.startsWith("npm:")) return undefined;
+  const spec = source.slice("npm:".length);
+  if (!spec) return undefined;
+  if (!spec.startsWith("@")) return spec.split("@", 1)[0] || undefined;
+  const slash = spec.indexOf("/");
+  if (slash < 0) return undefined;
+  const version = spec.indexOf("@", slash);
+  return version < 0 ? spec : spec.slice(0, version);
+}
+
+function packageExtensionEntries(raw: string): readonly string[] {
+  try {
+    const parsed = JSON.parse(raw) as { pi?: { extensions?: unknown } };
+    return Array.isArray(parsed.pi?.extensions)
+      ? parsed.pi.extensions.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function discoverPiCompanionExtensions(input: {
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly homePath: string;
+}) {
+  return Effect.gen(function* () {
+    const configuredHome =
+      readString(input.homePath) ?? readString(input.environment.PI_CODING_AGENT_DIR);
+    const userHome =
+      readString(input.environment.USERPROFILE) ?? readString(input.environment.HOME);
+    const agentDir =
+      configuredHome ?? (userHome ? input.path.join(userHome, ".pi", "agent") : undefined);
+    if (!agentDir) return [];
+
+    const settingsRaw = yield* input.fileSystem
+      .readFileString(input.path.join(agentDir, "settings.json"))
+      .pipe(Effect.orElseSucceed(() => ""));
+    const resourceSettings = parsePiResourceSettings(settingsRaw);
+    const candidates = resourceSettings.extensions.map((extensionPath) =>
+      input.path.isAbsolute(extensionPath)
+        ? extensionPath
+        : input.path.resolve(agentDir, extensionPath),
+    );
+
+    const globalExtensionsDir = input.path.join(agentDir, "extensions");
+    const globalEntries = yield* input.fileSystem
+      .readDirectory(globalExtensionsDir)
+      .pipe(Effect.orElseSucceed(() => [] as string[]));
+    for (const entry of globalEntries) {
+      const extensionName = entry.replace(/\.ts$/u, "");
+      if (
+        TAKOMI_EXTENSION_NAMES.includes(extensionName as (typeof TAKOMI_EXTENSION_NAMES)[number])
+      ) {
+        continue;
+      }
+      candidates.push(
+        entry.endsWith(".ts")
+          ? input.path.join(globalExtensionsDir, entry)
+          : input.path.join(globalExtensionsDir, entry, "index.ts"),
+      );
+    }
+
+    for (const source of resourceSettings.packages) {
+      const packageName = npmPackageName(source);
+      if (!packageName) continue;
+      const packageDir = input.path.join(
+        agentDir,
+        "npm",
+        "node_modules",
+        ...packageName.split("/"),
+      );
+      const manifestRaw = yield* input.fileSystem
+        .readFileString(input.path.join(packageDir, "package.json"))
+        .pipe(Effect.orElseSucceed(() => ""));
+      for (const extensionPath of packageExtensionEntries(manifestRaw)) {
+        candidates.push(input.path.resolve(packageDir, extensionPath));
+      }
+    }
+
+    const existing = yield* Effect.filter([...new Set(candidates)], (candidate) =>
+      input.fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false)),
+    );
+    return existing;
+  });
+}
+
 function takomiFamily(toolName: string): ToolPresentationEnvelope["family"] | undefined {
   const normalized = toolName.toLowerCase();
   if (normalized.startsWith("takomi_flow_")) return "execution";
@@ -821,10 +931,21 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           });
         }
       }
+      const companionExtensionPaths = settings.suiteRoot
+        ? yield* discoverPiCompanionExtensions({
+            fileSystem,
+            path,
+            environment: options.environment,
+            homePath: settings.homePath,
+          })
+        : [];
       const takomiArgs = settings.suiteRoot
         ? [
             "--no-extensions",
-            ...takomiExtensionPaths.flatMap((extensionPath) => ["--extension", extensionPath]),
+            ...[...companionExtensionPaths, ...takomiExtensionPaths].flatMap((extensionPath) => [
+              "--extension",
+              extensionPath,
+            ]),
             ...(takomiPromptPath ? ["--prompt-template", takomiPromptPath] : []),
           ]
         : [];
