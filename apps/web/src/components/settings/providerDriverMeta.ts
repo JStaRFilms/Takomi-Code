@@ -15,7 +15,7 @@ import {
   type Icon,
   OpenAI,
   OpenCodeIcon,
-  PiAgentIcon,
+  TakomiIcon,
 } from "../Icons";
 
 type ProviderSettingsSchema = {
@@ -78,8 +78,8 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
   },
   {
     value: ProviderDriverKind.make("pi"),
-    label: "Takomi (Pi)",
-    icon: PiAgentIcon,
+    label: "Takomi",
+    icon: TakomiIcon,
     settingsSchema: PiSettings,
   },
 ];

@@ -54,7 +54,7 @@ export const PROVIDER_OPTIONS: Array<{
   },
   {
     value: ProviderDriverKind.make("pi"),
-    label: "Takomi (Pi)",
+    label: "Takomi",
     available: true,
     pickerSidebarBadge: "new",
   },

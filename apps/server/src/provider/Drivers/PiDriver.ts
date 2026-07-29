@@ -87,7 +87,7 @@ const withInstanceIdentity =
 export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
   driverKind: DRIVER_KIND,
   metadata: {
-    displayName: "Takomi (Pi)",
+    displayName: "Takomi",
     supportsMultipleInstances: true,
   },
   configSchema: PiSettings,

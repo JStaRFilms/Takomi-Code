@@ -88,6 +88,10 @@ interface PiSessionContext {
   readonly input: Queue.Queue<Uint8Array>;
   readonly pendingUi: Map<ApprovalRequestId, PendingUiRequest>;
   readonly pendingRpc: Map<string, Deferred.Deferred<PiRpcMessage>>;
+  readonly toolActivityByCallId: Map<
+    string,
+    ReadonlyArray<NonNullable<ToolPresentationEnvelope["activity"]>[number]>
+  >;
   readonly turns: Array<PiTurnSnapshot>;
   activeTurnId: TurnId | undefined;
   abortingTurnId: TurnId | undefined;
@@ -329,7 +333,10 @@ type ToolPresentationActivity = NonNullable<ToolPresentationEnvelope["activity"]
 
 type ToolPresentationArtifact = NonNullable<ToolPresentationEnvelope["artifactRefs"]>[number];
 
-function normalizeSubagentActivity(source: Record<string, unknown>): ToolPresentationActivity[] {
+function normalizeSubagentActivity(
+  source: Record<string, unknown>,
+  lifecycleStatus: "inProgress" | "completed" | "failed",
+): ToolPresentationActivity[] {
   const results = Array.isArray(source.results) ? source.results : [];
   const progressRows = Array.isArray(source.progress) ? source.progress : [];
   const activity: ToolPresentationActivity[] = [];
@@ -369,6 +376,21 @@ function normalizeSubagentActivity(source: Record<string, unknown>): ToolPresent
       }
     }
 
+    const toolCalls = Array.isArray(result.toolCalls) ? result.toolCalls.slice(-12) : [];
+    for (const [toolIndex, toolValue] of toolCalls.entries()) {
+      const tool = isRecord(toolValue) ? toolValue : undefined;
+      if (!tool) continue;
+      const label = boundedText(tool.text, 180) ?? "Tool call";
+      const detail = boundedText(tool.expandedText, 1_200);
+      activity.push({
+        id: `result-${resultIndex}-tool-summary-${toolIndex}`,
+        kind: "tool",
+        label,
+        ...(detail && detail !== label ? { detail } : {}),
+        status: "completed",
+      });
+    }
+
     const progress = firstRecord(result.progress, progressRows[resultIndex]);
     if (!progress) continue;
     const recentTools = Array.isArray(progress.recentTools) ? progress.recentTools.slice(-8) : [];
@@ -402,7 +424,7 @@ function normalizeSubagentActivity(source: Record<string, unknown>): ToolPresent
       ...(activityDetail ? { detail: activityDetail } : {}),
       status: currentTool
         ? "running"
-        : (boundedText(result.status ?? result.state, 80) ?? "active"),
+        : (boundedText(result.status ?? result.state, 80) ?? lifecycleStatus),
     });
   }
 
@@ -427,6 +449,7 @@ function normalizeTakomiPresentation(input: {
   result: unknown;
   partialResult: unknown;
   isError: boolean;
+  lifecycleStatus: "inProgress" | "completed" | "failed";
 }): ToolPresentationEnvelope | undefined {
   const family = takomiFamily(input.toolName);
   if (!family) return undefined;
@@ -467,10 +490,19 @@ function normalizeTakomiPresentation(input: {
     extractText(input.partialResult);
   const detailText = boundedText(rawDetailText);
   const inspectorDetailText = boundedText(rawDetailText, PRESENTATION_INSPECTOR_DETAIL_LIMIT);
-  const activity = input.toolName === "takomi_subagent" ? normalizeSubagentActivity(source) : [];
+  const activity =
+    input.toolName === "takomi_subagent"
+      ? normalizeSubagentActivity(source, input.lifecycleStatus)
+      : [];
   const action = boundedText(source.action ?? source.operation ?? source.phase, 120);
   const status = boundedText(
-    source.status ?? source.state ?? (input.toolName === "takomi_mode" ? source.mode : undefined),
+    source.status ??
+      source.state ??
+      (input.toolName === "takomi_mode"
+        ? source.mode
+        : input.toolName === "takomi_subagent"
+          ? input.lifecycleStatus
+          : undefined),
     80,
   );
   const sessionId = boundedText(source.sessionId ?? source.session ?? source.boardId, 120);
@@ -842,13 +874,33 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             extractText(message.result) ??
             (message.args === undefined ? undefined : jsonString(message.args));
           const isEnd = message.type === "tool_execution_end";
-          const presentation = normalizeTakomiPresentation({
+          const lifecycleStatus = isEnd
+            ? message.isError === true
+              ? ("failed" as const)
+              : ("completed" as const)
+            : ("inProgress" as const);
+          let presentation = normalizeTakomiPresentation({
             toolName,
             args: message.args,
             result: message.result,
             partialResult: message.partialResult,
             isError: message.isError === true,
+            lifecycleStatus,
           });
+          if (presentation && toolName.toLowerCase() === "takomi_subagent") {
+            const mergedActivity = new Map<string, ToolPresentationActivity>();
+            for (const activity of context.toolActivityByCallId.get(toolCallId) ?? []) {
+              mergedActivity.set(activity.id, activity);
+            }
+            for (const activity of presentation.activity ?? []) {
+              mergedActivity.set(activity.id, activity);
+            }
+            const activity = [...mergedActivity.values()].slice(-PRESENTATION_ACTIVITY_LIMIT);
+            if (activity.length > 0) {
+              context.toolActivityByCallId.set(toolCallId, activity);
+              presentation = { ...presentation, activity };
+            }
+          }
           // Takomi details cross the WebSocket boundary, so never reuse an
           // unbounded Pi result as the generic row preview.
           const detail = presentation
@@ -873,12 +925,13 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             itemId: RuntimeItemId.make(toolCallId),
             payload: {
               itemType: classifyTool(toolName),
-              status: isEnd ? (message.isError === true ? "failed" : "completed") : "inProgress",
+              status: lifecycleStatus,
               title: toolName,
               ...(detail ? { detail } : {}),
               data: item,
             },
           });
+          if (isEnd) context.toolActivityByCallId.delete(toolCallId);
           break;
         }
         case "compaction_start": {
@@ -1123,6 +1176,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         input: rpcInput,
         pendingUi: new Map(),
         pendingRpc: new Map(),
+        toolActivityByCallId: new Map(),
         turns: [],
         activeTurnId: undefined,
         abortingTurnId: undefined,
