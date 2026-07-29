@@ -402,6 +402,58 @@ const TurnDiffUpdatedPayload = Schema.Struct({
 });
 export type TurnDiffUpdatedPayload = typeof TurnDiffUpdatedPayload.Type;
 
+const ToolPresentationItem = Schema.Struct({
+  id: TrimmedNonEmptyStringSchema,
+  label: TrimmedNonEmptyStringSchema,
+  status: Schema.optional(TrimmedNonEmptyStringSchema),
+  detail: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+
+const ToolPresentationArtifact = Schema.Struct({
+  kind: TrimmedNonEmptyStringSchema,
+  path: TrimmedNonEmptyStringSchema,
+  label: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+
+/** A bounded, provider-neutral summary safe to send to clients. */
+export const ToolPresentationEnvelope = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  namespace: Schema.Literals(["takomi", "takomi-flow", "generic"]),
+  toolName: TrimmedNonEmptyStringSchema,
+  family: Schema.Literals([
+    "status",
+    "collection",
+    "configuration",
+    "lifecycle",
+    "execution",
+    "report",
+    "artifact",
+  ]),
+  action: Schema.optional(TrimmedNonEmptyStringSchema),
+  summary: Schema.optional(
+    Schema.Struct({
+      sessionId: Schema.optional(TrimmedNonEmptyStringSchema),
+      runId: Schema.optional(TrimmedNonEmptyStringSchema),
+      taskId: Schema.optional(TrimmedNonEmptyStringSchema),
+      status: Schema.optional(TrimmedNonEmptyStringSchema),
+      count: Schema.optional(NonNegativeInt),
+      completed: Schema.optional(NonNegativeInt),
+      total: Schema.optional(NonNegativeInt),
+      items: Schema.optional(Schema.Array(ToolPresentationItem)),
+    }),
+  ),
+  detailText: Schema.optional(TrimmedNonEmptyStringSchema),
+  artifactRefs: Schema.optional(Schema.Array(ToolPresentationArtifact)),
+  error: Schema.optional(
+    Schema.Struct({
+      severity: Schema.Literals(["warning", "error"]),
+      code: Schema.optional(TrimmedNonEmptyStringSchema),
+      message: TrimmedNonEmptyStringSchema,
+    }),
+  ),
+});
+export type ToolPresentationEnvelope = typeof ToolPresentationEnvelope.Type;
+
 export const ItemLifecyclePayload = Schema.Struct({
   itemType: CanonicalItemType,
   status: Schema.optional(RuntimeItemStatus),
