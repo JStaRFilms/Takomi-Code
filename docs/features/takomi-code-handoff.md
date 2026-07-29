@@ -102,7 +102,7 @@ release\Takomi-Code-0.0.30-x64.exe
 Standalone Android APK:
 
 ```text
-C:\Users\johno\Desktop\Takomi-T3-Code-Standalone.apk
+C:\Users\johno\Desktop\Takomi-Code-Standalone.apk
 ```
 
 Android build workspace and virtual store:
