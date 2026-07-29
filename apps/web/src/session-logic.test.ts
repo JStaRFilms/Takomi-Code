@@ -740,6 +740,44 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["task-progress", "task-complete"]);
   });
 
+  it("collapses streaming reasoning updates by task identity", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "reasoning-progress-1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.progress",
+        summary: "Thinking",
+        tone: "info",
+        payload: {
+          taskId: "pi-reasoning-turn-1-0",
+          summary: "Thinking",
+          detail: "Inspecting the provider path.",
+        },
+      }),
+      makeActivity({
+        id: "reasoning-progress-2",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "task.progress",
+        summary: "Thinking",
+        tone: "info",
+        payload: {
+          taskId: "pi-reasoning-turn-1-0",
+          summary: "Thinking",
+          detail: "Inspecting the provider path and tracing ingestion.",
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "reasoning-progress-2",
+      label: "Thinking",
+      detail: "Inspecting the provider path and tracing ingestion.",
+      tone: "thinking",
+    });
+  });
+
   it("uses payload summary as label for task entries when available", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

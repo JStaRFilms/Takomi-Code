@@ -10,10 +10,12 @@ Push channels: `server.welcome`, `server.configUpdated`, `terminal.event`, `orch
 Methods mirror the `NativeApi` interface defined in `@t3tools/contracts`:
 
 - `providers.startSession`, `providers.sendTurn`, `providers.interruptTurn`
-- `providers.respondToRequest`, `providers.stopSession`
+- `providers.respondToRequest`, `providers.respondToUserInput`, `providers.stopSession`
 - `shell.openInEditor`, `server.getConfig`
 
-Codex is the only implemented provider. `claudeCode` is reserved in contracts/UI.
+Providers are registered through the server's built-in driver registry. The current tree includes Codex, Claude Agent, Cursor, Grok, OpenCode, and Pi/Takomi drivers. Each driver translates its native protocol into canonical provider runtime events before orchestration ingestion.
+
+Pi/Takomi uses JSON-RPC over a managed Pi child process. See [Takomi / Pi provider](../features/takomi-pi-provider.md) for its event mapping, session behavior, settings, and limitations.
 
 ## Client transport
 

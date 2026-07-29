@@ -28,6 +28,7 @@ const RuntimeEventRawSource = Schema.Union([
   Schema.Literal("opencode.sdk.event"),
   Schema.Literal("acp.jsonrpc"),
   Schema.TemplateLiteral(["acp.", Schema.String, ".extension"]),
+  Schema.Literal("pi.eventmsg"),
 ]);
 export type RuntimeEventRawSource = typeof RuntimeEventRawSource.Type;
 
@@ -400,6 +401,71 @@ const TurnDiffUpdatedPayload = Schema.Struct({
   unifiedDiff: Schema.String,
 });
 export type TurnDiffUpdatedPayload = typeof TurnDiffUpdatedPayload.Type;
+
+const ToolPresentationItem = Schema.Struct({
+  id: TrimmedNonEmptyStringSchema,
+  label: TrimmedNonEmptyStringSchema,
+  status: Schema.optional(TrimmedNonEmptyStringSchema),
+  detail: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+
+const ToolPresentationArtifact = Schema.Struct({
+  kind: TrimmedNonEmptyStringSchema,
+  path: TrimmedNonEmptyStringSchema,
+  label: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+
+const ToolPresentationActivity = Schema.Struct({
+  id: TrimmedNonEmptyStringSchema,
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
+  kind: Schema.Literals(["message", "thinking", "tool", "status"]),
+  label: TrimmedNonEmptyStringSchema,
+  detail: Schema.optional(TrimmedNonEmptyStringSchema),
+  status: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+
+/** A bounded, provider-neutral summary safe to send to clients. */
+export const ToolPresentationEnvelope = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  namespace: Schema.Literals(["takomi", "takomi-flow", "generic"]),
+  toolName: TrimmedNonEmptyStringSchema,
+  family: Schema.Literals([
+    "status",
+    "collection",
+    "configuration",
+    "lifecycle",
+    "execution",
+    "report",
+    "artifact",
+  ]),
+  action: Schema.optional(TrimmedNonEmptyStringSchema),
+  summary: Schema.optional(
+    Schema.Struct({
+      sessionId: Schema.optional(TrimmedNonEmptyStringSchema),
+      runId: Schema.optional(TrimmedNonEmptyStringSchema),
+      taskId: Schema.optional(TrimmedNonEmptyStringSchema),
+      mode: Schema.optional(TrimmedNonEmptyStringSchema),
+      status: Schema.optional(TrimmedNonEmptyStringSchema),
+      count: Schema.optional(NonNegativeInt),
+      completed: Schema.optional(NonNegativeInt),
+      total: Schema.optional(NonNegativeInt),
+      items: Schema.optional(Schema.Array(ToolPresentationItem)),
+    }),
+  ),
+  detailText: Schema.optional(TrimmedNonEmptyStringSchema),
+  inspectorDetailText: Schema.optional(TrimmedNonEmptyStringSchema),
+  activity: Schema.optional(Schema.Array(ToolPresentationActivity)),
+  activityTruncated: Schema.optional(Schema.Boolean),
+  artifactRefs: Schema.optional(Schema.Array(ToolPresentationArtifact)),
+  error: Schema.optional(
+    Schema.Struct({
+      severity: Schema.Literals(["warning", "error"]),
+      code: Schema.optional(TrimmedNonEmptyStringSchema),
+      message: TrimmedNonEmptyStringSchema,
+    }),
+  ),
+});
+export type ToolPresentationEnvelope = typeof ToolPresentationEnvelope.Type;
 
 export const ItemLifecyclePayload = Schema.Struct({
   itemType: CanonicalItemType,
