@@ -685,6 +685,13 @@ export const ACPRegistryIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+export const TakomiIcon: Icon = ({ className, ...props }) => (
+  <svg {...props} viewBox="0 0 32 32" fill="none" className={className}>
+    <path d="M3 4h26v8h-9v16h-8V12H3V4Z" fill="#20C7D9" />
+    <path d="M12 12h8v9h-8v-9Z" fill="#9B7CF6" />
+  </svg>
+);
+
 export const PiAgentIcon: Icon = ({ className, ...props }) => (
   <svg {...props} viewBox="0 0 800 800" className={cn("fill-none", className)}>
     <rect width="800" height="800" rx="160" fill="#000" />

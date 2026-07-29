@@ -18,6 +18,9 @@ import { cn } from "~/lib/utils";
 type PresentationItem = NonNullable<
   NonNullable<NonNullable<WorkLogEntry["presentation"]>["summary"]>["items"]
 >[number];
+type PresentationActivity = NonNullable<
+  NonNullable<WorkLogEntry["presentation"]>["activity"]
+>[number];
 
 function statusKind(status: string | undefined): "done" | "active" | "failed" | "pending" {
   const normalized = status?.toLowerCase() ?? "";
@@ -41,7 +44,43 @@ function statusLabel(status: string | undefined) {
   return status?.replaceAll("_", " ").replaceAll("-", " ") ?? "pending";
 }
 
+function ActivityTranscriptRow({ activity }: { activity: PresentationActivity }) {
+  const Icon =
+    activity.kind === "tool"
+      ? WrenchIcon
+      : activity.kind === "message"
+        ? MessageCircleIcon
+        : RadioIcon;
+  return (
+    <details className="group rounded bg-background/45 [&>summary::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none items-start gap-2 p-2">
+        <Icon
+          className={cn(
+            "mt-0.5 size-3.5 shrink-0 text-muted-foreground",
+            activity.status === "running" && "animate-pulse text-blue-500",
+          )}
+        />
+        <p className="min-w-0 flex-1 truncate font-medium text-foreground/90">{activity.label}</p>
+        {activity.status ? (
+          <span className="shrink-0 text-[10px] capitalize text-muted-foreground">
+            {statusLabel(activity.status)}
+          </span>
+        ) : null}
+        {activity.detail ? (
+          <ChevronDownIcon className="mt-0.5 size-3 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
+        ) : null}
+      </summary>
+      {activity.detail ? (
+        <p className="border-t border-border/40 px-7 py-2 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-muted-foreground">
+          {activity.detail}
+        </p>
+      ) : null}
+    </details>
+  );
+}
+
 function DetailCard({ entry }: { entry: WorkLogEntry }) {
+  const [activityOpen, setActivityOpen] = useState(false);
   const presentation = entry.presentation;
   if (!presentation) return null;
   const status =
@@ -62,75 +101,64 @@ function DetailCard({ entry }: { entry: WorkLogEntry }) {
           </span>
         ) : null}
       </div>
-      <div className="mt-2 max-h-[65vh] overflow-y-auto pr-1">
+      <div className="mt-2 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
         {detailText ? (
           <p className="whitespace-pre-wrap break-words leading-relaxed text-foreground/85">
             {detailText}
           </p>
         ) : null}
         {presentation.activity?.length ? (
-          <div className={cn("space-y-2 border-t border-border/50 pt-2", detailText && "mt-3")}>
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className={cn("border-t border-border/50 pt-2", detailText && "mt-3")}>
+            <button
+              type="button"
+              aria-expanded={activityOpen}
+              onClick={() => setActivityOpen((open) => !open)}
+              className="flex w-full items-center gap-2 rounded py-1 text-left text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+            >
               {statusKind(status) === "active" ? "Live activity" : "Activity transcript"}
-            </p>
-            {presentation.activity.map((activity) => {
-              const Icon =
-                activity.kind === "tool"
-                  ? WrenchIcon
-                  : activity.kind === "message"
-                    ? MessageCircleIcon
-                    : RadioIcon;
-              return (
-                <div
-                  key={activity.id}
-                  className="flex items-start gap-2 rounded bg-background/45 p-2"
-                >
-                  <Icon
-                    className={cn(
-                      "mt-0.5 size-3.5 shrink-0 text-muted-foreground",
-                      activity.status === "running" && "animate-pulse text-blue-500",
-                    )}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="break-words font-medium text-foreground/90">{activity.label}</p>
-                      {activity.status ? (
-                        <span className="shrink-0 text-[10px] capitalize text-muted-foreground">
-                          {statusLabel(activity.status)}
-                        </span>
-                      ) : null}
-                    </div>
-                    {activity.detail ? (
-                      <p className="mt-1 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-muted-foreground">
-                        {activity.detail}
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
+              <span className="rounded bg-muted px-1.5 py-0.5 font-normal tabular-nums">
+                {presentation.activity.length}
+              </span>
+              <ChevronDownIcon
+                className={cn(
+                  "ml-auto size-3.5 transition-transform",
+                  !activityOpen && "-rotate-90",
+                )}
+              />
+            </button>
+            <div className="mt-1 space-y-1">
+              {(activityOpen ? presentation.activity : presentation.activity.slice(-1)).map(
+                (activity) => (
+                  <ActivityTranscriptRow key={activity.id} activity={activity} />
+                ),
+              )}
+            </div>
           </div>
         ) : null}
         {presentation.summary?.items?.length ? (
           <div className="mt-2 space-y-2 border-t border-border/50 pt-2">
-            {presentation.summary.items.map((item) => (
-              <div key={item.id} className="flex items-start gap-2">
-                <StatusIcon status={item.status} />
-                <div className="min-w-0 flex-1">
-                  <p className="break-words text-foreground/90">{item.label}</p>
-                  {item.detail ? (
-                    <p className="mt-0.5 whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
-                      {item.detail}
-                    </p>
+            {presentation.summary.items.map((item) => {
+              const itemStatus =
+                item.status ?? (presentation.toolName === "takomi_subagent" ? status : undefined);
+              return (
+                <div key={item.id} className="flex items-start gap-2">
+                  <StatusIcon status={itemStatus} />
+                  <div className="min-w-0 flex-1">
+                    <p className="break-words text-foreground/90">{item.label}</p>
+                    {item.detail ? (
+                      <p className="mt-0.5 whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
+                        {item.detail}
+                      </p>
+                    ) : null}
+                  </div>
+                  {itemStatus ? (
+                    <span className="shrink-0 text-[10px] capitalize text-muted-foreground">
+                      {statusLabel(itemStatus)}
+                    </span>
                   ) : null}
                 </div>
-                {item.status ? (
-                  <span className="shrink-0 text-[10px] capitalize text-muted-foreground">
-                    {statusLabel(item.status)}
-                  </span>
-                ) : null}
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : null}
         {presentation.artifactRefs?.length ? (
@@ -194,6 +222,20 @@ export function TakomiInspector(props: {
   const completedCount = boardItems.filter((item) => statusKind(item.status) === "done").length;
   const activeItem = boardItems.find((item) => statusKind(item.status) === "active");
   const boardStatus = board?.presentation?.summary?.status;
+  const subagentRows = subagents.flatMap((entry) => {
+    const presentation = entry.presentation!;
+    const items = presentation.summary?.items;
+    const rows = items?.length ? items : [undefined];
+    return rows.map((item, itemIndex) => ({
+      entry,
+      item,
+      key: `${presentation.summary?.runId ?? entry.toolCallId ?? entry.id}:${item?.id ?? itemIndex}`,
+      status:
+        presentation.error?.severity === "error"
+          ? "failed"
+          : (item?.status ?? presentation.summary?.status ?? entry.toolLifecycleStatus),
+    }));
+  });
 
   return (
     <aside className="flex min-h-0 flex-1 flex-col overflow-auto p-4" aria-label="Takomi inspector">
@@ -258,9 +300,9 @@ export function TakomiInspector(props: {
           className="flex w-full items-center gap-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
         >
           <UsersIcon className="size-3.5" /> Subagent status matrix
-          {subagents.length > 0 ? (
+          {subagentRows.length > 0 ? (
             <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal tabular-nums">
-              {subagents.length}
+              {subagentRows.length}
             </span>
           ) : null}
           <ChevronDownIcon
@@ -269,18 +311,13 @@ export function TakomiInspector(props: {
         </button>
         {subagentsOpen ? (
           <div className="mt-2 space-y-2 rounded-lg border border-border/65 bg-muted/20 p-3">
-            {subagents.length > 0 ? (
-              subagents.map((entry) => {
+            {subagentRows.length > 0 ? (
+              subagentRows.map(({ entry, item, key, status }) => {
                 const presentation = entry.presentation!;
-                const item = presentation.summary?.items?.[0];
-                const status =
-                  presentation.error?.severity === "error"
-                    ? "failed"
-                    : (presentation.summary?.status ?? entry.toolLifecycleStatus);
                 return (
                   <button
                     type="button"
-                    key={presentation.summary?.runId ?? entry.toolCallId ?? entry.id}
+                    key={key}
                     onClick={() => props.onSelectToolCallId(entry.toolCallId ?? entry.id)}
                     className="flex w-full items-start gap-2 rounded px-1 py-1 text-left hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
                   >
@@ -314,7 +351,7 @@ export function TakomiInspector(props: {
           Context detail
         </p>
         {selected ? (
-          <DetailCard entry={selected} />
+          <DetailCard key={selected.toolCallId ?? selected.id} entry={selected} />
         ) : (
           <p className="text-xs leading-relaxed text-muted-foreground">
             Select a board, subagent, or inline tool call to inspect its latest detail here.
