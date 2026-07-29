@@ -304,6 +304,41 @@ function SubagentRunGroup(props: {
             ? "Task"
             : `${statusLabel(mode)} run`;
 
+  if (items.length === 1 && (mode === "single" || mode === "async")) {
+    const item = items[0]!;
+    const selection = subagentSelectionKey(toolCallId, "result-0");
+    const itemStatus = item.status ?? status;
+    return (
+      <button
+        type="button"
+        aria-pressed={props.selectedSelection === selection}
+        onClick={() => props.onSelect(selection)}
+        className={cn(
+          "flex w-full items-start gap-2 rounded-md border border-border/55 bg-background/35 px-3 py-2 text-left hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70",
+          props.selectedSelection === selection && "bg-accent/55",
+        )}
+      >
+        <StatusIcon status={itemStatus} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <p className="truncate text-xs font-medium text-foreground/90">{item.label}</p>
+            {mode === "async" ? (
+              <span className="rounded border border-border/60 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                Async
+              </span>
+            ) : null}
+          </div>
+          {item.detail ? (
+            <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{item.detail}</p>
+          ) : null}
+        </div>
+        <span className="shrink-0 text-[10px] capitalize text-muted-foreground">
+          {statusLabel(itemStatus)}
+        </span>
+      </button>
+    );
+  }
+
   return (
     <div className="rounded-md border border-border/55 bg-background/35">
       <button
