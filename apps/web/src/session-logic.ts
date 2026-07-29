@@ -8,7 +8,6 @@ import {
   type OrchestrationProposedPlanId,
   ProviderDriverKind,
   type ToolLifecycleItemType,
-  type ToolPresentationEnvelope,
   type UserInputQuestion,
   type ThreadId,
   type TurnId,
@@ -52,12 +51,6 @@ export const PROVIDER_OPTIONS: Array<{
     available: true,
     pickerSidebarBadge: "new",
   },
-  {
-    value: ProviderDriverKind.make("pi"),
-    label: "Takomi",
-    available: true,
-    pickerSidebarBadge: "new",
-  },
 ];
 
 export type WorkLogToolLifecycleStatus =
@@ -78,9 +71,7 @@ export interface WorkLogEntry {
   changedFiles?: ReadonlyArray<string>;
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
-  toolCallId?: string;
   toolData?: unknown;
-  presentation?: ToolPresentationEnvelope;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
   /** From runtime item / task payload `status` when present (e.g. tool.updated). */
@@ -639,6 +630,7 @@ export function deriveWorkLogEntries(
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of ordered) {
+    if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.summary === "Checkpoint captured") continue;
@@ -742,13 +734,11 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (title) {
     entry.toolTitle = title;
   }
-  const data = asRecord(payload?.data);
-  if (itemType === "mcp_tool_call" && data?.item !== undefined) {
-    entry.toolData = data.item;
-  }
-  const presentation = parseToolPresentation(data?.presentation);
-  if (presentation) {
-    entry.presentation = presentation;
+  if (itemType === "mcp_tool_call") {
+    const data = asRecord(payload?.data);
+    if (data?.item !== undefined) {
+      entry.toolData = data.item;
+    }
   }
   if (itemType) {
     entry.itemType = itemType;
@@ -766,10 +756,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (toolLifecycleStatus) {
     entry.toolLifecycleStatus = toolLifecycleStatus;
   }
-  const collapseKey =
-    isTaskActivity && typeof payload?.taskId === "string"
-      ? `task:${payload.taskId}`
-      : deriveToolLifecycleCollapseKey(entry);
+  const collapseKey = deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
     entry.collapseKey = collapseKey;
   }
@@ -780,37 +767,13 @@ function collapseDerivedWorkLogEntries(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
 ): DerivedWorkLogEntry[] {
   const collapsed: DerivedWorkLogEntry[] = [];
-  const activeIndexByCollapseKey = new Map<string, number>();
   for (const entry of entries) {
-    const keyedPreviousIndex = entry.collapseKey
-      ? activeIndexByCollapseKey.get(entry.collapseKey)
-      : undefined;
-    const fallbackPreviousIndex = collapsed.length > 0 ? collapsed.length - 1 : undefined;
-    const previousIndex = keyedPreviousIndex ?? fallbackPreviousIndex;
-    const previous = previousIndex === undefined ? undefined : collapsed[previousIndex];
-    if (
-      previous &&
-      previousIndex !== undefined &&
-      shouldCollapseToolLifecycleEntries(previous, entry)
-    ) {
-      collapsed[previousIndex] = mergeDerivedWorkLogEntries(previous, entry);
-      if (
-        (entry.activityKind === "tool.completed" || entry.activityKind === "task.completed") &&
-        !isPersistentTakomiCollapseKey(entry.collapseKey!)
-      ) {
-        activeIndexByCollapseKey.delete(entry.collapseKey!);
-        if (previous.collapseKey) activeIndexByCollapseKey.delete(previous.collapseKey);
-      }
+    const previous = collapsed.at(-1);
+    if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
+      collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(previous, entry);
       continue;
     }
     collapsed.push(entry);
-    if (
-      entry.collapseKey &&
-      ((entry.activityKind !== "tool.completed" && entry.activityKind !== "task.completed") ||
-        isPersistentTakomiCollapseKey(entry.collapseKey))
-    ) {
-      activeIndexByCollapseKey.set(entry.collapseKey, collapsed.length - 1);
-    }
   }
   return collapsed;
 }
@@ -819,25 +782,13 @@ function shouldCollapseToolLifecycleEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
 ): boolean {
-  const previousIsLifecycle =
-    previous.activityKind === "tool.started" ||
-    previous.activityKind === "tool.updated" ||
-    previous.activityKind === "tool.completed" ||
-    previous.activityKind === "task.progress" ||
-    previous.activityKind === "task.completed";
-  const nextIsLifecycle =
-    next.activityKind === "tool.started" ||
-    next.activityKind === "tool.updated" ||
-    next.activityKind === "tool.completed" ||
-    next.activityKind === "task.progress" ||
-    next.activityKind === "task.completed";
-  if (!previousIsLifecycle || !nextIsLifecycle) {
+  if (previous.activityKind !== "tool.updated" && previous.activityKind !== "tool.completed") {
     return false;
   }
-  if (
-    (previous.activityKind === "tool.completed" || previous.activityKind === "task.completed") &&
-    !isPersistentTakomiCollapseKey(previous.collapseKey)
-  ) {
+  if (next.activityKind !== "tool.updated" && next.activityKind !== "tool.completed") {
+    return false;
+  }
+  if (previous.activityKind === "tool.completed") {
     return false;
   }
   if (previous.collapseKey !== undefined && previous.collapseKey === next.collapseKey) {
@@ -867,7 +818,6 @@ function mergeDerivedWorkLogEntries(
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
   const toolData = next.toolData ?? previous.toolData;
-  const presentation = next.presentation ?? previous.presentation;
   return {
     ...previous,
     ...next,
@@ -882,7 +832,6 @@ function mergeDerivedWorkLogEntries(
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolLifecycleStatus !== undefined ? { toolLifecycleStatus } : {}),
     ...(toolData !== undefined ? { toolData } : {}),
-    ...(presentation !== undefined ? { presentation } : {}),
   };
 }
 
@@ -898,25 +847,11 @@ function mergeChangedFiles(
 }
 
 function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | undefined {
-  if (
-    entry.activityKind !== "tool.started" &&
-    entry.activityKind !== "tool.updated" &&
-    entry.activityKind !== "tool.completed"
-  ) {
+  if (entry.activityKind !== "tool.updated" && entry.activityKind !== "tool.completed") {
     return undefined;
-  }
-  const presentation = entry.presentation;
-  if (presentation?.toolName === "takomi_board" && presentation.summary?.sessionId) {
-    return `takomi-state:board:${presentation.summary.sessionId}`;
-  }
-  if (presentation?.toolName === "todo") {
-    return "takomi-state:todo";
   }
   if (entry.toolCallId) {
     return `tool:${entry.toolCallId}`;
-  }
-  if (presentation?.toolName === "takomi_subagent" && presentation.summary?.runId) {
-    return `takomi-state:subagent:${presentation.summary.runId}`;
   }
   const normalizedLabel = normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
   const detail = entry.detail?.trim() ?? "";
@@ -925,10 +860,6 @@ function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | un
     return undefined;
   }
   return [itemType, normalizedLabel, detail].join("\u001f");
-}
-
-function isPersistentTakomiCollapseKey(value: string | undefined): boolean {
-  return value?.startsWith("takomi-state:") === true;
 }
 
 function normalizeCompactToolLabel(value: string): string {
@@ -945,20 +876,6 @@ function toLatestProposedPlanState(proposedPlan: ProposedPlan): LatestProposedPl
     implementedAt: proposedPlan.implementedAt,
     implementationThreadId: proposedPlan.implementationThreadId,
   };
-}
-
-function parseToolPresentation(value: unknown): ToolPresentationEnvelope | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const presentation = value as Partial<ToolPresentationEnvelope>;
-  if (
-    presentation.schemaVersion !== 1 ||
-    (presentation.namespace !== "takomi" && presentation.namespace !== "takomi-flow") ||
-    typeof presentation.toolName !== "string" ||
-    typeof presentation.family !== "string"
-  ) {
-    return null;
-  }
-  return presentation as ToolPresentationEnvelope;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

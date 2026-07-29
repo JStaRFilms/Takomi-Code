@@ -512,29 +512,23 @@ export function runtimeEventToActivities(
     }
 
     case "task.progress": {
-      const isPiReasoning = String(event.payload.taskId).startsWith("pi-reasoning-");
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "info",
           kind: "task.progress",
-          summary: isPiReasoning
-            ? "Thinking"
-            : event.payload.description.trim().length > 0
+          summary:
+            event.payload.description.trim().length > 0
               ? truncateDetail(event.payload.description, 120)
               : "Reasoning update",
           payload: {
             taskId: event.payload.taskId,
-            ...(isPiReasoning
-              ? { title: "Thinking", summary: "Thinking" }
-              : event.payload.description.trim().length > 0
-                ? { title: truncateDetail(event.payload.description, 120) }
-                : {}),
-            detail: truncateDetail(event.payload.summary ?? event.payload.description),
-            ...(!isPiReasoning && event.payload.summary
-              ? { summary: truncateDetail(event.payload.summary) }
+            ...(event.payload.description.trim().length > 0
+              ? { title: truncateDetail(event.payload.description, 120) }
               : {}),
+            detail: truncateDetail(event.payload.summary ?? event.payload.description),
+            ...(event.payload.summary ? { summary: truncateDetail(event.payload.summary) } : {}),
             ...(event.payload.lastToolName ? { lastToolName: event.payload.lastToolName } : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
           },
@@ -678,7 +672,6 @@ export function runtimeEventToActivities(
           payload: {
             itemType: event.payload.itemType,
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
-            ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

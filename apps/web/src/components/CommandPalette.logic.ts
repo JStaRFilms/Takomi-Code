@@ -1,6 +1,6 @@
 import {
-  type FilesystemBrowseEntry,
   type KeybindingCommand,
+  type FilesystemBrowseEntry,
   THREAD_JUMP_KEYBINDING_COMMANDS,
 } from "@t3tools/contracts";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
@@ -69,6 +69,38 @@ export function enumerateCommandPaletteItems(
 }
 
 export type CommandPaletteMode = "root" | "root-browse" | "submenu" | "submenu-browse";
+
+export function filterBrowseEntries(input: {
+  browseEntries: ReadonlyArray<FilesystemBrowseEntry>;
+  browseFilterQuery: string;
+  highlightedItemValue: string | null;
+}): {
+  filteredEntries: FilesystemBrowseEntry[];
+  highlightedEntry: FilesystemBrowseEntry | null;
+  exactEntry: FilesystemBrowseEntry | null;
+} {
+  const lowerFilter = input.browseFilterQuery.toLowerCase();
+  const showHidden = input.browseFilterQuery.startsWith(".");
+
+  const filteredEntries = input.browseEntries.filter(
+    (entry) =>
+      entry.name.toLowerCase().startsWith(lowerFilter) &&
+      (showHidden || !entry.name.startsWith(".")),
+  );
+
+  let highlightedEntry: FilesystemBrowseEntry | null = null;
+  if (input.highlightedItemValue?.startsWith("browse:")) {
+    const highlightedPath = input.highlightedItemValue.slice("browse:".length);
+    highlightedEntry = filteredEntries.find((entry) => entry.fullPath === highlightedPath) ?? null;
+  }
+
+  const exactEntry =
+    input.browseFilterQuery.length > 0
+      ? (filteredEntries.find((entry) => entry.name === input.browseFilterQuery) ?? null)
+      : null;
+
+  return { filteredEntries, highlightedEntry, exactEntry };
+}
 
 export function normalizeSearchText(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
@@ -270,8 +302,8 @@ export function buildBrowseGroups(input: {
   canBrowseUp: boolean;
   upIcon: ReactNode;
   directoryIcon: ReactNode;
-  browseUp: () => void | Promise<void>;
-  browseTo: (name: string) => void | Promise<void>;
+  browseUp: () => void;
+  browseTo: (name: string) => void;
 }): CommandPaletteGroup[] {
   const items: CommandPaletteActionItem[] = [];
 
@@ -284,7 +316,7 @@ export function buildBrowseGroups(input: {
       icon: input.upIcon,
       keepOpen: true,
       run: async () => {
-        await input.browseUp();
+        input.browseUp();
       },
     });
   }
@@ -298,7 +330,7 @@ export function buildBrowseGroups(input: {
       icon: input.directoryIcon,
       keepOpen: true,
       run: async () => {
-        await input.browseTo(entry.name);
+        input.browseTo(entry.name);
       },
     });
   }

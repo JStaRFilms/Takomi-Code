@@ -1,20 +1,24 @@
+import { ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { create } from "zustand";
 
 import { PersistedComposerImageAttachment } from "./composerDraftStore";
 import { createMemoryStorage, type StateStorage } from "./lib/storage";
 
-export const PROMPT_STASH_STORAGE_KEY = "t3code:prompt-stash:v2";
-/**
- * v1 bucketed entries into per-provider-instance queues and stored a model
- * selection with each prompt. The stash is provider-agnostic now, so the old
- * payload is deleted at startup rather than migrated — left behind it would
- * silently hold megabytes of the origin's ~5MB localStorage quota forever.
- */
-const LEGACY_PROMPT_STASH_STORAGE_KEY = "t3code:prompt-stash:v1";
-const PROMPT_STASH_STORAGE_VERSION = 2;
+export const PROMPT_STASH_STORAGE_KEY = "t3code:prompt-stash:v1";
+const PROMPT_STASH_STORAGE_VERSION = 1;
 
-export const MAX_STASH_ENTRIES = 20;
+/**
+ * Queue bucket for prompts stashed while no provider instance is selected.
+ *
+ * Provider-scoped keys are prefixed (see `promptStashScopeKey`), so this
+ * sentinel can never collide with a provider literally named `__none__`.
+ */
+export const PROMPT_STASH_UNSCOPED_KEY = "__none__";
+/** Namespace applied to provider-derived keys to keep them collision-proof. */
+const PROVIDER_SCOPE_PREFIX = "provider:";
+
+export const MAX_STASH_ENTRIES_PER_QUEUE = 20;
 /**
  * Budget for an entry's serialized attachment payload. localStorage is a
  * ~5MB origin-wide quota shared with the composer draft store, so oversized
@@ -26,17 +30,13 @@ export const MAX_STASH_ENTRIES = 20;
  */
 export const MAX_STASH_ENTRY_ATTACHMENT_CHARS = 2_700_000;
 
-/**
- * A stashed prompt carries only what every provider can accept: text and
- * image attachments. Deliberately no provider instance or model selection —
- * the point of stashing is to move a prompt into a different thread or
- * provider, so restoring must never drag the old model choice along.
- */
 const StashEntrySchema = Schema.Struct({
   id: Schema.String,
   createdAt: Schema.String,
   prompt: Schema.String,
   attachments: Schema.Array(PersistedComposerImageAttachment),
+  providerInstanceId: Schema.NullOr(ProviderInstanceId),
+  modelSelection: Schema.NullOr(ModelSelection),
   /** Names of images that exceeded the attachment budget and were not saved. */
   droppedImageNames: Schema.Array(Schema.String),
   /**
@@ -57,7 +57,7 @@ const StashEntrySchema = Schema.Struct({
 export type PromptStashEntry = typeof StashEntrySchema.Type;
 
 const PersistedPromptStashState = Schema.Struct({
-  entries: Schema.Array(StashEntrySchema),
+  queuesByScopeKey: Schema.Record(Schema.String, Schema.Array(StashEntrySchema)),
 });
 type PersistedPromptStashState = typeof PersistedPromptStashState.Type;
 
@@ -74,23 +74,44 @@ const decodePersistedPromptStashState = Schema.decodeUnknownSync(PersistedPrompt
  * recorded as unreadable to keep the prompt itself restorable.
  */
 function clearOrphanedPendingImages(
-  entries: ReadonlyArray<PromptStashEntry>,
+  queues: Record<string, ReadonlyArray<PromptStashEntry>>,
+): Record<string, ReadonlyArray<PromptStashEntry>> {
+  const next: Record<string, ReadonlyArray<PromptStashEntry>> = {};
+  for (const [scopeKey, queue] of Object.entries(queues)) {
+    next[scopeKey] = queue.map((entry) => {
+      if (!entry.pendingImageCount) return entry;
+      const lostCount = entry.pendingImageCount;
+      return {
+        ...entry,
+        pendingImageCount: 0,
+        unreadableImageNames: [
+          ...(entry.unreadableImageNames ?? []),
+          ...Array.from(
+            { length: lostCount },
+            (_, index) => `image ${index + 1} (not saved before reload)`,
+          ),
+        ],
+      };
+    });
+  }
+  return next;
+}
+
+/** Maps the composer's active provider instance to a stash queue bucket. */
+export function promptStashScopeKey(instanceId: ProviderInstanceId | null | undefined): string {
+  return instanceId ? `${PROVIDER_SCOPE_PREFIX}${instanceId}` : PROMPT_STASH_UNSCOPED_KEY;
+}
+
+/**
+ * Reads a queue without inheriting from `Object.prototype`. Scope keys derive
+ * from user-authored provider slugs, so a key like `__proto__` must not
+ * resolve to the prototype chain.
+ */
+function readQueue(
+  queues: Record<string, ReadonlyArray<PromptStashEntry>>,
+  scopeKey: string,
 ): ReadonlyArray<PromptStashEntry> {
-  return entries.map((entry) => {
-    if (!entry.pendingImageCount) return entry;
-    const lostCount = entry.pendingImageCount;
-    return {
-      ...entry,
-      pendingImageCount: 0,
-      unreadableImageNames: [
-        ...(entry.unreadableImageNames ?? []),
-        ...Array.from(
-          { length: lostCount },
-          (_, index) => `image ${index + 1} (not saved before reload)`,
-        ),
-      ],
-    };
-  });
+  return Object.hasOwn(queues, scopeKey) ? (queues[scopeKey] ?? []) : [];
 }
 
 /**
@@ -142,7 +163,7 @@ function resolveBaseStorage(): { storage: StateStorage; durable: boolean } {
 const { storage: baseStashStorage, durable: storageIsDurable } = resolveBaseStorage();
 
 /**
- * Persists the queue, immediately rather than debounced. Stashing is a
+ * Persists the queues, immediately rather than debounced. Stashing is a
  * deliberate, infrequent keystroke — not a per-character autosave — so there
  * is nothing to coalesce, and the caller clears the composer on the strength
  * of this write landing, which a debounce timer cannot honestly report.
@@ -150,7 +171,7 @@ const { storage: baseStashStorage, durable: storageIsDurable } = resolveBaseStor
  * Returns whether the write will survive a reload: false on a quota rejection
  * or when only the in-memory fallback is available.
  */
-function persistEntries(entries: ReadonlyArray<PromptStashEntry>): {
+function persistQueues(queues: Record<string, ReadonlyArray<PromptStashEntry>>): {
   /** The write succeeded (possibly only into the in-memory fallback). */
   written: boolean;
   /** The write will survive a reload. */
@@ -161,7 +182,7 @@ function persistEntries(entries: ReadonlyArray<PromptStashEntry>): {
       PROMPT_STASH_STORAGE_KEY,
       JSON.stringify({
         version: PROMPT_STASH_STORAGE_VERSION,
-        state: { entries },
+        state: { queuesByScopeKey: queues },
       }),
     );
     return { written: true, durable: storageIsDurable };
@@ -171,42 +192,40 @@ function persistEntries(entries: ReadonlyArray<PromptStashEntry>): {
   }
 }
 
-/** Reads the persisted queue, settling stale pending counts. */
-function readPersistedEntries(): ReadonlyArray<PromptStashEntry> | null {
+/** Reads the persisted queues, settling stale pending counts. */
+function readPersistedQueues(): Record<string, ReadonlyArray<PromptStashEntry>> | null {
   try {
     const raw = baseStashStorage.getItem(PROMPT_STASH_STORAGE_KEY);
     if (typeof raw !== "string" || raw.length === 0) return null;
     const parsed: unknown = JSON.parse(raw);
     const state = (parsed as { state?: unknown } | null)?.state;
     if (!state) return null;
-    return clearOrphanedPendingImages(decodePersistedPromptStashState(state).entries);
+    return clearOrphanedPendingImages(decodePersistedPromptStashState(state).queuesByScopeKey);
   } catch {
     return null;
   }
 }
 
 interface PromptStashStoreState {
-  entries: ReadonlyArray<PromptStashEntry>;
+  queuesByScopeKey: Record<string, ReadonlyArray<PromptStashEntry>>;
   /**
-   * Prepends an entry to the queue, evicting the oldest entry past the cap.
-   * Returns the evicted entry (for messaging) if any.
+   * Prepends an entry to its scope's queue, evicting the oldest entry past
+   * the per-queue cap. Returns the evicted entry (for messaging) if any.
    */
   stashEntry: (entry: PromptStashEntry) => {
     evicted: PromptStashEntry | null;
-    /** False when the write failed outright (e.g. quota); nothing was kept. */
-    written: boolean;
-    /**
-     * False when the write will not survive a reload: either it failed, or it
-     * landed only in the in-memory fallback because localStorage is blocked.
-     */
+    /** False when the write did not reach durable storage; nothing was kept. */
     durable: boolean;
   };
   /**
-   * Removes and returns an entry from the queue (restore + delete).
+   * Removes and returns an entry from a scope's queue (restore + delete).
    * `durable` is false when the removal could not be persisted, meaning a
    * reload would resurrect the entry.
    */
-  takeEntry: (entryId: string) => { entry: PromptStashEntry | null; durable: boolean };
+  takeEntry: (
+    scopeKey: string,
+    entryId: string,
+  ) => { entry: PromptStashEntry | null; durable: boolean };
   /**
    * Attaches the encoded images to an entry written earlier by `stashEntry`,
    * clearing its pending count. Returns attached=false when the entry is gone
@@ -214,6 +233,7 @@ interface PromptStashStoreState {
    * tell the user their images did not make it.
    */
   finalizeEntryImages: (
+    scopeKey: string,
     entryId: string,
     images: {
       attachments: ReadonlyArray<PersistedComposerImageAttachment>;
@@ -224,45 +244,58 @@ interface PromptStashStoreState {
 }
 
 export const usePromptStashStore = create<PromptStashStoreState>()((set, get) => ({
-  entries: [],
+  queuesByScopeKey: {},
   stashEntry: (entry) => {
-    const nextEntries = [entry, ...get().entries];
-    const evicted = nextEntries.length > MAX_STASH_ENTRIES ? (nextEntries.pop() ?? null) : null;
-    const { written, durable } = persistEntries(nextEntries);
+    const scopeKey = promptStashScopeKey(entry.providerInstanceId);
+    const queues = get().queuesByScopeKey;
+    const nextQueue = [entry, ...readQueue(queues, scopeKey)];
+    const evicted =
+      nextQueue.length > MAX_STASH_ENTRIES_PER_QUEUE ? (nextQueue.pop() ?? null) : null;
+    const next = { ...queues, [scopeKey]: nextQueue };
+    const { written, durable } = persistQueues(next);
     // A rejected write must not leave the entry visible either: the caller
     // keeps the composer intact on failure, so a stashed copy would
     // duplicate the prompt. Eviction likewise only sticks on success.
     if (!written) {
-      return { evicted: null, written: false, durable: false };
+      return { evicted: null, durable: false };
     }
-    set(() => ({ entries: nextEntries }));
-    return { evicted, written: true, durable };
+    set(() => ({ queuesByScopeKey: next }));
+    return { evicted, durable };
   },
-  takeEntry: (entryId) => {
-    const entries = get().entries;
-    const entry = entries.find((candidate) => candidate.id === entryId) ?? null;
+  takeEntry: (scopeKey, entryId) => {
+    const queues = get().queuesByScopeKey;
+    const queue = readQueue(queues, scopeKey);
+    const entry = queue.find((candidate) => candidate.id === entryId) ?? null;
     if (!entry) return { entry: null, durable: true };
-    const nextEntries = entries.filter((candidate) => candidate.id !== entryId);
-    const { durable } = persistEntries(nextEntries);
-    set(() => ({ entries: nextEntries }));
+    const nextQueue = queue.filter((candidate) => candidate.id !== entryId);
+    const next = { ...queues };
+    if (nextQueue.length === 0) {
+      delete next[scopeKey];
+    } else {
+      next[scopeKey] = nextQueue;
+    }
+    const { durable } = persistQueues(next);
+    set(() => ({ queuesByScopeKey: next }));
     return { entry, durable };
   },
-  finalizeEntryImages: (entryId, images) => {
-    const entries = get().entries;
-    const index = entries.findIndex((candidate) => candidate.id === entryId);
-    const existing = index === -1 ? undefined : entries[index];
+  finalizeEntryImages: (scopeKey, entryId, images) => {
+    const queues = get().queuesByScopeKey;
+    const queue = readQueue(queues, scopeKey);
+    const index = queue.findIndex((candidate) => candidate.id === entryId);
+    const existing = index === -1 ? undefined : queue[index];
     // Restored or deleted mid-encode: nothing to attach to.
     if (!existing) return { attached: false, durable: true };
-    const nextEntries = [...entries];
-    nextEntries[index] = {
+    const nextQueue = [...queue];
+    nextQueue[index] = {
       ...existing,
       attachments: images.attachments,
       droppedImageNames: images.droppedImageNames,
       unreadableImageNames: images.unreadableImageNames,
       pendingImageCount: 0,
     };
-    const { durable } = persistEntries(nextEntries);
-    set(() => ({ entries: nextEntries }));
+    const next = { ...queues, [scopeKey]: nextQueue };
+    const { durable } = persistQueues(next);
+    set(() => ({ queuesByScopeKey: next }));
     return { attached: true, durable };
   },
 }));
@@ -270,17 +303,13 @@ export const usePromptStashStore = create<PromptStashStoreState>()((set, get) =>
 // Hydrate once at startup. Like the app's other persisted stores, tabs are
 // last-write-wins: no cross-tab merging or storage-event syncing.
 {
-  try {
-    baseStashStorage.removeItem(LEGACY_PROMPT_STASH_STORAGE_KEY);
-  } catch {
-    // Purging the v1 payload is best-effort; a storage policy that rejects
-    // the delete must not take down module init.
-  }
-  const persisted = readPersistedEntries();
+  const persisted = readPersistedQueues();
   if (persisted) {
-    usePromptStashStore.setState({ entries: persisted });
+    usePromptStashStore.setState({ queuesByScopeKey: persisted });
   }
 }
+
+export const EMPTY_PROMPT_STASH_QUEUE: ReadonlyArray<PromptStashEntry> = [];
 
 /**
  * Test seam: seeds the persisted payload through the same storage the store
@@ -289,5 +318,5 @@ export const usePromptStashStore = create<PromptStashStoreState>()((set, get) =>
  */
 export function writePromptStashStorageForTest(raw: string): void {
   baseStashStorage.setItem(PROMPT_STASH_STORAGE_KEY, raw);
-  usePromptStashStore.setState({ entries: readPersistedEntries() ?? [] });
+  usePromptStashStore.setState({ queuesByScopeKey: readPersistedQueues() ?? {} });
 }

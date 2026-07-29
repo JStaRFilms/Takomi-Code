@@ -1,5 +1,4 @@
-import { expect, it } from "@effect/vitest";
-import { describe } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 
 import { isLoopbackHostname, resolveDevRedirectUrl } from "./http.ts";
 

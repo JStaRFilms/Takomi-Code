@@ -166,7 +166,7 @@ function ConfiguredSettingsRouteScreen() {
   const environmentCount = connections.length;
   const accountLabel = useMemo(() => {
     if (!isLoaded) return "Checking";
-    if (!isSignedIn) return "Sign in";
+    if (!isSignedIn) return "Request access";
     return user?.primaryEmailAddress?.emailAddress ?? "Signed in";
   }, [isLoaded, isSignedIn, user?.primaryEmailAddress?.emailAddress]);
 
@@ -273,13 +273,13 @@ function ConfiguredSettingsRouteScreen() {
 
   const promptSignIn = useCallback(() => {
     Alert.alert(
-      "Sign in to T3 Connect",
-      "Live Activity updates require T3 Connect so relay can deliver updates to this device.",
+      "Request T3 Connect access",
+      "Live Activity updates require approved T3 Connect access so relay can deliver updates to this device.",
       [
         { text: "Cancel", style: "cancel" },
         {
           text: "Continue",
-          onPress: () => navigation.navigate("SettingsSheet", { screen: "SettingsAuth" }),
+          onPress: () => navigation.navigate("SettingsSheet", { screen: "SettingsWaitlist" }),
         },
       ],
     );
@@ -368,7 +368,7 @@ function ConfiguredSettingsRouteScreen() {
 
       Alert.alert(
         "Disable notifications",
-        "Notification permission is controlled by iOS. Open Settings to disable notifications for Takomi Code.",
+        "Notification permission is controlled by iOS. Open Settings to disable notifications for T3 Code.",
         [
           { text: "Cancel", style: "cancel" },
           { text: "Open Settings", onPress: () => void Linking.openSettings() },
@@ -441,8 +441,7 @@ function ConfiguredSettingsRouteScreen() {
   const openAccount = useCallback(() => {
     if (!isLoaded) return;
     if (!isSignedIn) {
-      expandClerkSheet();
-      navigation.navigate("SettingsSheet", { screen: "SettingsAuth" });
+      navigation.navigate("SettingsSheet", { screen: "SettingsWaitlist" });
       return;
     }
     expandClerkSheet();
@@ -470,7 +469,7 @@ function ConfiguredSettingsRouteScreen() {
             />
           </SettingsSection>
           <Text className="px-2 text-sm text-foreground-muted">
-            Takomi Code works locally without signing in. Cloud features are optional.
+            T3 Code works locally without signing in. Cloud features are optional.
           </Text>
         </View>
 

@@ -1,10 +1,6 @@
 # Documentation
 
 - [Getting started](./getting-started/quick-start.md)
-- Takomi Code
-  - [Current handoff](./features/takomi-code-handoff.md)
-  - [Takomi / Pi provider](./features/takomi-pi-provider.md)
-  - [Desktop and Android builds](./features/takomi-desktop-and-android.md)
 - Architecture
   - [Overview](./architecture/overview.md)
   - [Connection runtime](./architecture/connection-runtime.md)
