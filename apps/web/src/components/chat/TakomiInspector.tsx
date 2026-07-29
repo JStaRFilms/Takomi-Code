@@ -5,7 +5,10 @@ import {
   CircleIcon,
   ClipboardListIcon,
   LoaderCircleIcon,
+  MessageCircleIcon,
+  RadioIcon,
   UsersIcon,
+  WrenchIcon,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -41,12 +44,14 @@ function statusLabel(status: string | undefined) {
 function DetailCard({ entry }: { entry: WorkLogEntry }) {
   const presentation = entry.presentation;
   if (!presentation) return null;
-  const status = presentation.error?.message ?? presentation.summary?.status;
+  const status =
+    presentation.error?.message ?? presentation.summary?.status ?? entry.toolLifecycleStatus;
+  const detailText = presentation.inspectorDetailText ?? presentation.detailText;
   return (
     <div className="rounded-lg border border-border/65 bg-muted/20 p-3 text-xs">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="truncate font-medium text-foreground">{presentation.toolName}</p>
+          <p className="break-words font-medium text-foreground">{presentation.toolName}</p>
           {presentation.action ? (
             <p className="mt-0.5 text-[11px] text-muted-foreground">{presentation.action}</p>
           ) : null}
@@ -57,42 +62,87 @@ function DetailCard({ entry }: { entry: WorkLogEntry }) {
           </span>
         ) : null}
       </div>
-      {presentation.detailText ? (
-        <p className="mt-2 whitespace-pre-wrap leading-relaxed text-foreground/85">
-          {presentation.detailText}
-        </p>
-      ) : null}
-      {presentation.summary?.items?.length ? (
-        <div className="mt-2 space-y-2 border-t border-border/50 pt-2">
-          {presentation.summary.items.map((item) => (
-            <div key={item.id} className="flex items-start gap-2">
-              <StatusIcon status={item.status} />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-foreground/90">{item.label}</p>
-                {item.detail ? (
-                  <p className="mt-0.5 whitespace-pre-wrap text-[11px] text-muted-foreground">
-                    {item.detail}
-                  </p>
+      <div className="mt-2 max-h-[65vh] overflow-y-auto pr-1">
+        {detailText ? (
+          <p className="whitespace-pre-wrap break-words leading-relaxed text-foreground/85">
+            {detailText}
+          </p>
+        ) : null}
+        {presentation.activity?.length ? (
+          <div className={cn("space-y-2 border-t border-border/50 pt-2", detailText && "mt-3")}>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {statusKind(status) === "active" ? "Live activity" : "Activity transcript"}
+            </p>
+            {presentation.activity.map((activity) => {
+              const Icon =
+                activity.kind === "tool"
+                  ? WrenchIcon
+                  : activity.kind === "message"
+                    ? MessageCircleIcon
+                    : RadioIcon;
+              return (
+                <div
+                  key={activity.id}
+                  className="flex items-start gap-2 rounded bg-background/45 p-2"
+                >
+                  <Icon
+                    className={cn(
+                      "mt-0.5 size-3.5 shrink-0 text-muted-foreground",
+                      activity.status === "running" && "animate-pulse text-blue-500",
+                    )}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="break-words font-medium text-foreground/90">{activity.label}</p>
+                      {activity.status ? (
+                        <span className="shrink-0 text-[10px] capitalize text-muted-foreground">
+                          {statusLabel(activity.status)}
+                        </span>
+                      ) : null}
+                    </div>
+                    {activity.detail ? (
+                      <p className="mt-1 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-muted-foreground">
+                        {activity.detail}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+        {presentation.summary?.items?.length ? (
+          <div className="mt-2 space-y-2 border-t border-border/50 pt-2">
+            {presentation.summary.items.map((item) => (
+              <div key={item.id} className="flex items-start gap-2">
+                <StatusIcon status={item.status} />
+                <div className="min-w-0 flex-1">
+                  <p className="break-words text-foreground/90">{item.label}</p>
+                  {item.detail ? (
+                    <p className="mt-0.5 whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
+                      {item.detail}
+                    </p>
+                  ) : null}
+                </div>
+                {item.status ? (
+                  <span className="shrink-0 text-[10px] capitalize text-muted-foreground">
+                    {statusLabel(item.status)}
+                  </span>
                 ) : null}
               </div>
-              {item.status ? (
-                <span className="shrink-0 text-[10px] capitalize text-muted-foreground">
-                  {statusLabel(item.status)}
-                </span>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {presentation.artifactRefs?.length ? (
-        <div className="mt-2 space-y-1 border-t border-border/50 pt-2 font-mono text-[11px] text-muted-foreground">
-          {presentation.artifactRefs.map((artifact) => (
-            <div key={`${artifact.kind}:${artifact.path}`} className="truncate">
-              {artifact.label ?? artifact.path}
-            </div>
-          ))}
-        </div>
-      ) : null}
+            ))}
+          </div>
+        ) : null}
+        {presentation.artifactRefs?.length ? (
+          <div className="mt-2 space-y-1 border-t border-border/50 pt-2 font-mono text-[11px] text-muted-foreground">
+            {presentation.artifactRefs.map((artifact) => (
+              <div key={`${artifact.kind}:${artifact.path}`} className="break-all">
+                {artifact.label ?? artifact.path}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

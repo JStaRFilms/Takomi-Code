@@ -271,7 +271,9 @@ function classifyTool(toolName: string) {
 }
 
 const PRESENTATION_DETAIL_LIMIT = 600;
+const PRESENTATION_INSPECTOR_DETAIL_LIMIT = 16_000;
 const PRESENTATION_ITEM_LIMIT = 12;
+const PRESENTATION_ACTIVITY_LIMIT = 24;
 const PRESENTATION_ARTIFACT_LIMIT = 8;
 
 function boundedText(value: unknown, limit = PRESENTATION_DETAIL_LIMIT): string | undefined {
@@ -325,7 +327,89 @@ function normalizePresentationItems(value: unknown): ToolPresentationItem[] {
   });
 }
 
+type ToolPresentationActivity = NonNullable<ToolPresentationEnvelope["activity"]>[number];
+
 type ToolPresentationArtifact = NonNullable<ToolPresentationEnvelope["artifactRefs"]>[number];
+
+function normalizeSubagentActivity(source: Record<string, unknown>): ToolPresentationActivity[] {
+  const results = Array.isArray(source.results) ? source.results : [];
+  const progressRows = Array.isArray(source.progress) ? source.progress : [];
+  const activity: ToolPresentationActivity[] = [];
+
+  for (const [resultIndex, value] of results.entries()) {
+    const result = isRecord(value) ? value : undefined;
+    if (!result) continue;
+    const agent =
+      boundedText(result.agent ?? result.agentName, 80) ?? `Subagent ${resultIndex + 1}`;
+    const messages = Array.isArray(result.messages) ? result.messages.slice(-16) : [];
+    for (const [messageIndex, messageValue] of messages.entries()) {
+      const message = isRecord(messageValue) ? messageValue : undefined;
+      if (!message) continue;
+      const role = boundedText(message.role, 40) ?? "message";
+      const content = Array.isArray(message.content) ? message.content : [];
+      for (const [partIndex, partValue] of content.entries()) {
+        const part = isRecord(partValue) ? partValue : undefined;
+        if (!part || (part.type !== "toolCall" && part.type !== "tool_call")) continue;
+        const toolName = boundedText(part.name ?? part.toolName, 100) ?? "Tool call";
+        const detail = boundedText(jsonString(part.arguments ?? part.args), 500);
+        activity.push({
+          id: `result-${resultIndex}-message-${messageIndex}-tool-${partIndex}`,
+          kind: "tool",
+          label: toolName,
+          ...(detail ? { detail } : {}),
+          status: "completed",
+        });
+      }
+      const text = boundedText(extractText(message.content), 1_200);
+      if (text) {
+        activity.push({
+          id: `result-${resultIndex}-message-${messageIndex}`,
+          kind: "message",
+          label: role === "assistant" ? `${agent} · assistant` : `${agent} · ${role}`,
+          detail: text,
+        });
+      }
+    }
+
+    const progress = firstRecord(result.progress, progressRows[resultIndex]);
+    if (!progress) continue;
+    const recentTools = Array.isArray(progress.recentTools) ? progress.recentTools.slice(-8) : [];
+    for (const [toolIndex, toolValue] of recentTools.entries()) {
+      const tool = isRecord(toolValue) ? toolValue : undefined;
+      if (!tool) continue;
+      const label = boundedText(tool.tool ?? tool.name, 100) ?? "Tool call";
+      const detail = boundedText(tool.args, 500);
+      const endedAt =
+        typeof tool.endMs === "number" && Number.isFinite(tool.endMs) ? String(tool.endMs) : label;
+      activity.push({
+        id: `result-${resultIndex}-recent-tool-${toolIndex}-${endedAt}`,
+        kind: "tool",
+        label,
+        ...(detail ? { detail } : {}),
+        status: "completed",
+      });
+    }
+    const currentTool = boundedText(progress.currentTool, 100);
+    const recentOutput = Array.isArray(progress.recentOutput)
+      ? progress.recentOutput.filter((line): line is string => typeof line === "string").slice(-8)
+      : [];
+    const activityDetail = boundedText(
+      currentTool ? progress.currentToolArgs : recentOutput.join("\n"),
+      1_200,
+    );
+    activity.push({
+      id: `result-${resultIndex}-status`,
+      kind: "status",
+      label: currentTool ? `${agent} · ${currentTool}` : `${agent} activity`,
+      ...(activityDetail ? { detail: activityDetail } : {}),
+      status: currentTool
+        ? "running"
+        : (boundedText(result.status ?? result.state, 80) ?? "active"),
+    });
+  }
+
+  return activity.slice(-PRESENTATION_ACTIVITY_LIMIT);
+}
 
 function normalizeArtifactRefs(value: unknown): ToolPresentationArtifact[] {
   if (!Array.isArray(value)) return [];
@@ -363,17 +447,34 @@ function normalizeTakomiPresentation(input: {
       (source.task ? [source.task] : undefined),
   );
   const artifactRefs = normalizeArtifactRefs(source.artifacts ?? source.files ?? source.assets);
-  const detailText = boundedText(
+  const modeDetail =
+    input.toolName === "takomi_mode" && readString(source.mode)
+      ? [
+          `Mode: ${readString(source.mode)}`,
+          readString(source.role) ? `Role: ${readString(source.role)}` : undefined,
+          readString(source.stage) ? `Stage: ${readString(source.stage)}` : undefined,
+          readString(source.reason) ? `Reason: ${readString(source.reason)}` : undefined,
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : undefined;
+  const rawDetailText =
+    modeDetail ??
     source.summary ??
-      source.message ??
-      source.detail ??
-      source.reason ??
-      source.output ??
-      extractText(input.result) ??
-      extractText(input.partialResult),
-  );
+    source.message ??
+    source.detail ??
+    source.reason ??
+    source.output ??
+    extractText(input.result) ??
+    extractText(input.partialResult);
+  const detailText = boundedText(rawDetailText);
+  const inspectorDetailText = boundedText(rawDetailText, PRESENTATION_INSPECTOR_DETAIL_LIMIT);
+  const activity = input.toolName === "takomi_subagent" ? normalizeSubagentActivity(source) : [];
   const action = boundedText(source.action ?? source.operation ?? source.phase, 120);
-  const status = boundedText(source.status ?? source.state, 80);
+  const status = boundedText(
+    source.status ?? source.state ?? (input.toolName === "takomi_mode" ? source.mode : undefined),
+    80,
+  );
   const sessionId = boundedText(source.sessionId ?? source.session ?? source.boardId, 120);
   const runId = boundedText(source.runId ?? source.run ?? source.workflowRunId, 120);
   const taskId = boundedText(source.taskId ?? source.task ?? source.id, 120);
@@ -399,6 +500,8 @@ function normalizeTakomiPresentation(input: {
     ...(action ? { action } : {}),
     ...(Object.keys(summary).length > 0 ? { summary } : {}),
     ...(detailText ? { detailText } : {}),
+    ...(inspectorDetailText ? { inspectorDetailText } : {}),
+    ...(activity.length > 0 ? { activity } : {}),
     ...(artifactRefs.length > 0 ? { artifactRefs } : {}),
     ...(input.isError
       ? { error: { severity: "error", message: errorMessage ?? "Tool call failed." } }
