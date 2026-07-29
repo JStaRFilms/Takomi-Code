@@ -137,7 +137,7 @@ interface TimelineRowSharedState {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
   onToggleWorkGroup: (groupId: string, anchorElement?: HTMLElement) => void;
-  expandedTakomiToolCallId: string | null;
+  expandedTakomiToolCallIds: ReadonlySet<string>;
   onToggleTakomiToolCall: (toolCallId: string) => void;
   onSelectTakomiToolCall: (entry: WorkLogEntry) => void;
 }
@@ -155,6 +155,7 @@ const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = <div className="h-10 sm:h-12" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+const MAX_EXPANDED_TAKOMI_TOOL_CALLS = 5;
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -229,7 +230,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
-  const [expandedTakomiToolCallId, setExpandedTakomiToolCallId] = useState<string | null>(null);
+  const [expandedTakomiToolCallIds, setExpandedTakomiToolCallIds] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
 
   const onToggleTurnFold = useCallback((turnId: TurnId) => {
@@ -244,7 +247,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     });
   }, []);
   const onToggleTakomiToolCall = useCallback((toolCallId: string) => {
-    setExpandedTakomiToolCallId((current) => (current === toolCallId ? null : toolCallId));
+    setExpandedTakomiToolCallIds((current) => {
+      const next = new Set(current);
+      if (next.has(toolCallId)) {
+        next.delete(toolCallId);
+        return next;
+      }
+      if (next.size >= MAX_EXPANDED_TAKOMI_TOOL_CALLS) {
+        const oldest = next.values().next().value;
+        if (oldest !== undefined) next.delete(oldest);
+      }
+      next.add(toolCallId);
+      return next;
+    });
   }, []);
   const onToggleWorkGroup = useCallback(
     (groupId: string, anchorElement?: HTMLElement) => {
@@ -441,7 +456,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
-      expandedTakomiToolCallId,
+      expandedTakomiToolCallIds,
       onToggleTakomiToolCall,
       onSelectTakomiToolCall: onSelectTakomiToolCall ?? (() => {}),
     }),
@@ -458,7 +473,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onToggleWorkGroup,
-      expandedTakomiToolCallId,
+      expandedTakomiToolCallIds,
       onToggleTakomiToolCall,
       onSelectTakomiToolCall,
     ],
@@ -1172,7 +1187,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }) {
   const {
     workspaceRoot,
-    expandedTakomiToolCallId,
+    expandedTakomiToolCallIds,
     onToggleTakomiToolCall,
     onSelectTakomiToolCall,
   } = use(TimelineRowCtx);
@@ -1202,7 +1217,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
             <TakomiToolCallCard
               key={workEntry.id}
               entry={workEntry}
-              expanded={expandedTakomiToolCallId === (workEntry.toolCallId ?? workEntry.id)}
+              expanded={expandedTakomiToolCallIds.has(workEntry.toolCallId ?? workEntry.id)}
               onToggle={() => onToggleTakomiToolCall(workEntry.toolCallId ?? workEntry.id)}
               onSelectInspector={() => onSelectTakomiToolCall(workEntry)}
             />

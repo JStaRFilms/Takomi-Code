@@ -5606,6 +5606,11 @@ function ChatViewContent(props: ChatViewProps) {
       <TakomiInspector
         entries={workLogEntries}
         selectedToolCallId={activeTakomiSurface?.toolCallId ?? null}
+        onSelectToolCallId={(toolCallId) => {
+          if (activeThreadRef) {
+            useRightPanelStore.getState().openTakomiInspector(activeThreadRef, toolCallId);
+          }
+        }}
       />
     ) : activeRightPanelSurface?.kind === "plan" ? (
       <PlanSidebar

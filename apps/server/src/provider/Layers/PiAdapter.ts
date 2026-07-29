@@ -312,7 +312,13 @@ function normalizePresentationItems(value: unknown): ToolPresentationItem[] {
     const status =
       boundedText(record?.status ?? record?.state, 80) ??
       (exitCode === undefined ? undefined : exitCode === 0 ? "completed" : "failed");
-    const detail = boundedText(record?.detail ?? record?.message ?? record?.reason, 180);
+    const metadata = [record?.stage, record?.role, record?.agent, record?.model]
+      .map(readString)
+      .filter((value): value is string => value !== undefined)
+      .join(" · ");
+    const detail =
+      boundedText(record?.detail ?? record?.message ?? record?.reason ?? record?.task, 180) ??
+      metadata;
     return [{ id, label, ...(status ? { status } : {}), ...(detail ? { detail } : {}) }];
   });
 }
@@ -344,8 +350,10 @@ function normalizeTakomiPresentation(input: {
   const result = firstRecord(input.result, input.partialResult) ?? {};
   const structuredContent = firstRecord(result.structuredContent, result.details) ?? {};
   const source = { ...args, ...result, ...structuredContent };
+  const takomiUx = firstRecord(source.takomiUx);
   const items = normalizePresentationItems(
     source.tasks ??
+      takomiUx?.tasks ??
       source.stages ??
       source.agents ??
       source.items ??
@@ -354,7 +362,13 @@ function normalizeTakomiPresentation(input: {
   );
   const artifactRefs = normalizeArtifactRefs(source.artifacts ?? source.files ?? source.assets);
   const detailText = boundedText(
-    source.summary ?? source.message ?? source.detail ?? source.reason ?? source.output,
+    source.summary ??
+      source.message ??
+      source.detail ??
+      source.reason ??
+      source.output ??
+      extractText(input.result) ??
+      extractText(input.partialResult),
   );
   const action = boundedText(source.action ?? source.operation ?? source.phase, 120);
   const status = boundedText(source.status ?? source.state, 80);
