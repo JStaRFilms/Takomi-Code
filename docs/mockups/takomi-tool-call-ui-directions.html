@@ -356,7 +356,6 @@
         display: flex;
         flex-direction: column;
         gap: 1.25rem;
-        border-right: 1px solid var(--border);
       }
 
       .app-split-right {
@@ -990,8 +989,9 @@
               <td>Medium-large. Groups related steps into a single unified card in the thread.</td>
               <td>Extremely compact in chat stream. Details are loaded in the secondary pane.</td>
               <td>
-                <strong>Optimal balance.</strong> Inline timeline remains compact with sticky rows
-                updating in-place; right inspector handles board & subagent pools.
+                <strong>Optimal balance.</strong> Inline logs collapse and are fully canonical.
+                Right inspector is redundant/optional (can be closed to expand chat width).
+                <strong>Inline is canonical; inspector is optional.</strong>
               </td>
             </tr>
             <tr>
@@ -1000,8 +1000,8 @@
               <td>Accordion sub-sections inside the card block boundaries.</td>
               <td>Click timeline row to load/focus that tool's state in the inspector pane.</td>
               <td>
-                <strong>Mutually exclusive inline accordion</strong> (one open at a time) +
-                persistent board dashboard and subagent pools on the right.
+                <strong>Full Direction A rich inline accordions</strong> (canonical) + optional
+                synchronized inspector workspace panel on the right.
               </td>
             </tr>
             <tr>
@@ -1028,12 +1028,12 @@
                 </p>
               </td>
               <td>
-                <span class="badge-pros">No Timeline Duplicate Cards</span>
-                <span class="badge-pros">Sticky Pinned Board</span>
-                <span class="badge-pros">Inline Prompts</span>
+                <span class="badge-pros">Canonical Inline Detail</span>
+                <span class="badge-pros">Optional Closeable Inspector</span>
+                <span class="badge-pros">Updates In-Place</span>
                 <p>
-                  Board updates in-place without duplicate calls. Subagents update by run identity.
-                  Interactive questions stay inline.
+                  Maintains complete operational context in inline accordion. Inspector is a
+                  closeable synchronized convenience panel with sticky Board/Subagent state.
                 </p>
               </td>
             </tr>
@@ -1056,10 +1056,10 @@
                 <p>Forces the eye to jump between left and right panes to read any tool outputs.</p>
               </td>
               <td>
-                <span class="badge-cons">Shared Workspace Area</span>
+                <span class="badge-cons">Redundant View Screen Space</span>
                 <p>
-                  Requires allocating right sidebar width; density must be high to fit both board
-                  and subagents.
+                  Duplicate states in both timelines and right inspector when open, requiring wide
+                  screens.
                 </p>
               </td>
             </tr>
@@ -1826,8 +1826,40 @@ export const routingPolicy = {
             </div>
 
             <div class="app-main-split">
-              <!-- Left Pane: Compact Chronological Timeline (A-Style accordion) -->
+              <!-- Left Pane: Canonical Full-Detail Chat timeline (A-Style accordion) -->
               <div class="app-split-left">
+                <!-- Reopen Inspector Action Banner (Displays only when inspector is closed) -->
+                <div
+                  id="reopen-inspector-container-d"
+                  style="
+                    display: none;
+                    padding: 0.5rem 0.75rem;
+                    border: 1px solid var(--border);
+                    border-radius: 8px;
+                    margin-bottom: 0.75rem;
+                    background-color: var(--muted);
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 1rem;
+                  "
+                >
+                  <span class="text-xs text-muted" style="font-weight: 500"
+                    >Workspace Inspector is hidden. Chat timeline is fully operational.</span
+                  >
+                  <button
+                    class="btn-ctrl"
+                    onclick="openInspectorD()"
+                    style="
+                      padding: 0.2rem 0.5rem;
+                      font-size: 0.75rem;
+                      border-radius: 4px;
+                      font-weight: 600;
+                    "
+                  >
+                    Reopen Inspector
+                  </button>
+                </div>
+
                 <div class="msg-user">
                   Please analyze the routing configuration and run subagents to check the database
                   health.
@@ -1840,7 +1872,7 @@ export const routingPolicy = {
                     <span class="badge badge-muted">Session ID: 449-hybrid</span>
                   </div>
 
-                  <!-- Timeline Accordion Stack (Mutual Exclusion) -->
+                  <!-- Timeline Accordion Stack (Canonical Inline Details, Mutual Exclusion) -->
                   <div class="timeline-container mt-1">
                     <!-- Mode status -->
                     <div class="timeline-item">
@@ -1862,11 +1894,11 @@ export const routingPolicy = {
                         </svg>
                       </div>
                       <div class="timeline-disclosure" id="d-mode-disclosure">
-                        <p class="text-[10px] text-muted-foreground">
-                          Reason: Evaluating user request rules.
+                        <p class="text-muted text-xs">
+                          Reason: Evaluating user request against project manifest
                         </p>
-                        <p class="text-[10px] text-muted-foreground mt-1">
-                          Source: Prompt hook. (Click updates workspace panel details).
+                        <p class="text-muted text-xs mt-1">
+                          Source: Explicit prompt trigger: mode-architect
                         </p>
                       </div>
                     </div>
@@ -1892,10 +1924,10 @@ export const routingPolicy = {
                         </svg>
                       </div>
                       <div class="timeline-disclosure" id="d-config-disclosure">
-                        <p class="text-[10px] text-muted-foreground font-semibold">
-                          Detected default: Next.js App Router
+                        <p class="text-muted text-xs font-semibold">
+                          Detected default framework: Next.js App Router
                         </p>
-                        <div class="diff-block mt-1">
+                        <div class="diff-block mt-2">
                           <div class="diff-line meta">@@ -1,3 +1,3 @@</div>
                           <div class="diff-line removed">- ROUTE_TARGET: "direct"</div>
                           <div class="diff-line added">+ ROUTE_TARGET: "parallel-subagents"</div>
@@ -1903,11 +1935,14 @@ export const routingPolicy = {
                       </div>
                     </div>
 
-                    <!-- Pinned Board trigger in Timeline (Updates in-place, remains sticky) -->
+                    <!-- Board Task Progress in Timeline (Canonical accordion checklist, Sticky row) -->
                     <div class="timeline-item">
                       <div class="timeline-node running"></div>
-                      <div class="timeline-row" onclick="focusInspectorD('d-board')">
-                        <span class="timeline-text text-xs text-muted font-semibold">
+                      <div
+                        class="timeline-row"
+                        onclick="toggleHybridDetails('d-board-disclosure', 'd-board')"
+                      >
+                        <span class="timeline-text text-xs font-semibold text-muted">
                           <svg class="icon icon-small text-primary" viewBox="0 0 24 24">
                             <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
                             <line x1="9" y1="3" x2="9" y2="21"></line>
@@ -1916,13 +1951,41 @@ export const routingPolicy = {
                         </span>
                         <span class="badge badge-warning text-[8px]">Stage 3/5 (60%)</span>
                       </div>
+                      <!-- Detailed inline checklist matching Direction A -->
+                      <div
+                        class="timeline-disclosure active"
+                        id="d-board-disclosure"
+                        style="display: block"
+                      >
+                        <div class="checklist">
+                          <div class="check-item done">
+                            <div class="check-circle"></div>
+                            <span>Stage 1: Verify workspace schema (Passed)</span>
+                          </div>
+                          <div class="check-item done">
+                            <div class="check-circle"></div>
+                            <span>Stage 2: Setup routing matrix (Passed)</span>
+                          </div>
+                          <div class="check-item active">
+                            <div class="check-circle"></div>
+                            <span>Stage 3: Run diagnostics agent (Executing...)</span>
+                          </div>
+                          <div class="check-item pending">
+                            <div class="check-circle"></div>
+                            <span>Stage 4: Log completion metrics (Pending)</span>
+                          </div>
+                        </div>
+                      </div>
                     </div>
 
-                    <!-- Pinned Subagent runs in Timeline (Updates in-place, remains sticky) -->
+                    <!-- Subagent runs in Timeline (Canonical accordion checklist, Sticky row) -->
                     <div class="timeline-item">
                       <div class="timeline-node running"></div>
-                      <div class="timeline-row" onclick="focusInspectorD('d-subagents')">
-                        <span class="timeline-text text-xs text-muted font-semibold">
+                      <div
+                        class="timeline-row"
+                        onclick="toggleHybridDetails('d-subagents-disclosure', 'd-subagents')"
+                      >
+                        <span class="timeline-text text-xs font-semibold text-muted">
                           <svg class="icon icon-small" viewBox="0 0 24 24">
                             <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
                             <circle cx="9" cy="7" r="4"></circle>
@@ -1932,6 +1995,26 @@ export const routingPolicy = {
                           takomi_subagent: execution_runs [Stable ID]
                         </span>
                         <span class="badge badge-primary text-[8px]">2 Active Pools</span>
+                      </div>
+                      <!-- Detailed inline checklist matching Direction A -->
+                      <div class="timeline-disclosure" id="d-subagents-disclosure">
+                        <div class="checklist">
+                          <div class="check-item done">
+                            <span class="badge badge-success">Done</span>
+                            <span class="text-mono">db_schema_auditor</span>
+                            <span class="text-muted">(Elapsed 8s)</span>
+                          </div>
+                          <div class="check-item active">
+                            <span class="badge badge-primary">Running</span>
+                            <span class="text-mono">latency_tester</span>
+                            <span class="text-muted">(Pinging endpoint...)</span>
+                          </div>
+                          <div class="check-item">
+                            <span class="badge badge-danger">Failed</span>
+                            <span class="text-mono">permission_verifier</span>
+                            <span class="text-muted">(Error 403)</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
 
@@ -1959,6 +2042,10 @@ export const routingPolicy = {
                           <a href="#" class="file-chip">health_report.json</a>
                           <span class="badge badge-success text-[8px]">TypeScript OK</span>
                         </div>
+                        <p class="text-xs text-muted mt-2">
+                          Verification gates passed: TypeScript Types checked (Pass), Linting
+                          (Pass).
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -2021,11 +2108,28 @@ export const routingPolicy = {
                 </div>
               </div>
 
-              <!-- Right Pane: Hybrid Workspace Inspector -->
+              <!-- Right Pane: Hybrid Workspace Inspector (Optional, Redundant Convenience View) -->
               <div class="app-split-right" id="inspector-pane-d">
                 <div class="inspector-header">
                   <span>Workspace Inspector</span>
-                  <span class="badge badge-muted text-[8px]">Pinned</span>
+                  <button
+                    class="btn-ctrl"
+                    onclick="closeInspectorD()"
+                    style="
+                      padding: 0.15rem 0.4rem;
+                      font-size: 0.75rem;
+                      border-radius: 4px;
+                      display: inline-flex;
+                      align-items: center;
+                      gap: 0.25rem;
+                    "
+                  >
+                    <svg class="icon icon-small" viewBox="0 0 24 24" style="stroke-width: 2.5">
+                      <line x1="18" y1="6" x2="6" y2="18"></line>
+                      <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                    Close
+                  </button>
                 </div>
 
                 <!-- Pinned Board Progress (Always Pinned First, Updates In-Place) -->
@@ -2135,9 +2239,23 @@ export const routingPolicy = {
                   <div
                     class="dynamic-inspector-section text-xs text-muted"
                     id="d-fallback-detail-d"
+                    style="display: none"
                   >
                     Click a timeline event on the left to inspect variables, policies, or execution
                     diffs here.
+                  </div>
+
+                  <!-- Board detail shown by default -->
+                  <div
+                    class="dynamic-inspector-section inspector-card"
+                    id="d-board-detail-d"
+                    style="display: flex; flex-direction: column; gap: 0.5rem; width: 100%"
+                  >
+                    <div class="text-xs font-semibold">takomi_board active details</div>
+                    <div class="text-[10px] text-muted-foreground">
+                      Currently monitoring the routing setup. Visual checklist state is synchronized
+                      with the timeline in real-time.
+                    </div>
                   </div>
 
                   <!-- Mode Detail -->
@@ -2165,6 +2283,21 @@ export const routingPolicy = {
                       <div class="diff-line meta">@@ -1,3 +1,3 @@</div>
                       <div class="diff-line removed">- ROUTE_TARGET: "direct"</div>
                       <div class="diff-line added">+ ROUTE_TARGET: "parallel-subagents"</div>
+                    </div>
+                  </div>
+
+                  <!-- Subagents detail link -->
+                  <div
+                    class="dynamic-inspector-section inspector-card"
+                    id="d-subagents-detail-d"
+                    style="display: none; flex-direction: column; gap: 0.5rem; width: 100%"
+                  >
+                    <div class="text-xs font-semibold">Subagents Console outputs</div>
+                    <div
+                      class="text-[10px] text-muted-foreground font-mono bg-background/50 p-2 rounded"
+                    >
+                      [db_schema_auditor] Verified 14 tables.<br />
+                      [latency_tester] Pinging dev-cluster... (12ms)
                     </div>
                   </div>
 
@@ -2286,7 +2419,7 @@ export const routingPolicy = {
 
         const el = document.getElementById(elementId);
         if (el) {
-          if (el.classList.contains("active")) {
+          if (el.classList.contains("active") || el.style.display === "block") {
             el.style.display = "none";
             el.classList.remove("active");
           } else {
@@ -2314,6 +2447,27 @@ export const routingPolicy = {
           }
         } else {
           document.getElementById("d-fallback-detail-d").style.display = "flex";
+        }
+      }
+
+      // Close right inspector in Direction D (demonstrates expanding main chat layout)
+      function closeInspectorD() {
+        document.getElementById("inspector-pane-d").style.display = "none";
+        document.getElementById("reopen-inspector-container-d").style.display = "flex";
+      }
+
+      // Reopen/Restore right inspector in Direction D
+      function openInspectorD() {
+        document.getElementById("inspector-pane-d").style.display = "flex";
+        document.getElementById("reopen-inspector-container-d").style.display = "none";
+
+        // Restore synchronized view matching whichever timeline accordion is active, fallback to board
+        const activeDisclosure = document.querySelector("#frame-dir-d .timeline-disclosure.active");
+        if (activeDisclosure) {
+          const targetId = activeDisclosure.id.replace("-disclosure", "");
+          focusInspectorD(targetId);
+        } else {
+          focusInspectorD("d-board");
         }
       }
     </script>
