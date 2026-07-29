@@ -1,4 +1,4 @@
-# T3 Code docs
+# Documentation
 
 ## Using T3 Code
 
@@ -17,11 +17,20 @@ Mobile app: [apps/mobile/README.md](../apps/mobile/README.md)
 
 ---
 
+## Takomi Code
+
+- [Current handoff](./features/takomi-code-handoff.md)
+- [Takomi / Pi provider](./features/takomi-pi-provider.md)
+- [Desktop and Android builds](./features/takomi-desktop-and-android.md)
+
+---
+
 ## Working on T3 Code
 
 Everything below is for maintainers. Setup lives in the [root README](../README.md);
 policy in [CONTRIBUTING.md](../CONTRIBUTING.md); agent rules in [AGENTS.md](../AGENTS.md).
 
+- [Getting started](./getting-started/quick-start.md)
 - [Architecture overview](./internals/overview.md)
 - [Workspace layout](./internals/workspace-layout.md)
 - [Glossary](./internals/glossary.md)
