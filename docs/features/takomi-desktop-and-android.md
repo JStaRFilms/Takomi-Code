@@ -40,7 +40,7 @@ Primary identity files:
 - `apps/web/src/branding.ts`
 - `apps/web/index.html`
 
-The current icon is temporary development/blueprint artwork rather than final Takomi branding.
+Desktop, web, and mobile now use the shared Takomi cyan/purple icon sourced from `assets/takomi/takomi-icon-1024.png`. Derived web favicons, Windows ICO, Electron runtime resources, and checked-in Android launcher resources are kept alongside their platform targets. `scripts/lib/brand-assets.ts` maps development, preview/nightly, and production channels to the Takomi icon while retaining channel-specific display-name suffixes.
 
 ## Windows Electron runtime repair
 
@@ -82,8 +82,8 @@ pnpm dist:desktop:win:x64
 Validated output:
 
 ```text
-release\Takomi-Code-0.0.28-x64.exe
-release\Takomi-Code-0.0.28-x64.exe.blockmap
+release\Takomi-Code-0.0.30-x64.exe
+release\Takomi-Code-0.0.30-x64.exe.blockmap
 ```
 
 The validated executable metadata was:
@@ -92,7 +92,7 @@ The validated executable metadata was:
 ProductName: Takomi Code (Alpha)
 FileDescription: Takomi Code desktop build
 CompanyName: JStaRFilms
-FileVersion: 0.0.28
+FileVersion: 0.0.30
 ```
 
 The local installer is unsigned and may trigger Windows SmartScreen.
@@ -124,18 +124,19 @@ The Android application is only a client:
 - Pi and Takomi execute on the server/desktop machine
 - question requests and provider runtime events travel through the shared T3 contracts
 
-## Current Android branding state
+## Current mobile branding state
 
-Mobile rebranding is not complete. The currently validated personal-testing build uses:
+Visible application names are now:
 
 ```text
-Name: T3 Code Dev
-Package: com.t3tools.t3code.dev
+Development: Takomi Code Dev
+Preview:     Takomi Code Preview
+Production:  Takomi Code
 ```
 
-This development package can coexist with upstream's production package, but it should be changed before public Takomi distribution.
+The Expo configuration, in-app `BrandMark`, authentication client label, notification copy, widget description, web favicon source, and checked-in Android application label use Takomi branding. Mobile, web, and desktop share the Takomi cyan/purple icon.
 
-`apps/mobile/app.config.ts` still contains upstream T3 names, package IDs, schemes, Expo owner, EAS project ID, update URL, and Clerk relying-party configuration. Do not publish a Takomi build until those values are detached from upstream infrastructure.
+Distribution identity is deliberately unchanged in this pass. `apps/mobile/app.config.ts` still contains upstream-compatible package IDs, schemes, Expo/EAS project/update values, and Clerk relying-party configuration. These are internal compatibility/infrastructure identifiers rather than visible names, but they must be migrated to Takomi-owned services before public distribution.
 
 ## Debug client versus standalone APK
 
@@ -165,7 +166,7 @@ Validated properties:
 
 ```text
 Package: com.t3tools.t3code.dev
-Application label: T3 Code Dev
+Application label at the time of that build: T3 Code Dev
 Architecture: arm64-v8a
 Embedded JavaScript bundle: assets/index.android.bundle
 Approximate size: 91 MB
