@@ -415,6 +415,14 @@ const ToolPresentationArtifact = Schema.Struct({
   label: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 
+const ToolPresentationActivity = Schema.Struct({
+  id: TrimmedNonEmptyStringSchema,
+  kind: Schema.Literals(["message", "tool", "status"]),
+  label: TrimmedNonEmptyStringSchema,
+  detail: Schema.optional(TrimmedNonEmptyStringSchema),
+  status: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+
 /** A bounded, provider-neutral summary safe to send to clients. */
 export const ToolPresentationEnvelope = Schema.Struct({
   schemaVersion: Schema.Literal(1),
@@ -443,6 +451,8 @@ export const ToolPresentationEnvelope = Schema.Struct({
     }),
   ),
   detailText: Schema.optional(TrimmedNonEmptyStringSchema),
+  inspectorDetailText: Schema.optional(TrimmedNonEmptyStringSchema),
+  activity: Schema.optional(Schema.Array(ToolPresentationActivity)),
   artifactRefs: Schema.optional(Schema.Array(ToolPresentationArtifact)),
   error: Schema.optional(
     Schema.Struct({
