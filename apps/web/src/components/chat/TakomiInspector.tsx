@@ -1,5 +1,6 @@
 import {
   AlertCircleIcon,
+  BrainCircuitIcon,
   CheckCircle2Icon,
   ChevronDownIcon,
   CircleIcon,
@@ -65,9 +66,11 @@ function ActivityTranscriptRow({ activity }: { activity: PresentationActivity })
   const Icon =
     activity.kind === "tool"
       ? WrenchIcon
-      : activity.kind === "message"
-        ? MessageCircleIcon
-        : RadioIcon;
+      : activity.kind === "thinking"
+        ? BrainCircuitIcon
+        : activity.kind === "message"
+          ? MessageCircleIcon
+          : RadioIcon;
   return (
     <details className="group rounded bg-background/45 [&>summary::-webkit-details-marker]:hidden">
       <summary className="flex cursor-pointer list-none items-start gap-2 p-2">
@@ -295,9 +298,11 @@ function SubagentRunGroup(props: {
       ? "Parallel run"
       : mode === "chain"
         ? "Chain run"
-        : mode === "single"
-          ? "Individual run"
-          : `${statusLabel(mode)} run`;
+        : mode === "async"
+          ? "Async run"
+          : mode === "single"
+            ? "Task"
+            : `${statusLabel(mode)} run`;
 
   return (
     <div className="rounded-md border border-border/55 bg-background/35">

@@ -911,7 +911,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (isTaskActivity && payload && isBackgroundTaskActivity(payload)) {
     entry.isBackgroundTask = true;
   }
-  const collapseKey = deriveToolLifecycleCollapseKey(entry);
+  const collapseKey =
+    isTaskActivity && typeof payload?.taskId === "string"
+      ? `task:${payload.taskId}`
+      : deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
     entry.collapseKey = collapseKey;
   }
@@ -987,24 +990,29 @@ function collapseDerivedWorkLogEntries(
     }
 
     const collapseKey = entry.collapseKey;
-    const previousIndex = collapseKey ? activeIndexByCollapseKey.get(collapseKey) : undefined;
+    const keyedPreviousIndex = collapseKey
+      ? activeIndexByCollapseKey.get(collapseKey)
+      : undefined;
+    const fallbackPreviousIndex = collapsed.length > 0 ? collapsed.length - 1 : undefined;
+    const previousIndex = keyedPreviousIndex ?? fallbackPreviousIndex;
     const previous = previousIndex === undefined ? undefined : collapsed[previousIndex];
-    const adjacent = collapsed.at(-1);
     if (previous && previousIndex !== undefined && shouldCollapseToolLifecycleEntries(previous, entry)) {
       collapsed[previousIndex] = mergeDerivedWorkLogEntries(previous, entry);
-      if (entry.activityKind === "tool.completed" && !isPersistentTakomiCollapseKey(collapseKey)) {
-        activeIndexByCollapseKey.delete(collapseKey!);
+      if (
+        (entry.activityKind === "tool.completed" || entry.activityKind === "task.completed") &&
+        !isPersistentTakomiCollapseKey(collapseKey)
+      ) {
+        if (collapseKey) activeIndexByCollapseKey.delete(collapseKey);
+        if (previous.collapseKey) activeIndexByCollapseKey.delete(previous.collapseKey);
       }
       continue;
     }
-    if (adjacent && shouldCollapseToolLifecycleEntries(adjacent, entry)) {
-      collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(adjacent, entry);
-    } else {
-      collapsed.push(entry);
-    }
+
+    collapsed.push(entry);
     if (
       collapseKey &&
-      (entry.activityKind !== "tool.completed" || isPersistentTakomiCollapseKey(collapseKey))
+      ((entry.activityKind !== "tool.completed" && entry.activityKind !== "task.completed") ||
+        isPersistentTakomiCollapseKey(collapseKey))
     ) {
       activeIndexByCollapseKey.set(collapseKey, collapsed.length - 1);
     }
@@ -1016,22 +1024,23 @@ function shouldCollapseToolLifecycleEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
 ): boolean {
-  if (
-    previous.activityKind !== "tool.started" &&
-    previous.activityKind !== "tool.updated" &&
-    previous.activityKind !== "tool.completed"
-  ) {
+  const previousIsLifecycle =
+    previous.activityKind === "tool.started" ||
+    previous.activityKind === "tool.updated" ||
+    previous.activityKind === "tool.completed" ||
+    previous.activityKind === "task.progress" ||
+    previous.activityKind === "task.completed";
+  const nextIsLifecycle =
+    next.activityKind === "tool.started" ||
+    next.activityKind === "tool.updated" ||
+    next.activityKind === "tool.completed" ||
+    next.activityKind === "task.progress" ||
+    next.activityKind === "task.completed";
+  if (!previousIsLifecycle || !nextIsLifecycle) {
     return false;
   }
   if (
-    next.activityKind !== "tool.started" &&
-    next.activityKind !== "tool.updated" &&
-    next.activityKind !== "tool.completed"
-  ) {
-    return false;
-  }
-  if (
-    previous.activityKind === "tool.completed" &&
+    (previous.activityKind === "tool.completed" || previous.activityKind === "task.completed") &&
     !isPersistentTakomiCollapseKey(previous.collapseKey)
   ) {
     return false;

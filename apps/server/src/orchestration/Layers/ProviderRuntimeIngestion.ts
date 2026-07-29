@@ -564,6 +564,7 @@ export function runtimeEventToActivities(
     }
 
     case "task.progress": {
+      const isPiReasoning = String(event.payload.taskId).startsWith("pi-reasoning-");
       const linkage = taskLinkageActivityFields(event.payload as Record<string, unknown>);
       // Usage and activity are independent latest-state streams. Keeping them
       // under separate stable ids prevents a command/reasoning update from
@@ -573,8 +574,9 @@ export function runtimeEventToActivities(
       delete identityLinkage.typedUsage;
       delete identityLinkage.status;
       delete identityLinkage.error;
-      const title =
-        event.payload.description.trim().length > 0
+      const title = isPiReasoning
+        ? { title: "Thinking" }
+        : event.payload.description.trim().length > 0
           ? { title: truncateDetail(event.payload.description, 120) }
           : {};
       const hasProgressState =
@@ -594,15 +596,16 @@ export function runtimeEventToActivities(
                 createdAt: event.createdAt,
                 tone: "info" as const,
                 kind: "task.progress" as const,
-                summary:
-                  event.payload.description.trim().length > 0
+                summary: isPiReasoning
+                  ? "Thinking"
+                  : event.payload.description.trim().length > 0
                     ? truncateDetail(event.payload.description, 120)
                     : "Reasoning update",
                 payload: {
                   taskId: event.payload.taskId,
                   ...title,
                   detail: truncateDetail(event.payload.summary ?? event.payload.description),
-                  ...(event.payload.summary
+                  ...(!isPiReasoning && event.payload.summary
                     ? { summary: truncateDetail(event.payload.summary) }
                     : {}),
                   ...(event.payload.lastToolName
