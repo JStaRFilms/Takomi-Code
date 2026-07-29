@@ -82,7 +82,7 @@
 
       /* Meta Layout */
       .gallery-container {
-        max-width: 1400px;
+        max-width: 1750px;
         margin: 0 auto;
       }
 
@@ -137,40 +137,6 @@
         background-color: var(--primary);
         color: var(--primary-foreground);
         border-color: var(--primary);
-      }
-
-      /* Tab navigation for Directions */
-      .tab-bar {
-        display: flex;
-        background-color: var(--secondary);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        padding: 0.25rem;
-        margin-bottom: 2rem;
-      }
-
-      .tab-btn {
-        flex: 1;
-        text-align: center;
-        padding: 0.6rem;
-        border: none;
-        background: none;
-        color: var(--muted-foreground);
-        font-weight: 600;
-        font-size: 0.875rem;
-        border-radius: calc(var(--radius) - 2px);
-        cursor: pointer;
-        transition: all 150ms ease;
-      }
-
-      .tab-btn:hover {
-        color: var(--foreground);
-      }
-
-      .tab-btn.active {
-        background-color: var(--card);
-        color: var(--foreground);
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
       }
 
       /* Comparison matrix */
@@ -248,10 +214,16 @@
       }
 
       .viewport-grid.compare-all {
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(4, 1fr);
       }
 
-      @media (max-width: 1200px) {
+      @media (max-width: 1700px) {
+        .viewport-grid.compare-all {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+
+      @media (max-width: 1000px) {
         .viewport-grid.compare-all {
           grid-template-columns: 1fr;
         }
@@ -309,10 +281,10 @@
 
       /* Sidebar simulated */
       .app-sidebar {
-        width: 200px;
+        width: 160px;
         background-color: var(--sidebar);
         border-right: 1px solid var(--border);
-        padding: 1rem 0.75rem;
+        padding: 1rem 0.5rem;
         display: flex;
         flex-direction: column;
         gap: 1rem;
@@ -369,11 +341,12 @@
         gap: 1.25rem;
       }
 
-      /* Direction C: Split View Layout */
+      /* Split View Layout */
       .app-main-split {
         flex: 1;
         display: flex;
         overflow: hidden;
+        width: 100%;
       }
 
       .app-split-left {
@@ -387,7 +360,7 @@
       }
 
       .app-split-right {
-        width: 320px;
+        width: 300px;
         background-color: var(--card);
         overflow-y: auto;
         padding: 1.25rem;
@@ -395,6 +368,7 @@
         flex-direction: column;
         gap: 1rem;
         flex-shrink: 0;
+        border-left: 1px solid var(--border);
       }
 
       /* Message UI Primitives */
@@ -438,7 +412,7 @@
         font-size: 0.65rem;
       }
 
-      /* Direction A: Timeline Log Row styles */
+      /* Direction A & D: Timeline Log Row styles */
       .timeline-container {
         position: relative;
         padding-left: 1.25rem;
@@ -592,7 +566,7 @@
         display: block;
       }
 
-      /* Direction C: Split View Inspector widgets */
+      /* Direction C & D: Workspace Inspector widgets */
       .inspector-header {
         font-size: 0.85rem;
         font-weight: 700;
@@ -616,6 +590,9 @@
         color: var(--muted-foreground);
         text-transform: uppercase;
         letter-spacing: 0.05em;
+        display: flex;
+        align-items: center;
+        width: 100%;
       }
 
       .inspector-card {
@@ -626,6 +603,10 @@
         display: flex;
         flex-direction: column;
         gap: 0.5rem;
+      }
+
+      .dynamic-inspector-section {
+        display: flex;
       }
 
       /* Common Card Components & Badges */
@@ -863,7 +844,7 @@
         height: 12px;
       }
 
-      /* Utility text classes */
+      /* Utility classes */
       .text-mono {
         font-family: var(--font-mono), "SF Mono", monospace;
       }
@@ -884,17 +865,12 @@
         font-size: 0.85rem;
       }
 
-      .text-right {
-        text-align: right;
-      }
-
       .flex-row-gap-2 {
         display: flex;
         align-items: center;
         gap: 0.5rem;
       }
 
-      /* Artifact / File tag chips */
       .file-chip {
         display: inline-flex;
         align-items: center;
@@ -913,7 +889,6 @@
         border-color: var(--muted-foreground);
       }
 
-      /* Diff component styling */
       .diff-block {
         border: 1px solid var(--border);
         border-radius: 6px;
@@ -941,6 +916,25 @@
       .diff-line.meta {
         background-color: var(--muted);
         color: var(--muted-foreground);
+      }
+
+      .mt-1 {
+        margin-top: 0.25rem;
+      }
+      .mt-2 {
+        margin-top: 0.5rem;
+      }
+      .mt-3 {
+        margin-top: 0.75rem;
+      }
+      .mb-1 {
+        margin-bottom: 0.25rem;
+      }
+      .mb-2 {
+        margin-bottom: 0.5rem;
+      }
+      .ml-auto {
+        margin-left: auto;
       }
     </style>
   </head>
@@ -970,6 +964,9 @@
           <button class="btn-ctrl" onclick="setViewMode('dir-c', this)">
             Direction C (Split Pane)
           </button>
+          <button class="btn-ctrl" onclick="setViewMode('dir-d', this)">
+            Direction D (Hybrid)
+          </button>
         </div>
       </header>
 
@@ -979,10 +976,11 @@
         <table class="matrix-table">
           <thead>
             <tr>
-              <th style="width: 15%">Metric</th>
-              <th style="width: 28%">Direction A: Inline Chronological Log</th>
-              <th style="width: 28%">Direction B: Grouped Structural Block Cards</th>
-              <th style="width: 29%">Direction C: Split-Pane Workspace Inspector</th>
+              <th style="width: 12%">Metric</th>
+              <th style="width: 22%">Direction A: Inline Chronological Log</th>
+              <th style="width: 22%">Direction B: Grouped Block Cards</th>
+              <th style="width: 22%">Direction C: Split-Pane Inspector</th>
+              <th style="width: 22%">Direction D: Hybrid Pinned Inspector (A + C)</th>
             </tr>
           </thead>
           <tbody>
@@ -991,37 +989,51 @@
               <td>Compact by default, but stacks vertically in the thread as tools run.</td>
               <td>Medium-large. Groups related steps into a single unified card in the thread.</td>
               <td>Extremely compact in chat stream. Details are loaded in the secondary pane.</td>
+              <td>
+                <strong>Optimal balance.</strong> Inline timeline remains compact with sticky rows
+                updating in-place; right inspector handles board & subagent pools.
+              </td>
             </tr>
             <tr>
               <td><strong>Disclosure Paradigm</strong></td>
               <td>Accordion disclosures inline inside the chronological thread.</td>
               <td>Accordion sub-sections inside the card block boundaries.</td>
               <td>Click timeline row to load/focus that tool's state in the inspector pane.</td>
+              <td>
+                <strong>Mutually exclusive inline accordion</strong> (one open at a time) +
+                persistent board dashboard and subagent pools on the right.
+              </td>
             </tr>
             <tr>
               <td><strong>Strengths & Pros</strong></td>
               <td>
                 <span class="badge-pros">Chronological Context</span>
                 <span class="badge-pros">Low Integration Cost</span>
-                <p>
-                  Maintains strict temporal logs relative to surrounding chat answers; feels
-                  familiar to users accustomed to traditional log output.
-                </p>
+                <p>Preserves strict temporal order relative to surrounding chat answers.</p>
               </td>
               <td>
                 <span class="badge-pros">High Scannability</span>
                 <span class="badge-pros">Context Isolation</span>
                 <p>
-                  Binds subagent pools, policies, and board progress into a unified visual workspace
-                  component. Easy to see what is currently active.
+                  Binds subagent pools, policies, and board progress into a unified visual
+                  component.
                 </p>
               </td>
               <td>
                 <span class="badge-pros">Zero Chat Bloat</span>
                 <span class="badge-pros">Deep Inspect Panel</span>
                 <p>
-                  Keeps the chat flow highly readable. Perfect for review tasks, displaying large
-                  code diffs, or detailed subagent state trees without scroll-jank.
+                  Keeps the chat flow highly readable. Perfect for review tasks and displaying large
+                  diffs.
+                </p>
+              </td>
+              <td>
+                <span class="badge-pros">No Timeline Duplicate Cards</span>
+                <span class="badge-pros">Sticky Pinned Board</span>
+                <span class="badge-pros">Inline Prompts</span>
+                <p>
+                  Board updates in-place without duplicate calls. Subagents update by run identity.
+                  Interactive questions stay inline.
                 </p>
               </td>
             </tr>
@@ -1029,25 +1041,25 @@
               <td><strong>Weaknesses & Cons</strong></td>
               <td>
                 <span class="badge-cons">High Thread Noise</span>
-                <span class="badge-cons">Hard to Track Overview</span>
-                <p>
-                  Intense parallel tasks (e.g. 5 subagents running concurrently) generate a huge
-                  wall of logs, pushing actual chat content off-screen.
-                </p>
+                <p>Intense parallel tasks generate a huge wall of logs, pushing chat off-screen.</p>
               </td>
               <td>
                 <span class="badge-cons">Stream Interruption</span>
                 <p>
-                  Breaks the linear stream metaphor. Updating older cards with new logs changes
-                  visual state out of chronological order.
+                  Breaks the linear stream metaphor. Updating older cards changes visual state out
+                  of order.
                 </p>
               </td>
               <td>
                 <span class="badge-cons">Context Splitting</span>
-                <span class="badge-cons">High Interaction Cost</span>
+                <span class="badge-cons">High Click Cost</span>
+                <p>Forces the eye to jump between left and right panes to read any tool outputs.</p>
+              </td>
+              <td>
+                <span class="badge-cons">Shared Workspace Area</span>
                 <p>
-                  Forces the eye to jump between left and right panes; requires user click
-                  interaction to view details that would otherwise be inline.
+                  Requires allocating right sidebar width; density must be high to fit both board
+                  and subagents.
                 </p>
               </td>
             </tr>
@@ -1093,22 +1105,15 @@
                   Files Tree
                 </a>
               </div>
-              <div class="sidebar-section-title">Active Threads</div>
-              <div class="sidebar-list">
-                <a href="#" class="sidebar-item">#feat/routing-policy</a>
-                <a href="#" class="sidebar-item">#db-migration-run</a>
-              </div>
             </div>
 
             <!-- Main Stream Area -->
             <div class="app-main">
-              <!-- User Prompt -->
               <div class="msg-user">
                 Please analyze the routing configuration and run subagents to check the database
                 health.
               </div>
 
-              <!-- Agent Responses & Timeline Logs -->
               <div class="msg-agent">
                 <div class="agent-header">
                   <div class="agent-avatar">PI</div>
@@ -1252,7 +1257,7 @@
                         <div class="check-item">
                           <span class="badge badge-danger">Failed</span>
                           <span class="text-mono">permission_verifier</span>
-                          <span class="text-muted">(Error code 403: Policy mismatch)</span>
+                          <span class="text-muted">(Error 403)</span>
                         </div>
                       </div>
                     </div>
@@ -1280,7 +1285,6 @@
                     <div class="timeline-disclosure" id="a-flow">
                       <p class="text-xs text-muted">
                         Verification gates passed: TypeScript Types checked (Pass), Linting (Pass).
-                        Generated output successfully stored in local environment state.
                       </p>
                     </div>
                   </div>
@@ -1290,7 +1294,9 @@
                 <!-- State 5: Refined Prompt Inputs (Inline) -->
                 <div class="prompt-panel mt-3">
                   <div class="prompt-title">Interactive Option Needed</div>
-                  <div class="prompt-question">Select target cluster configuration to apply:</div>
+                  <div class="prompt-question text-xs font-semibold">
+                    Select target cluster configuration to apply:
+                  </div>
                   <div class="prompt-options">
                     <div class="prompt-option selected">
                       <div>
@@ -1312,16 +1318,18 @@
                     </div>
                   </div>
 
-                  <!-- Input prompt text -->
-                  <div class="prompt-question mt-2">Custom details or config keys (Optional):</div>
+                  <div class="prompt-question mt-2 text-xs font-semibold">
+                    Custom details or config keys:
+                  </div>
                   <input
                     type="text"
                     class="text-input-field"
                     placeholder="E.g., DATABASE_REPLICAS=3"
                   />
 
-                  <!-- Textarea Editor prompt -->
-                  <div class="prompt-question mt-2">Adjust routing rule code snippet:</div>
+                  <div class="prompt-question mt-2 text-xs font-semibold">
+                    Adjust routing rule code snippet:
+                  </div>
                   <textarea class="editor-textarea">
 export const routingPolicy = {
   strategy: "latency-aware",
@@ -1329,8 +1337,7 @@ export const routingPolicy = {
 };</textarea
                   >
 
-                  <!-- Confirm prompt -->
-                  <div class="prompt-question mt-2 text-warning-foreground">
+                  <div class="prompt-question mt-2 text-warning-foreground text-xs font-semibold">
                     Confirm schema deployment action?
                   </div>
                   <div class="confirm-actions">
@@ -1387,13 +1394,11 @@ export const routingPolicy = {
 
             <!-- Main Stream Area -->
             <div class="app-main">
-              <!-- User Prompt -->
               <div class="msg-user">
                 Please analyze the routing configuration and run subagents to check the database
                 health.
               </div>
 
-              <!-- Agent Responses & Component Cards -->
               <div class="msg-agent">
                 <div class="agent-header">
                   <div class="agent-avatar">PI</div>
@@ -1469,19 +1474,19 @@ export const routingPolicy = {
                       <div class="card-section-content active" id="b-subagents">
                         <div class="checklist">
                           <div class="check-item done">
-                            <span class="badge badge-success">Done</span>
+                            <span class="badge badge-success text-[8px]">Done</span>
                             <span class="text-mono">db_schema_auditor</span>
                             <span class="text-muted">(Elapsed 8s)</span>
                           </div>
                           <div class="check-item active">
-                            <span class="badge badge-primary">Running</span>
+                            <span class="badge badge-primary text-[8px]">Running</span>
                             <span class="text-mono">latency_tester</span>
                             <span class="text-muted">(Pinging endpoint...)</span>
                           </div>
                           <div class="check-item">
-                            <span class="badge badge-danger">Failed</span>
+                            <span class="badge badge-danger text-[8px]">Failed</span>
                             <span class="text-mono">permission_verifier</span>
-                            <span class="text-muted">(Error code 403: Policy mismatch)</span>
+                            <span class="text-muted">(Error 403)</span>
                           </div>
                         </div>
                       </div>
@@ -1513,11 +1518,12 @@ export const routingPolicy = {
                 </div>
                 <!-- /card-block -->
 
-                <!-- State 5: Embedded Prompts (Inside block context) -->
+                <!-- State 5: Embedded Prompts -->
                 <div class="card-block mt-3 border-dashed bg-card/40">
                   <div class="prompt-title">Configuration Needed for Pipeline Action</div>
-
-                  <div class="prompt-question">Select target cluster configuration to apply:</div>
+                  <div class="prompt-question text-xs font-semibold">
+                    Select target cluster configuration to apply:
+                  </div>
                   <div class="prompt-options">
                     <div class="prompt-option selected">
                       <div>
@@ -1535,7 +1541,9 @@ export const routingPolicy = {
                     </div>
                   </div>
 
-                  <div class="prompt-question mt-2">Adjust routing rule snippet:</div>
+                  <div class="prompt-question mt-2 text-xs font-semibold">
+                    Adjust routing rule snippet:
+                  </div>
                   <textarea class="editor-textarea">
 export const routingPolicy = {
   strategy: "latency-aware",
@@ -1543,7 +1551,7 @@ export const routingPolicy = {
 };</textarea
                   >
 
-                  <div class="prompt-question mt-2 text-warning-foreground">
+                  <div class="prompt-question mt-2 text-warning-foreground text-xs font-semibold">
                     Confirm schema deployment action?
                   </div>
                   <div class="confirm-actions">
@@ -1601,13 +1609,11 @@ export const routingPolicy = {
             <div class="app-main-split">
               <!-- Left Pane: Chat timeline with minimal indicators -->
               <div class="app-split-left">
-                <!-- User Prompt -->
                 <div class="msg-user">
                   Please analyze the routing configuration and run subagents to check the database
                   health.
                 </div>
 
-                <!-- Minimal Log Indicators (Clicking these updates the Inspector on the Right) -->
                 <div class="msg-agent">
                   <div class="agent-header">
                     <div class="agent-avatar">PI</div>
@@ -1619,7 +1625,7 @@ export const routingPolicy = {
                     <div class="timeline-item">
                       <div class="timeline-node success"></div>
                       <div class="timeline-row" onclick="focusInspector('c-mode')">
-                        <span class="timeline-text text-xs"> [mode] changed to Architect </span>
+                        <span class="timeline-text text-xs">[mode] changed to Architect</span>
                         <span class="badge badge-success text-[9px]">Active</span>
                       </div>
                     </div>
@@ -1627,7 +1633,7 @@ export const routingPolicy = {
                     <div class="timeline-item">
                       <div class="timeline-node success"></div>
                       <div class="timeline-row" onclick="focusInspector('c-config')">
-                        <span class="timeline-text text-xs"> [config] apply_routing_policy </span>
+                        <span class="timeline-text text-xs">[config] apply_routing_policy</span>
                         <span class="badge badge-muted text-[9px]">Scope: local</span>
                       </div>
                     </div>
@@ -1635,9 +1641,7 @@ export const routingPolicy = {
                     <div class="timeline-item">
                       <div class="timeline-node running"></div>
                       <div class="timeline-row" onclick="focusInspector('c-board')">
-                        <span class="timeline-text text-xs">
-                          [board] task_progress (Stage 3/5)
-                        </span>
+                        <span class="timeline-text text-xs">[board] task_progress (Stage 3/5)</span>
                         <span class="badge badge-warning text-[9px]">60%</span>
                       </div>
                     </div>
@@ -1645,7 +1649,7 @@ export const routingPolicy = {
                     <div class="timeline-item">
                       <div class="timeline-node running"></div>
                       <div class="timeline-row" onclick="focusInspector('c-subagents')">
-                        <span class="timeline-text text-xs"> [subagents] running 2 pools </span>
+                        <span class="timeline-text text-xs">[subagents] running 2 pools</span>
                         <span class="badge badge-primary text-[9px]">2 Running</span>
                       </div>
                     </div>
@@ -1653,17 +1657,19 @@ export const routingPolicy = {
                     <div class="timeline-item">
                       <div class="timeline-node success"></div>
                       <div class="timeline-row" onclick="focusInspector('c-artifacts')">
-                        <span class="timeline-text text-xs"> [flow] artifact_generate </span>
+                        <span class="timeline-text text-xs">[flow] artifact_generate</span>
                         <span class="badge badge-success text-[9px]">Files</span>
                       </div>
                     </div>
                   </div>
                   <!-- /timeline -->
 
-                  <!-- State 5: Focused minimal Interactive Prompt inline -->
+                  <!-- State 5: Minimal Interactive Prompt inline -->
                   <div class="prompt-panel mt-3">
                     <div class="prompt-title text-[9px]">Interactive Prompt Anchored here</div>
-                    <div class="prompt-question text-xs">Confirm database schema deployment?</div>
+                    <div class="prompt-question text-xs font-semibold">
+                      Confirm database schema deployment?
+                    </div>
                     <div class="confirm-actions">
                       <button class="btn-action approve text-[10px] py-1">Approve</button>
                       <button class="btn-action reject text-[10px] py-1">Reject</button>
@@ -1693,7 +1699,7 @@ export const routingPolicy = {
                     <div class="checklist mt-2 border-t pt-2">
                       <div class="check-item done">
                         <div class="check-circle"></div>
-                        <span>Stage 1: Schema verification (Passed)</span>
+                        <span>Stage 1: Verify workspace schema (Passed)</span>
                       </div>
                       <div class="check-item done">
                         <div class="check-circle"></div>
@@ -1711,7 +1717,7 @@ export const routingPolicy = {
                   </div>
                 </div>
 
-                <!-- Template 2: Mode changed (Hidden initially) -->
+                <!-- Template 2: Mode changed -->
                 <div class="inspector-section" id="c-mode-detail" style="display: none">
                   <span class="inspector-section-title">takomi_mode</span>
                   <div class="inspector-card">
@@ -1723,7 +1729,7 @@ export const routingPolicy = {
                   </div>
                 </div>
 
-                <!-- Template 3: Routing Config (Hidden initially) -->
+                <!-- Template 3: Routing Config -->
                 <div class="inspector-section" id="c-config-detail" style="display: none">
                   <span class="inspector-section-title">takomi_apply_routing_policy</span>
                   <div class="inspector-card">
@@ -1738,7 +1744,7 @@ export const routingPolicy = {
                   </div>
                 </div>
 
-                <!-- Template 4: Subagents list (Hidden initially) -->
+                <!-- Template 4: Subagents list -->
                 <div class="inspector-section" id="c-subagents-detail" style="display: none">
                   <span class="inspector-section-title">takomi_subagent / run pools</span>
                   <div class="inspector-card">
@@ -1758,13 +1764,10 @@ export const routingPolicy = {
                         <span class="text-mono">permission_verifier</span>
                       </div>
                     </div>
-                    <div class="text-[10px] text-muted-foreground border-t pt-1 mt-1">
-                      Failed error: Status 403 authorization bypass prohibited by policy definition.
-                    </div>
                   </div>
                 </div>
 
-                <!-- Template 5: Artifact flow (Hidden initially) -->
+                <!-- Template 5: Artifact flow -->
                 <div class="inspector-section" id="c-artifacts-detail" style="display: none">
                   <span class="inspector-section-title">takomi_flow_generate / artifacts</span>
                   <div class="inspector-card">
@@ -1773,11 +1776,415 @@ export const routingPolicy = {
                       <a href="#" class="file-chip">health_report.json</a>
                       <span class="badge badge-success text-[8px]">Compiled</span>
                     </div>
-                    <div class="text-[10px] text-muted-foreground mt-2 border-t pt-2">
-                      Validation checks: TypeScript pass, Lint pass.
+                  </div>
+                </div>
+              </div>
+              <!-- /app-split-right -->
+            </div>
+            <!-- /app-main-split -->
+          </div>
+          <!-- /app-layout -->
+        </div>
+        <!-- /viewport-frame -->
+
+        <!-- ================= DIRECTION D: POLISHED HYBRID (A + C) ================= -->
+        <div class="viewport-frame" id="frame-dir-d">
+          <div class="viewport-header">
+            <div class="viewport-title">
+              <svg class="icon" viewBox="0 0 24 24">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <line x1="9" y1="3" x2="9" y2="21"></line>
+              </svg>
+              Direction D — Polished Hybrid (A + C)
+            </div>
+            <div class="dots">
+              <div class="dot"></div>
+              <div class="dot"></div>
+              <div class="dot"></div>
+            </div>
+          </div>
+
+          <div class="app-layout">
+            <!-- Sidebar -->
+            <div class="app-sidebar">
+              <div class="sidebar-section-title">Workspace</div>
+              <div class="sidebar-list">
+                <a href="#" class="sidebar-item active">
+                  <svg class="icon icon-small" viewBox="0 0 24 24">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                  </svg>
+                  Takomi Chat
+                </a>
+                <a href="#" class="sidebar-item">
+                  <svg class="icon icon-small" viewBox="0 0 24 24">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                  </svg>
+                  Files Tree
+                </a>
+              </div>
+            </div>
+
+            <div class="app-main-split">
+              <!-- Left Pane: Compact Chronological Timeline (A-Style accordion) -->
+              <div class="app-split-left">
+                <div class="msg-user">
+                  Please analyze the routing configuration and run subagents to check the database
+                  health.
+                </div>
+
+                <div class="msg-agent">
+                  <div class="agent-header">
+                    <div class="agent-avatar">PI</div>
+                    <span>Takomi Orchestrator</span>
+                    <span class="badge badge-muted">Session ID: 449-hybrid</span>
+                  </div>
+
+                  <!-- Timeline Accordion Stack (Mutual Exclusion) -->
+                  <div class="timeline-container mt-1">
+                    <!-- Mode status -->
+                    <div class="timeline-item">
+                      <div class="timeline-node success"></div>
+                      <div
+                        class="timeline-row"
+                        onclick="toggleHybridDetails('d-mode-disclosure', 'd-mode')"
+                      >
+                        <span class="timeline-text text-xs">
+                          <svg class="icon icon-small text-success" viewBox="0 0 24 24">
+                            <path
+                              d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"
+                            ></path>
+                          </svg>
+                          takomi_mode: changed to Architect
+                        </span>
+                        <svg class="icon icon-small" viewBox="0 0 24 24">
+                          <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                      </div>
+                      <div class="timeline-disclosure" id="d-mode-disclosure">
+                        <p class="text-[10px] text-muted-foreground">
+                          Reason: Evaluating user request rules.
+                        </p>
+                        <p class="text-[10px] text-muted-foreground mt-1">
+                          Source: Prompt hook. (Click updates workspace panel details).
+                        </p>
+                      </div>
+                    </div>
+
+                    <!-- Configuration policy -->
+                    <div class="timeline-item">
+                      <div class="timeline-node success"></div>
+                      <div
+                        class="timeline-row"
+                        onclick="toggleHybridDetails('d-config-disclosure', 'd-config')"
+                      >
+                        <span class="timeline-text text-xs">
+                          <svg class="icon icon-small" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="3"></circle>
+                            <path
+                              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+                            ></path>
+                          </svg>
+                          takomi_apply_routing_policy
+                        </span>
+                        <svg class="icon icon-small" viewBox="0 0 24 24">
+                          <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                      </div>
+                      <div class="timeline-disclosure" id="d-config-disclosure">
+                        <p class="text-[10px] text-muted-foreground font-semibold">
+                          Detected default: Next.js App Router
+                        </p>
+                        <div class="diff-block mt-1">
+                          <div class="diff-line meta">@@ -1,3 +1,3 @@</div>
+                          <div class="diff-line removed">- ROUTE_TARGET: "direct"</div>
+                          <div class="diff-line added">+ ROUTE_TARGET: "parallel-subagents"</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Pinned Board trigger in Timeline (Updates in-place, remains sticky) -->
+                    <div class="timeline-item">
+                      <div class="timeline-node running"></div>
+                      <div class="timeline-row" onclick="focusInspectorD('d-board')">
+                        <span class="timeline-text text-xs text-muted font-semibold">
+                          <svg class="icon icon-small text-primary" viewBox="0 0 24 24">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                            <line x1="9" y1="3" x2="9" y2="21"></line>
+                          </svg>
+                          takomi_board: active_session [Stable ID]
+                        </span>
+                        <span class="badge badge-warning text-[8px]">Stage 3/5 (60%)</span>
+                      </div>
+                    </div>
+
+                    <!-- Pinned Subagent runs in Timeline (Updates in-place, remains sticky) -->
+                    <div class="timeline-item">
+                      <div class="timeline-node running"></div>
+                      <div class="timeline-row" onclick="focusInspectorD('d-subagents')">
+                        <span class="timeline-text text-xs text-muted font-semibold">
+                          <svg class="icon icon-small" viewBox="0 0 24 24">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="9" cy="7" r="4"></circle>
+                            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                          </svg>
+                          takomi_subagent: execution_runs [Stable ID]
+                        </span>
+                        <span class="badge badge-primary text-[8px]">2 Active Pools</span>
+                      </div>
+                    </div>
+
+                    <!-- Artifact flow -->
+                    <div class="timeline-item">
+                      <div class="timeline-node success"></div>
+                      <div
+                        class="timeline-row"
+                        onclick="toggleHybridDetails('d-artifacts-disclosure', 'd-artifacts')"
+                      >
+                        <span class="timeline-text text-xs">
+                          <svg class="icon icon-small text-success" viewBox="0 0 24 24">
+                            <path
+                              d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+                            ></path>
+                          </svg>
+                          takomi_flow_generate: completed
+                        </span>
+                        <svg class="icon icon-small" viewBox="0 0 24 24">
+                          <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                      </div>
+                      <div class="timeline-disclosure" id="d-artifacts-disclosure">
+                        <div class="flex-row-gap-2">
+                          <a href="#" class="file-chip">health_report.json</a>
+                          <span class="badge badge-success text-[8px]">TypeScript OK</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <!-- /timeline -->
+
+                  <!-- State 5: Refined Prompt Inputs (Inline) -->
+                  <div class="prompt-panel mt-3">
+                    <div class="prompt-title">Interactive Option Needed</div>
+                    <div class="prompt-question text-xs font-semibold">
+                      Select target cluster configuration to apply:
+                    </div>
+                    <div class="prompt-options">
+                      <div class="prompt-option selected">
+                        <div>
+                          <strong>Production (Recommended)</strong>
+                          <div class="text-muted text-xs">
+                            Applies high-availability replicas and strict SSL.
+                          </div>
+                        </div>
+                        <kbd>1</kbd>
+                      </div>
+                      <div class="prompt-option">
+                        <div>
+                          <strong>Staging fallback</strong>
+                          <div class="text-muted text-xs">
+                            Standard sandbox databases without automatic scaling.
+                          </div>
+                        </div>
+                        <kbd>2</kbd>
+                      </div>
+                    </div>
+
+                    <div class="prompt-question mt-2 text-xs font-semibold">
+                      Custom details or config keys:
+                    </div>
+                    <input
+                      type="text"
+                      class="text-input-field"
+                      placeholder="E.g., DATABASE_REPLICAS=3"
+                    />
+
+                    <div class="prompt-question mt-2 text-xs font-semibold">
+                      Adjust routing rule code snippet:
+                    </div>
+                    <textarea class="editor-textarea">
+export const routingPolicy = {
+  strategy: "latency-aware",
+  maxRetries: 3
+};</textarea
+                    >
+
+                    <div class="prompt-question mt-2 text-warning-foreground text-xs font-semibold">
+                      Confirm schema deployment action?
+                    </div>
+                    <div class="confirm-actions">
+                      <button class="btn-action approve">Approve [y]</button>
+                      <button class="btn-action reject">Reject [n]</button>
                     </div>
                   </div>
                 </div>
+              </div>
+
+              <!-- Right Pane: Hybrid Workspace Inspector -->
+              <div class="app-split-right" id="inspector-pane-d">
+                <div class="inspector-header">
+                  <span>Workspace Inspector</span>
+                  <span class="badge badge-muted text-[8px]">Pinned</span>
+                </div>
+
+                <!-- Pinned Board Progress (Always Pinned First, Updates In-Place) -->
+                <div
+                  class="inspector-section"
+                  style="
+                    border-bottom: 1px solid var(--border);
+                    padding-bottom: 1rem;
+                    margin-bottom: 0.5rem;
+                  "
+                >
+                  <span class="inspector-section-title">
+                    <svg
+                      class="icon icon-small text-primary"
+                      viewBox="0 0 24 24"
+                      style="margin-right: 0.25rem"
+                    >
+                      <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                      <line x1="9" y1="3" x2="9" y2="21"></line>
+                    </svg>
+                    Pinned Board Progress
+                    <span class="badge badge-success text-[8px] ml-auto">Updates In-Place</span>
+                  </span>
+                  <div class="inspector-card mt-1">
+                    <div class="text-xs font-semibold">Session: feat/routing-policy</div>
+                    <div class="text-xs text-muted mb-2">Stage 3/5: Running diagnostics</div>
+
+                    <div class="checklist">
+                      <div class="check-item done">
+                        <div class="check-circle"></div>
+                        <span>Verify workspace schema</span>
+                      </div>
+                      <div class="check-item done">
+                        <div class="check-circle"></div>
+                        <span>Setup routing matrix</span>
+                      </div>
+                      <div class="check-item active">
+                        <div class="check-circle"></div>
+                        <span>Run diagnostics agent (Active)</span>
+                      </div>
+                      <div class="check-item pending">
+                        <div class="check-circle"></div>
+                        <span>Log completion metrics</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Pinned Active Subagent Pools (Collapsible Pinned Second) -->
+                <div
+                  class="inspector-section"
+                  style="
+                    border-bottom: 1px solid var(--border);
+                    padding-bottom: 1rem;
+                    margin-bottom: 0.5rem;
+                  "
+                >
+                  <div
+                    class="card-section-header"
+                    onclick="toggleDetails('d-subagent-pool-card')"
+                    style="border-radius: 6px; padding: 0.4rem 0.6rem"
+                  >
+                    <span class="font-semibold text-xs flex-row-gap-2">
+                      <svg class="icon icon-small" viewBox="0 0 24 24">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="9" cy="7" r="4"></circle>
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                      </svg>
+                      Subagent Status Matrix
+                    </span>
+                    <svg class="icon icon-small" viewBox="0 0 24 24">
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                  </div>
+                  <div
+                    class="card-section-content active mt-1"
+                    id="d-subagent-pool-card"
+                    style="padding: 0"
+                  >
+                    <div class="inspector-card">
+                      <div class="checklist">
+                        <div class="check-item done">
+                          <span class="badge badge-success text-[8px]">Done</span>
+                          <span class="text-mono">db_schema_auditor</span>
+                          <span class="text-muted">(Stable ID)</span>
+                        </div>
+                        <div class="check-item active">
+                          <span class="badge badge-primary text-[8px]">Running</span>
+                          <span class="text-mono">latency_tester</span>
+                          <span class="text-muted">(Stable ID - Pinging...)</span>
+                        </div>
+                        <div class="check-item">
+                          <span class="badge badge-danger text-[8px]">Failed</span>
+                          <span class="text-mono">permission_verifier</span>
+                          <span class="text-muted">(Stable ID - 403)</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Context detail workspace area (Dynamic 3rd Pane) -->
+                <div class="inspector-section" style="flex: 1">
+                  <span class="inspector-section-title">Context detail</span>
+
+                  <div
+                    class="dynamic-inspector-section text-xs text-muted"
+                    id="d-fallback-detail-d"
+                  >
+                    Click a timeline event on the left to inspect variables, policies, or execution
+                    diffs here.
+                  </div>
+
+                  <!-- Mode Detail -->
+                  <div
+                    class="dynamic-inspector-section inspector-card"
+                    id="d-mode-detail-d"
+                    style="display: none; flex-direction: column; gap: 0.5rem; width: 100%"
+                  >
+                    <div class="text-xs font-semibold">takomi_mode details</div>
+                    <div class="text-xs text-muted">
+                      Reason: Evaluating user request manifest checks.
+                    </div>
+                    <div class="text-xs text-muted">Source: Prompt hook active session.</div>
+                  </div>
+
+                  <!-- Config Detail -->
+                  <div
+                    class="dynamic-inspector-section inspector-card"
+                    id="d-config-detail-d"
+                    style="display: none; flex-direction: column; gap: 0.5rem; width: 100%"
+                  >
+                    <div class="text-xs font-semibold">Routing configurations policy rule</div>
+                    <div class="text-xs text-muted">Detected framework: Next.js App Router</div>
+                    <div class="diff-block">
+                      <div class="diff-line meta">@@ -1,3 +1,3 @@</div>
+                      <div class="diff-line removed">- ROUTE_TARGET: "direct"</div>
+                      <div class="diff-line added">+ ROUTE_TARGET: "parallel-subagents"</div>
+                    </div>
+                  </div>
+
+                  <!-- Artifact Detail -->
+                  <div
+                    class="dynamic-inspector-section inspector-card"
+                    id="d-artifacts-detail-d"
+                    style="display: none; flex-direction: column; gap: 0.5rem; width: 100%"
+                  >
+                    <div class="text-xs font-semibold">Generated output files</div>
+                    <div class="flex-row-gap-2 mt-1">
+                      <a href="#" class="file-chip">health_report.json</a>
+                      <span class="badge badge-success text-[8px]">TypeScript OK</span>
+                    </div>
+                    <div class="text-[10px] text-muted-foreground mt-1">
+                      Verified with npm run lint --quiet. Target directory: /docs/mockups/
+                    </div>
+                  </div>
+                </div>
+                <!-- /context-detail -->
               </div>
               <!-- /app-split-right -->
             </div>
@@ -1822,17 +2229,20 @@ export const routingPolicy = {
         const frameA = document.getElementById("frame-dir-a");
         const frameB = document.getElementById("frame-dir-b");
         const frameC = document.getElementById("frame-dir-c");
+        const frameD = document.getElementById("frame-dir-d");
 
         if (mode === "compare-all") {
           grid.classList.add("compare-all");
           frameA.style.display = "flex";
           frameB.style.display = "flex";
           frameC.style.display = "flex";
+          frameD.style.display = "flex";
         } else {
           grid.classList.remove("compare-all");
           frameA.style.display = mode === "dir-a" ? "flex" : "none";
           frameB.style.display = mode === "dir-b" ? "flex" : "none";
           frameC.style.display = mode === "dir-c" ? "flex" : "none";
+          frameD.style.display = mode === "dir-d" ? "flex" : "none";
         }
       }
 
@@ -1860,6 +2270,50 @@ export const routingPolicy = {
         const activeTemplate = document.getElementById(targetId + "-detail");
         if (activeTemplate) {
           activeTemplate.style.display = "flex";
+        }
+      }
+
+      // Toggle chronological timeline disclosures in Direction D (mutual exclusion)
+      function toggleHybridDetails(elementId, targetInspectorId) {
+        // Collapse all other inline disclosures in Direction D first
+        const disclosures = document.querySelectorAll("#frame-dir-d .timeline-disclosure");
+        disclosures.forEach((d) => {
+          if (d.id !== elementId) {
+            d.style.display = "none";
+            d.classList.remove("active");
+          }
+        });
+
+        const el = document.getElementById(elementId);
+        if (el) {
+          if (el.classList.contains("active")) {
+            el.style.display = "none";
+            el.classList.remove("active");
+          } else {
+            el.style.display = "block";
+            el.classList.add("active");
+          }
+        }
+
+        // Update right inspector panel details area
+        focusInspectorD(targetInspectorId);
+      }
+
+      // Dynamic right-hand inspector pane focus (Direction D)
+      function focusInspectorD(targetId) {
+        // Hide all dynamic details templates in Direction D
+        const detailSections = document.querySelectorAll(
+          "#inspector-pane-d .dynamic-inspector-section",
+        );
+        detailSections.forEach((sec) => (sec.style.display = "none"));
+
+        if (targetId) {
+          const activeSec = document.getElementById(targetId + "-detail-d");
+          if (activeSec) {
+            activeSec.style.display = "flex";
+          }
+        } else {
+          document.getElementById("d-fallback-detail-d").style.display = "flex";
         }
       }
     </script>
