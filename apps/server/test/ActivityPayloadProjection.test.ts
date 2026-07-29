@@ -201,6 +201,36 @@ describe("projectActivityPayload", () => {
     });
   });
 
+  it("retains only the bounded Takomi presentation envelope", () => {
+    const activity = makeActivity("takomi-board", "dynamic_tool_call", {
+      toolCallId: "board-call-1",
+      presentation: {
+        schemaVersion: 1,
+        namespace: "takomi",
+        toolName: "takomi_board",
+        family: "lifecycle",
+        summary: {
+          sessionId: "session-1",
+          completed: 1,
+          total: 2,
+          items: [{ id: "task-1", label: "Check workspace", status: "completed" }],
+        },
+      },
+      result: { unbounded: "x".repeat(10_000) },
+    });
+
+    expect(projectActivityPayload(activity).payload).toMatchObject({
+      data: {
+        toolCallId: "board-call-1",
+        presentation: {
+          toolName: "takomi_board",
+          summary: { sessionId: "session-1", completed: 1, total: 2 },
+        },
+      },
+    });
+    expect(JSON.stringify(projectActivityPayload(activity).payload)).not.toContain("x".repeat(64));
+  });
+
   it("keeps current web and mobile derived output identical for every tool item type", () => {
     for (const activity of fixtures) {
       const projected = projectActivityPayload(activity);

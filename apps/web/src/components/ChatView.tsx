@@ -149,6 +149,7 @@ import {
   deriveAgentPanelModel,
   foldSubagentActivities,
 } from "@t3tools/client-runtime/state/subagentRuntime";
+import { TakomiInspector } from "./chat/TakomiInspector";
 import { DiffWorkerPoolProvider } from "./DiffWorkerPoolProvider";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -1563,6 +1564,8 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const activeFileSurface =
     activeRightPanelSurface?.kind === "file" ? activeRightPanelSurface : null;
+  const activeTakomiSurface =
+    activeRightPanelSurface?.kind === "takomi" ? activeRightPanelSurface : null;
   const activePreviewState = useThreadPreviewState(activeThreadRef);
   const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
     selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef),
@@ -5981,6 +5984,11 @@ function ChatViewContent(props: ChatViewProps) {
           initialGitScope={initialDiffPanelGitScope}
         />
       </Suspense>
+    ) : activeRightPanelSurface?.kind === "takomi" ? (
+      <TakomiInspector
+        entries={workLogEntries}
+        selectedToolCallId={activeTakomiSurface?.toolCallId ?? null}
+      />
     ) : activeRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
         model={agentPanelModel}
@@ -6122,6 +6130,13 @@ function ChatViewContent(props: ChatViewProps) {
                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
                 topFadeEnabled={!hasTimelineTopBanner}
                 loadEarlier={loadEarlierTurns}
+                onSelectTakomiToolCall={(entry) => {
+                  if (activeThreadRef) {
+                    useRightPanelStore
+                      .getState()
+                      .openTakomiInspector(activeThreadRef, entry.toolCallId ?? entry.id);
+                  }
+                }}
               />
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}

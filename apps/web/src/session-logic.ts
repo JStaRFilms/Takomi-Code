@@ -9,6 +9,7 @@ import {
   type OrchestrationProposedPlanId,
   ProviderDriverKind,
   type ToolLifecycleItemType,
+  type ToolPresentationEnvelope,
   type UserInputQuestion,
   type ThreadId,
   type TurnId,
@@ -78,7 +79,9 @@ export interface WorkLogEntry {
   changedFiles?: ReadonlyArray<string>;
   tone: "thinking" | "tool" | "info" | "error";
   toolTitle?: string;
+  toolCallId?: string;
   toolData?: unknown;
+  presentation?: ToolPresentationEnvelope;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
   /** From runtime item / task payload `status` when present (e.g. tool.updated). */
@@ -868,11 +871,13 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (title) {
     entry.toolTitle = title;
   }
-  if (itemType === "mcp_tool_call") {
-    const data = asRecord(payload?.data);
-    if (data?.item !== undefined) {
-      entry.toolData = data.item;
-    }
+  const data = asRecord(payload?.data);
+  if (itemType === "mcp_tool_call" && data?.item !== undefined) {
+    entry.toolData = data.item;
+  }
+  const presentation = parseToolPresentation(data?.presentation);
+  if (presentation) {
+    entry.presentation = presentation;
   }
   if (itemType) {
     entry.itemType = itemType;
@@ -943,18 +948,10 @@ function collapseDerivedWorkLogEntries(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
 ): DerivedWorkLogEntry[] {
   const collapsed: DerivedWorkLogEntry[] = [];
-  // Subagent rows collapse by spawn group, not adjacency: a workflow run (or
-  // a turn's batch of direct spawns) is ONE narrative event in the chat — a
-  // CTA row that opens the Agents panel — no matter how many agents it
-  // contains or how their progress rows interleave (quiet-timeline
-  // guarantee).
   const spawnRowIndex = new Map<string, number>();
-  // Batch membership is decided once, at the FIRST row seen for a taskId.
-  // Claude background subagents settle between turns, so their completion
-  // rows carry fresh synthetic turn ids (or none) — keying each row by its
-  // own turn splintered one batch into a stream of "Kicked off N subagents"
-  // rows (live-test finding, thread 7ac7ef05).
   const groupKeyByTaskId = new Map<string, string>();
+  const activeIndexByCollapseKey = new Map<string, number>();
+
   for (const entry of entries) {
     const isTaskRow =
       entry.taskId !== undefined &&
@@ -965,9 +962,7 @@ function collapseDerivedWorkLogEntries(
     if (isTaskRow && entry.taskId !== undefined) {
       const rememberedKey = groupKeyByTaskId.get(entry.taskId);
       const groupKey = rememberedKey ?? agentSpawnGroupKey(entry);
-      if (rememberedKey === undefined) {
-        groupKeyByTaskId.set(entry.taskId, groupKey);
-      }
+      if (rememberedKey === undefined) groupKeyByTaskId.set(entry.taskId, groupKey);
       const workflowId = groupKey.startsWith("wf:") ? groupKey.slice(3) : null;
       const existingIndex = spawnRowIndex.get(groupKey);
       if (existingIndex !== undefined) {
@@ -977,12 +972,6 @@ function collapseDerivedWorkLogEntries(
           : [...(existing.agentSpawn?.agentTaskIds ?? []), entry.taskId];
         collapsed[existingIndex] = {
           ...mergeDerivedWorkLogEntries(existing, entry),
-          // The CTA row keeps the group's ANCHOR identity, not the last
-          // agent's: id/createdAt/turnId stay pinned to the spawn point so
-          // the row renders where the run launched instead of drifting to
-          // the newest progress tick (mid-run it drifted below the whole
-          // conversation, reading as "no visualization"), and the stable id
-          // keeps React state/virtualization sane.
           id: existing.id,
           createdAt: existing.createdAt,
           turnId: existing.turnId ?? null,
@@ -990,21 +979,35 @@ function collapseDerivedWorkLogEntries(
           label: existing.label,
           agentSpawn: { workflowId, agentTaskIds },
         };
-        continue;
+      } else {
+        spawnRowIndex.set(groupKey, collapsed.length);
+        collapsed.push({ ...entry, agentSpawn: { workflowId, agentTaskIds: [entry.taskId] } });
       }
-      spawnRowIndex.set(groupKey, collapsed.length);
-      collapsed.push({
-        ...entry,
-        agentSpawn: { workflowId, agentTaskIds: [entry.taskId] },
-      });
       continue;
     }
-    const previous = collapsed.at(-1);
-    if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
-      collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(previous, entry);
+
+    const collapseKey = entry.collapseKey;
+    const previousIndex = collapseKey ? activeIndexByCollapseKey.get(collapseKey) : undefined;
+    const previous = previousIndex === undefined ? undefined : collapsed[previousIndex];
+    const adjacent = collapsed.at(-1);
+    if (previous && previousIndex !== undefined && shouldCollapseToolLifecycleEntries(previous, entry)) {
+      collapsed[previousIndex] = mergeDerivedWorkLogEntries(previous, entry);
+      if (entry.activityKind === "tool.completed" && !isPersistentTakomiCollapseKey(collapseKey)) {
+        activeIndexByCollapseKey.delete(collapseKey!);
+      }
       continue;
     }
-    collapsed.push(entry);
+    if (adjacent && shouldCollapseToolLifecycleEntries(adjacent, entry)) {
+      collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(adjacent, entry);
+    } else {
+      collapsed.push(entry);
+    }
+    if (
+      collapseKey &&
+      (entry.activityKind !== "tool.completed" || isPersistentTakomiCollapseKey(collapseKey))
+    ) {
+      activeIndexByCollapseKey.set(collapseKey, collapsed.length - 1);
+    }
   }
   return collapsed;
 }
@@ -1013,13 +1016,24 @@ function shouldCollapseToolLifecycleEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
 ): boolean {
-  if (previous.activityKind !== "tool.updated" && previous.activityKind !== "tool.completed") {
+  if (
+    previous.activityKind !== "tool.started" &&
+    previous.activityKind !== "tool.updated" &&
+    previous.activityKind !== "tool.completed"
+  ) {
     return false;
   }
-  if (next.activityKind !== "tool.updated" && next.activityKind !== "tool.completed") {
+  if (
+    next.activityKind !== "tool.started" &&
+    next.activityKind !== "tool.updated" &&
+    next.activityKind !== "tool.completed"
+  ) {
     return false;
   }
-  if (previous.activityKind === "tool.completed") {
+  if (
+    previous.activityKind === "tool.completed" &&
+    !isPersistentTakomiCollapseKey(previous.collapseKey)
+  ) {
     return false;
   }
   if (previous.collapseKey !== undefined && previous.collapseKey === next.collapseKey) {
@@ -1049,6 +1063,7 @@ function mergeDerivedWorkLogEntries(
   const toolCallId = next.toolCallId ?? previous.toolCallId;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
   const toolData = next.toolData ?? previous.toolData;
+  const presentation = next.presentation ?? previous.presentation;
   return {
     ...previous,
     ...next,
@@ -1063,6 +1078,7 @@ function mergeDerivedWorkLogEntries(
     ...(toolCallId ? { toolCallId } : {}),
     ...(toolLifecycleStatus !== undefined ? { toolLifecycleStatus } : {}),
     ...(toolData !== undefined ? { toolData } : {}),
+    ...(presentation !== undefined ? { presentation } : {}),
   };
 }
 
@@ -1086,11 +1102,22 @@ function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | un
   ) {
     return `task${entry.taskId}`;
   }
-  if (entry.activityKind !== "tool.updated" && entry.activityKind !== "tool.completed") {
+  if (
+    entry.activityKind !== "tool.started" &&
+    entry.activityKind !== "tool.updated" &&
+    entry.activityKind !== "tool.completed"
+  ) {
     return undefined;
+  }
+  const presentation = entry.presentation;
+  if (presentation?.toolName === "takomi_board" && presentation.summary?.sessionId) {
+    return `takomi-state:board:${presentation.summary.sessionId}`;
   }
   if (entry.toolCallId) {
     return `tool:${entry.toolCallId}`;
+  }
+  if (presentation?.toolName === "takomi_subagent" && presentation.summary?.runId) {
+    return `takomi-state:subagent:${presentation.summary.runId}`;
   }
   const normalizedLabel = normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
   const detail = entry.detail?.trim() ?? "";
@@ -1099,6 +1126,10 @@ function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | un
     return undefined;
   }
   return [itemType, normalizedLabel, detail].join("\u001f");
+}
+
+function isPersistentTakomiCollapseKey(value: string | undefined): boolean {
+  return value?.startsWith("takomi-state:") === true;
 }
 
 function normalizeCompactToolLabel(value: string): string {
@@ -1115,6 +1146,20 @@ function toLatestProposedPlanState(proposedPlan: ProposedPlan): LatestProposedPl
     implementedAt: proposedPlan.implementedAt,
     implementationThreadId: proposedPlan.implementationThreadId,
   };
+}
+
+function parseToolPresentation(value: unknown): ToolPresentationEnvelope | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const presentation = value as Partial<ToolPresentationEnvelope>;
+  if (
+    presentation.schemaVersion !== 1 ||
+    (presentation.namespace !== "takomi" && presentation.namespace !== "takomi-flow") ||
+    typeof presentation.toolName !== "string" ||
+    typeof presentation.family !== "string"
+  ) {
+    return null;
+  }
+  return presentation as ToolPresentationEnvelope;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

@@ -6,6 +6,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  type ToolPresentationEnvelope,
   type ProviderSendTurnInput,
   type ProviderSession,
   type ProviderSessionStartInput,
@@ -112,8 +113,33 @@ function readPiResumeCursor(value: unknown): string | undefined {
   return readString(value.sessionFile);
 }
 
+const TAKOMI_TOOL_FAMILIES = {
+  takomi_mode: "status",
+  takomi_apply_routing_policy: "configuration",
+  takomi_config_routing: "configuration",
+  takomi_workflow: "lifecycle",
+  takomi_board: "lifecycle",
+  takomi_subagent: "execution",
+  skill_index: "collection",
+  skill_manifest: "collection",
+  skill_load: "collection",
+  policy_manifest: "collection",
+  policy_load: "collection",
+  context_report: "report",
+} as const;
+
+type TakomiToolName = keyof typeof TAKOMI_TOOL_FAMILIES;
+
+function takomiFamily(toolName: string): ToolPresentationEnvelope["family"] | undefined {
+  const normalized = toolName.toLowerCase();
+  if (normalized.startsWith("takomi_flow_")) return "execution";
+  return TAKOMI_TOOL_FAMILIES[normalized as TakomiToolName];
+}
+
 function classifyTool(toolName: string) {
   const name = toolName.toLowerCase();
+  if (name === "takomi_subagent") return "collab_agent_tool_call" as const;
+  if (takomiFamily(name)) return "dynamic_tool_call" as const;
   if (name.includes("bash") || name.includes("command") || name.includes("shell")) {
     return "command_execution" as const;
   }
@@ -132,6 +158,128 @@ function classifyTool(toolName: string) {
   if (name.includes("image")) return "image_view" as const;
   if (name.includes("mcp")) return "mcp_tool_call" as const;
   return "dynamic_tool_call" as const;
+}
+
+const PRESENTATION_DETAIL_LIMIT = 600;
+const PRESENTATION_ITEM_LIMIT = 12;
+const PRESENTATION_ARTIFACT_LIMIT = 8;
+
+function boundedText(value: unknown, limit = PRESENTATION_DETAIL_LIMIT): string | undefined {
+  const text = readString(value);
+  if (!text) return undefined;
+  return text.length <= limit ? text : `${text.slice(0, limit - 1).trimEnd()}…`;
+}
+
+function firstRecord(...values: unknown[]): Record<string, unknown> | undefined {
+  return values.find(isRecord);
+}
+
+function readFiniteCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+type ToolPresentationItem = NonNullable<
+  NonNullable<ToolPresentationEnvelope["summary"]>["items"]
+>[number];
+
+function normalizePresentationItems(value: unknown): ToolPresentationItem[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, PRESENTATION_ITEM_LIMIT).flatMap((entry, index) => {
+    const record = isRecord(entry) ? entry : undefined;
+    const label = boundedText(
+      record?.label ??
+        record?.name ??
+        record?.title ??
+        record?.agent ??
+        record?.task ??
+        record?.id ??
+        entry,
+      160,
+    );
+    if (!label) return [];
+    const id = boundedText(record?.id ?? record?.taskId ?? record?.agentId ?? `${index}`, 120)!;
+    const exitCode = typeof record?.exitCode === "number" ? record.exitCode : undefined;
+    const status =
+      boundedText(record?.status ?? record?.state, 80) ??
+      (exitCode === undefined ? undefined : exitCode === 0 ? "completed" : "failed");
+    const detail = boundedText(record?.detail ?? record?.message ?? record?.reason, 180);
+    return [{ id, label, ...(status ? { status } : {}), ...(detail ? { detail } : {}) }];
+  });
+}
+
+type ToolPresentationArtifact = NonNullable<ToolPresentationEnvelope["artifactRefs"]>[number];
+
+function normalizeArtifactRefs(value: unknown): ToolPresentationArtifact[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, PRESENTATION_ARTIFACT_LIMIT).flatMap((entry) => {
+    const record = isRecord(entry) ? entry : undefined;
+    const path = boundedText(record?.path ?? record?.filePath ?? record?.uri ?? entry, 260);
+    if (!path) return [];
+    const kind = boundedText(record?.kind ?? record?.type ?? "file", 80)!;
+    const label = boundedText(record?.label ?? record?.name, 120);
+    return [{ kind, path, ...(label ? { label } : {}) }];
+  });
+}
+
+function normalizeTakomiPresentation(input: {
+  toolName: string;
+  args: unknown;
+  result: unknown;
+  partialResult: unknown;
+  isError: boolean;
+}): ToolPresentationEnvelope | undefined {
+  const family = takomiFamily(input.toolName);
+  if (!family) return undefined;
+  const args = firstRecord(input.args) ?? {};
+  const result = firstRecord(input.result, input.partialResult) ?? {};
+  const structuredContent = firstRecord(result.structuredContent, result.details) ?? {};
+  const source = { ...args, ...result, ...structuredContent };
+  const items = normalizePresentationItems(
+    source.tasks ??
+      source.stages ??
+      source.agents ??
+      source.items ??
+      source.results ??
+      (source.task ? [source.task] : undefined),
+  );
+  const artifactRefs = normalizeArtifactRefs(source.artifacts ?? source.files ?? source.assets);
+  const detailText = boundedText(
+    source.summary ?? source.message ?? source.detail ?? source.reason ?? source.output,
+  );
+  const action = boundedText(source.action ?? source.operation ?? source.phase, 120);
+  const status = boundedText(source.status ?? source.state, 80);
+  const sessionId = boundedText(source.sessionId ?? source.session ?? source.boardId, 120);
+  const runId = boundedText(source.runId ?? source.run ?? source.workflowRunId, 120);
+  const taskId = boundedText(source.taskId ?? source.task ?? source.id, 120);
+  const count = readFiniteCount(source.count ?? source.totalCount);
+  const completed = readFiniteCount(source.completed ?? source.completedCount);
+  const total = readFiniteCount(source.total ?? source.totalCount);
+  const summary = {
+    ...(sessionId ? { sessionId } : {}),
+    ...(runId ? { runId } : {}),
+    ...(taskId ? { taskId } : {}),
+    ...(status ? { status } : {}),
+    ...(count !== undefined ? { count } : {}),
+    ...(completed !== undefined ? { completed } : {}),
+    ...(total !== undefined ? { total } : {}),
+    ...(items.length > 0 ? { items } : {}),
+  };
+  const errorMessage = boundedText(source.error ?? source.errorMessage ?? source.message);
+  return {
+    schemaVersion: 1,
+    namespace: input.toolName.toLowerCase().startsWith("takomi_flow_") ? "takomi-flow" : "takomi",
+    toolName: input.toolName,
+    family,
+    ...(action ? { action } : {}),
+    ...(Object.keys(summary).length > 0 ? { summary } : {}),
+    ...(detailText ? { detailText } : {}),
+    ...(artifactRefs.length > 0 ? { artifactRefs } : {}),
+    ...(input.isError
+      ? { error: { severity: "error", message: errorMessage ?? "Tool call failed." } }
+      : {}),
+  };
 }
 
 function extractText(value: unknown): string | undefined {
@@ -464,12 +612,30 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         case "tool_execution_end": {
           const toolCallId = readString(message.toolCallId) ?? (yield* randomId);
           const toolName = readString(message.toolName) ?? "tool";
-          const detail =
+          const rawDetail =
             extractText(message.partialResult) ??
             extractText(message.result) ??
             (message.args === undefined ? undefined : jsonString(message.args));
           const isEnd = message.type === "tool_execution_end";
-          const item = { toolCallId, toolName, args: message.args, result: message.result };
+          const presentation = normalizeTakomiPresentation({
+            toolName,
+            args: message.args,
+            result: message.result,
+            partialResult: message.partialResult,
+            isError: message.isError === true,
+          });
+          // Takomi details cross the WebSocket boundary, so never reuse an
+          // unbounded Pi result as the generic row preview.
+          const detail = presentation
+            ? (presentation.detailText ?? boundedText(rawDetail))
+            : rawDetail;
+          const item = {
+            toolCallId,
+            toolName,
+            ...(presentation ? { presentation } : {}),
+            args: message.args,
+            result: message.result,
+          };
           if (isEnd) appendTurnItem(context, item);
           yield* emit({
             ...(yield* eventBase(context, message)),

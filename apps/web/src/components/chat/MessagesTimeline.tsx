@@ -37,6 +37,7 @@ import {
   workEntryIndicatesToolNeutralStatus,
   workEntryIndicatesToolSuccess,
   workLogEntryIsToolLike,
+  type WorkLogEntry,
 } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import {
@@ -89,6 +90,7 @@ import {
   type TimelineLatestTurn,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
+import { isTakomiPresentation, TakomiToolCallCard } from "./TakomiToolCallCard";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   deriveDisplayedUserMessageState,
@@ -144,6 +146,9 @@ interface TimelineRowSharedState {
   onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
   agentPanelModel: AgentPanelModel;
   onOpenAgents: () => void;
+  expandedTakomiToolCallId: string | null;
+  onToggleTakomiToolCall: (toolCallId: string) => void;
+  onSelectTakomiToolCall: (entry: WorkLogEntry) => void;
 }
 
 interface TimelineRowActivityState {
@@ -241,6 +246,7 @@ interface MessagesTimelineProps {
   topFadeEnabled?: boolean;
   /** Non-null when older turns exist beyond the loaded window. */
   loadEarlier?: { readonly loading: boolean; readonly onLoadEarlier: () => void } | null;
+  onSelectTakomiToolCall?: (entry: WorkLogEntry) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,9 +286,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   hideEmptyPlaceholder = false,
   topFadeEnabled = false,
   loadEarlier = null,
+  onSelectTakomiToolCall,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
   const [expandedWorkGroupIds, setExpandedWorkGroupIds] = useState<ReadonlySet<string>>(new Set());
+  const [expandedTakomiToolCallId, setExpandedTakomiToolCallId] = useState<string | null>(null);
   const [disclosureToggleSettling, setDisclosureToggleSettling] = useState(false);
   const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
   const disclosureAnchorKeyRef = useRef<string | null>(null);
@@ -317,6 +325,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         disclosureSettleSecondFrameRef.current = null;
       });
     });
+  }, []);
+  const onToggleTakomiToolCall = useCallback((toolCallId: string) => {
+    setExpandedTakomiToolCallId((current) => (current === toolCallId ? null : toolCallId));
   }, []);
 
   const shouldRestoreVisibleContentPosition = useCallback((row: MessagesTimelineRow) => {
@@ -517,6 +528,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleWorkGroup,
       agentPanelModel,
       onOpenAgents,
+      expandedTakomiToolCallId,
+      onToggleTakomiToolCall,
+      onSelectTakomiToolCall: onSelectTakomiToolCall ?? (() => {}),
     }),
     [
       timestampFormat,
@@ -533,6 +547,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onToggleWorkGroup,
       agentPanelModel,
       onOpenAgents,
+      expandedTakomiToolCallId,
+      onToggleTakomiToolCall,
+      onSelectTakomiToolCall,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -1349,7 +1366,12 @@ const WorkGroupSection = memo(function WorkGroupSection({
 }: {
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
 }) {
-  const { workspaceRoot } = use(TimelineRowCtx);
+  const {
+    workspaceRoot,
+    expandedTakomiToolCallId,
+    onToggleTakomiToolCall,
+    onSelectTakomiToolCall,
+  } = use(TimelineRowCtx);
   const nonEmptyEntries = useMemo(
     () => groupedEntries.filter((entry) => !workEntryIndicatesToolNeutralStatus(entry)),
     [groupedEntries],
@@ -1369,13 +1391,23 @@ const WorkGroupSection = memo(function WorkGroupSection({
         <p className="px-0.5 pb-0.5 font-medium text-secondary-label text-[11px]">{groupLabel}</p>
       )}
       <div className="space-y-px">
-        {nonEmptyEntries.map((workEntry) => (
-          <SimpleWorkEntryRow
-            key={workEntry.id}
-            workEntry={workEntry}
-            workspaceRoot={workspaceRoot}
-          />
-        ))}
+        {nonEmptyEntries.map((workEntry) =>
+          isTakomiPresentation(workEntry) ? (
+            <TakomiToolCallCard
+              key={workEntry.id}
+              entry={workEntry}
+              expanded={expandedTakomiToolCallId === (workEntry.toolCallId ?? workEntry.id)}
+              onToggle={() => onToggleTakomiToolCall(workEntry.toolCallId ?? workEntry.id)}
+              onSelectInspector={() => onSelectTakomiToolCall(workEntry)}
+            />
+          ) : (
+            <SimpleWorkEntryRow
+              key={workEntry.id}
+              workEntry={workEntry}
+              workspaceRoot={workspaceRoot}
+            />
+          ),
+        )}
       </div>
     </section>
   );
