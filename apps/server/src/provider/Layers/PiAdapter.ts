@@ -93,6 +93,7 @@ interface PiSessionContext {
     string,
     ReadonlyArray<NonNullable<ToolPresentationEnvelope["activity"]>[number]>
   >;
+  readonly truncatedToolActivityCallIds: Set<string>;
   readonly turns: Array<PiTurnSnapshot>;
   activeTurnId: TurnId | undefined;
   abortingTurnId: TurnId | undefined;
@@ -277,7 +278,7 @@ function classifyTool(toolName: string) {
 const PRESENTATION_DETAIL_LIMIT = 600;
 const PRESENTATION_INSPECTOR_DETAIL_LIMIT = 16_000;
 const PRESENTATION_ITEM_LIMIT = 12;
-const PRESENTATION_ACTIVITY_LIMIT = 24;
+const PRESENTATION_ACTIVITY_LIMIT = 120;
 const PRESENTATION_ARTIFACT_LIMIT = 8;
 
 function boundedText(value: unknown, limit = PRESENTATION_DETAIL_LIMIT): string | undefined {
@@ -348,8 +349,13 @@ function normalizeSubagentActivity(
     if (!result) continue;
     const agent =
       boundedText(result.agent ?? result.agentName, 80) ?? `Subagent ${resultIndex + 1}`;
-    const messages = Array.isArray(result.messages) ? result.messages.slice(-16) : [];
-    for (const [messageIndex, messageValue] of messages.entries()) {
+    const agentId = `result-${resultIndex}`;
+    const agentLabel = results.length > 1 ? `Task ${resultIndex + 1} · ${agent}` : agent;
+    const allMessages = Array.isArray(result.messages) ? result.messages : [];
+    const messageOffset = Math.max(0, allMessages.length - 80);
+    const messages = allMessages.slice(messageOffset);
+    for (const [localMessageIndex, messageValue] of messages.entries()) {
+      const messageIndex = messageOffset + localMessageIndex;
       const message = isRecord(messageValue) ? messageValue : undefined;
       if (!message) continue;
       const role = boundedText(message.role, 40) ?? "message";
@@ -361,6 +367,7 @@ function normalizeSubagentActivity(
         const detail = boundedText(jsonString(part.arguments ?? part.args), 500);
         activity.push({
           id: `result-${resultIndex}-message-${messageIndex}-tool-${partIndex}`,
+          agentId,
           kind: "tool",
           label: toolName,
           ...(detail ? { detail } : {}),
@@ -371,21 +378,31 @@ function normalizeSubagentActivity(
       if (text) {
         activity.push({
           id: `result-${resultIndex}-message-${messageIndex}`,
+          agentId,
           kind: "message",
-          label: role === "assistant" ? `${agent} · assistant` : `${agent} · ${role}`,
+          label:
+            role === "assistant"
+              ? `${agentLabel} response`
+              : role === "user"
+                ? `${agentLabel} prompt`
+                : `${agentLabel} · ${role}`,
           detail: text,
         });
       }
     }
 
-    const toolCalls = Array.isArray(result.toolCalls) ? result.toolCalls.slice(-12) : [];
-    for (const [toolIndex, toolValue] of toolCalls.entries()) {
+    const allToolCalls = Array.isArray(result.toolCalls) ? result.toolCalls : [];
+    const toolCallOffset = Math.max(0, allToolCalls.length - 80);
+    const toolCalls = allToolCalls.slice(toolCallOffset);
+    for (const [localToolIndex, toolValue] of toolCalls.entries()) {
+      const toolIndex = toolCallOffset + localToolIndex;
       const tool = isRecord(toolValue) ? toolValue : undefined;
       if (!tool) continue;
       const label = boundedText(tool.text, 180) ?? "Tool call";
       const detail = boundedText(tool.expandedText, 1_200);
       activity.push({
         id: `result-${resultIndex}-tool-summary-${toolIndex}`,
+        agentId,
         kind: "tool",
         label,
         ...(detail && detail !== label ? { detail } : {}),
@@ -405,6 +422,7 @@ function normalizeSubagentActivity(
         typeof tool.endMs === "number" && Number.isFinite(tool.endMs) ? String(tool.endMs) : label;
       activity.push({
         id: `result-${resultIndex}-recent-tool-${toolIndex}-${endedAt}`,
+        agentId,
         kind: "tool",
         label,
         ...(detail ? { detail } : {}),
@@ -419,18 +437,21 @@ function normalizeSubagentActivity(
       currentTool ? progress.currentToolArgs : recentOutput.join("\n"),
       1_200,
     );
-    activity.push({
-      id: `result-${resultIndex}-status`,
-      kind: "status",
-      label: currentTool ? `${agent} · ${currentTool}` : `${agent} activity`,
-      ...(activityDetail ? { detail: activityDetail } : {}),
-      status: currentTool
-        ? "running"
-        : (boundedText(result.status ?? result.state, 80) ?? lifecycleStatus),
-    });
+    if (currentTool || activityDetail) {
+      activity.push({
+        id: `result-${resultIndex}-status`,
+        agentId,
+        kind: "status",
+        label: currentTool ? `${agentLabel} · ${currentTool}` : `${agentLabel} latest output`,
+        ...(activityDetail ? { detail: activityDetail } : {}),
+        status: currentTool
+          ? "running"
+          : (boundedText(result.status ?? result.state, 80) ?? lifecycleStatus),
+      });
+    }
   }
 
-  return activity.slice(-PRESENTATION_ACTIVITY_LIMIT);
+  return activity;
 }
 
 function normalizeArtifactRefs(value: unknown): ToolPresentationArtifact[] {
@@ -510,6 +531,7 @@ function normalizeTakomiPresentation(input: {
   const sessionId = boundedText(source.sessionId ?? source.session ?? source.boardId, 120);
   const runId = boundedText(source.runId ?? source.run ?? source.workflowRunId, 120);
   const taskId = boundedText(source.taskId ?? source.task ?? source.id, 120);
+  const mode = boundedText(source.mode, 80);
   const count = readFiniteCount(source.count ?? source.totalCount);
   const completed = readFiniteCount(source.completed ?? source.completedCount);
   const total = readFiniteCount(source.total ?? source.totalCount);
@@ -517,6 +539,7 @@ function normalizeTakomiPresentation(input: {
     ...(sessionId ? { sessionId } : {}),
     ...(runId ? { runId } : {}),
     ...(taskId ? { taskId } : {}),
+    ...(mode ? { mode } : {}),
     ...(status ? { status } : {}),
     ...(count !== undefined ? { count } : {}),
     ...(completed !== undefined ? { completed } : {}),
@@ -897,10 +920,20 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             for (const activity of presentation.activity ?? []) {
               mergedActivity.set(activity.id, activity);
             }
-            const activity = [...mergedActivity.values()].slice(-PRESENTATION_ACTIVITY_LIMIT);
+            const allActivity = [...mergedActivity.values()];
+            const activity = allActivity.slice(-PRESENTATION_ACTIVITY_LIMIT);
+            if (allActivity.length > PRESENTATION_ACTIVITY_LIMIT) {
+              context.truncatedToolActivityCallIds.add(toolCallId);
+            }
             if (activity.length > 0) {
               context.toolActivityByCallId.set(toolCallId, activity);
-              presentation = { ...presentation, activity };
+              presentation = {
+                ...presentation,
+                activity,
+                ...(context.truncatedToolActivityCallIds.has(toolCallId)
+                  ? { activityTruncated: true }
+                  : {}),
+              };
             }
           }
           // Takomi details cross the WebSocket boundary, so never reuse an
@@ -933,7 +966,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
               data: item,
             },
           });
-          if (isEnd) context.toolActivityByCallId.delete(toolCallId);
+          if (isEnd) {
+            context.toolActivityByCallId.delete(toolCallId);
+            context.truncatedToolActivityCallIds.delete(toolCallId);
+          }
           break;
         }
         case "compaction_start": {
@@ -1179,6 +1215,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         pendingUi: new Map(),
         pendingRpc: new Map(),
         toolActivityByCallId: new Map(),
+        truncatedToolActivityCallIds: new Set(),
         turns: [],
         activeTurnId: undefined,
         abortingTurnId: undefined,

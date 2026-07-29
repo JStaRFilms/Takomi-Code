@@ -10,7 +10,7 @@ import {
   UsersIcon,
   WrenchIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { type WorkLogEntry } from "../../session-logic";
 import { cn } from "~/lib/utils";
@@ -42,6 +42,23 @@ function StatusIcon({ status }: { status: string | undefined }) {
 
 function statusLabel(status: string | undefined) {
   return status?.replaceAll("_", " ").replaceAll("-", " ") ?? "pending";
+}
+
+const SUBAGENT_SELECTION_MARKER = "::agent:";
+
+function subagentSelectionKey(toolCallId: string, agentId: string) {
+  return `${toolCallId}${SUBAGENT_SELECTION_MARKER}${agentId}`;
+}
+
+function parseInspectorSelection(selection: string | null) {
+  if (!selection) return { toolCallId: null, agentId: null };
+  const marker = selection.indexOf(SUBAGENT_SELECTION_MARKER);
+  return marker < 0
+    ? { toolCallId: selection, agentId: null }
+    : {
+        toolCallId: selection.slice(0, marker),
+        agentId: selection.slice(marker + SUBAGENT_SELECTION_MARKER.length),
+      };
 }
 
 function ActivityTranscriptRow({ activity }: { activity: PresentationActivity }) {
@@ -79,19 +96,61 @@ function ActivityTranscriptRow({ activity }: { activity: PresentationActivity })
   );
 }
 
-function DetailCard({ entry }: { entry: WorkLogEntry }) {
+function DetailCard({
+  entry,
+  selectedAgentId,
+}: {
+  entry: WorkLogEntry;
+  selectedAgentId: string | null;
+}) {
   const [activityOpen, setActivityOpen] = useState(false);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const followLatestRef = useRef(true);
   const presentation = entry.presentation;
-  if (!presentation) return null;
   const status =
-    presentation.error?.message ?? presentation.summary?.status ?? entry.toolLifecycleStatus;
-  const detailText = presentation.inspectorDetailText ?? presentation.detailText;
+    presentation?.error?.message ?? presentation?.summary?.status ?? entry.toolLifecycleStatus;
+  const selectedAgentIndex = selectedAgentId?.match(/^result-(\d+)$/u)?.[1];
+  const selectedItem =
+    selectedAgentIndex === undefined
+      ? undefined
+      : presentation?.summary?.items?.[Number(selectedAgentIndex)];
+  const detailText = selectedAgentId
+    ? selectedItem?.detail
+    : (presentation?.inspectorDetailText ?? presentation?.detailText);
+  const activity = selectedAgentId
+    ? (presentation?.activity?.filter((item) => item.agentId === selectedAgentId) ?? [])
+    : (presentation?.activity ?? []);
+  const displayedItems = selectedItem
+    ? [selectedItem]
+    : selectedAgentId
+      ? []
+      : (presentation?.summary?.items ?? []);
+  const isLive = statusKind(status) === "active";
+
+  useLayoutEffect(() => {
+    if (!isLive || !followLatestRef.current) return;
+    const frame = requestAnimationFrame(() => {
+      const node = scrollRef.current;
+      if (node) node.scrollTop = node.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activity, activityOpen, detailText, isLive]);
+
+  if (!presentation) return null;
+
   return (
     <div className="rounded-lg border border-border/65 bg-muted/20 p-3 text-xs">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="break-words font-medium text-foreground">{presentation.toolName}</p>
-          {presentation.action ? (
+          <p className="break-words font-medium text-foreground">
+            {selectedItem?.label ?? presentation.toolName}
+          </p>
+          {selectedItem?.detail ? (
+            <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">
+              {selectedItem.detail}
+            </p>
+          ) : presentation.action ? (
             <p className="mt-0.5 text-[11px] text-muted-foreground">{presentation.action}</p>
           ) : null}
         </div>
@@ -101,23 +160,35 @@ function DetailCard({ entry }: { entry: WorkLogEntry }) {
           </span>
         ) : null}
       </div>
-      <div className="mt-2 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
-        {detailText ? (
+      <div
+        ref={scrollRef}
+        onScroll={(event) => {
+          const node = event.currentTarget;
+          const followsLatest = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
+          followLatestRef.current = followsLatest;
+          setShowJumpToLatest(isLive && !followsLatest);
+        }}
+        className="relative mt-2 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1"
+      >
+        {detailText && !selectedItem ? (
           <p className="whitespace-pre-wrap break-words leading-relaxed text-foreground/85">
             {detailText}
           </p>
         ) : null}
-        {presentation.activity?.length ? (
-          <div className={cn("border-t border-border/50 pt-2", detailText && "mt-3")}>
+        {activity.length ? (
+          <div
+            className={cn("border-t border-border/50 pt-2", detailText && !selectedItem && "mt-3")}
+          >
             <button
               type="button"
               aria-expanded={activityOpen}
               onClick={() => setActivityOpen((open) => !open)}
               className="flex w-full items-center gap-2 rounded py-1 text-left text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
             >
-              {statusKind(status) === "active" ? "Live activity" : "Activity transcript"}
+              {isLive ? "Live activity" : "Activity transcript"}
               <span className="rounded bg-muted px-1.5 py-0.5 font-normal tabular-nums">
-                {presentation.activity.length}
+                {activity.length}
+                {presentation.activityTruncated ? " retained" : ""}
               </span>
               <ChevronDownIcon
                 className={cn(
@@ -127,17 +198,15 @@ function DetailCard({ entry }: { entry: WorkLogEntry }) {
               />
             </button>
             <div className="mt-1 space-y-1">
-              {(activityOpen ? presentation.activity : presentation.activity.slice(-1)).map(
-                (activity) => (
-                  <ActivityTranscriptRow key={activity.id} activity={activity} />
-                ),
-              )}
+              {(activityOpen ? activity : activity.slice(-1)).map((item) => (
+                <ActivityTranscriptRow key={item.id} activity={item} />
+              ))}
             </div>
           </div>
         ) : null}
-        {presentation.summary?.items?.length ? (
+        {displayedItems.length ? (
           <div className="mt-2 space-y-2 border-t border-border/50 pt-2">
-            {presentation.summary.items.map((item) => {
+            {displayedItems.map((item) => {
               const itemStatus =
                 item.status ?? (presentation.toolName === "takomi_subagent" ? status : undefined);
               return (
@@ -170,6 +239,22 @@ function DetailCard({ entry }: { entry: WorkLogEntry }) {
             ))}
           </div>
         ) : null}
+        {showJumpToLatest ? (
+          <div className="sticky bottom-2 mt-2 flex justify-center">
+            <button
+              type="button"
+              onClick={() => {
+                const node = scrollRef.current;
+                if (node) node.scrollTop = node.scrollHeight;
+                followLatestRef.current = true;
+                setShowJumpToLatest(false);
+              }}
+              className="rounded-full border border-border/70 bg-background px-3 py-1 text-[10px] font-medium text-foreground shadow-sm"
+            >
+              Jump to latest
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -183,16 +268,110 @@ function mergeItems(entries: readonly WorkLogEntry[]): PresentationItem[] {
   return [...byId.values()];
 }
 
+function SubagentRunGroup(props: {
+  entry: WorkLogEntry;
+  selectedSelection: string | null;
+  onSelect: (selection: string) => void;
+}) {
+  const presentation = props.entry.presentation!;
+  const items = presentation.summary?.items?.length
+    ? presentation.summary.items
+    : ([
+        {
+          id: "result-0",
+          label: presentation.summary?.taskId ?? "Subagent",
+          detail: presentation.detailText,
+        },
+      ] as PresentationItem[]);
+  const mode = presentation.summary?.mode ?? (items.length > 1 ? "parallel" : "single");
+  const status =
+    presentation.error?.severity === "error"
+      ? "failed"
+      : (presentation.summary?.status ?? props.entry.toolLifecycleStatus);
+  const [open, setOpen] = useState(() => statusKind(status) === "active");
+  const toolCallId = props.entry.toolCallId ?? props.entry.id;
+  const modeLabel =
+    mode === "parallel"
+      ? "Parallel run"
+      : mode === "chain"
+        ? "Chain run"
+        : mode === "single"
+          ? "Individual run"
+          : `${statusLabel(mode)} run`;
+
+  return (
+    <div className="rounded-md border border-border/55 bg-background/35">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-accent/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+      >
+        <StatusIcon status={status} />
+        <span className="min-w-0 flex-1 text-xs font-medium text-foreground/90">{modeLabel}</span>
+        <span className="text-[10px] text-muted-foreground">
+          {items.length} {items.length === 1 ? "agent" : "agents"}
+        </span>
+        <span className="text-[10px] capitalize text-muted-foreground">{statusLabel(status)}</span>
+        <ChevronDownIcon
+          className={cn(
+            "size-3.5 text-muted-foreground transition-transform",
+            !open && "-rotate-90",
+          )}
+        />
+      </button>
+      {open ? (
+        <div className="space-y-1 border-t border-border/45 p-1.5">
+          {items.map((item, itemIndex) => {
+            const agentId = `result-${itemIndex}`;
+            const selection = subagentSelectionKey(toolCallId, agentId);
+            const itemStatus = item.status ?? status;
+            return (
+              <button
+                type="button"
+                key={`${item.id}:${agentId}`}
+                aria-pressed={props.selectedSelection === selection}
+                onClick={() => props.onSelect(selection)}
+                className={cn(
+                  "flex w-full items-start gap-2 rounded px-2 py-1.5 text-left hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70",
+                  props.selectedSelection === selection && "bg-accent/55",
+                )}
+              >
+                <StatusIcon status={itemStatus} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs text-foreground/90">
+                    {items.length > 1 ? `Task ${itemIndex + 1} · ${item.label}` : item.label}
+                  </p>
+                  {item.detail ? (
+                    <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                      {item.detail}
+                    </p>
+                  ) : null}
+                </div>
+                <span className="shrink-0 text-[10px] capitalize text-muted-foreground">
+                  {statusLabel(itemStatus)}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function TakomiInspector(props: {
   entries: ReadonlyArray<WorkLogEntry>;
   selectedToolCallId: string | null;
   onSelectToolCallId: (toolCallId: string) => void;
 }) {
   const [subagentsOpen, setSubagentsOpen] = useState(true);
+  const inspectorSelection = parseInspectorSelection(props.selectedToolCallId);
   const { board, boardItems, subagents, selected } = useMemo(() => {
     const semantic = props.entries.filter((entry) => entry.presentation);
     const selected =
-      semantic.find((entry) => (entry.toolCallId ?? entry.id) === props.selectedToolCallId) ?? null;
+      semantic.find((entry) => (entry.toolCallId ?? entry.id) === inspectorSelection.toolCallId) ??
+      null;
     const boardEntries = semantic.filter(
       (entry) => entry.presentation?.toolName === "takomi_board",
     );
@@ -217,25 +396,15 @@ export function TakomiInspector(props: {
       subagents: [...subagentByIdentity.values()].reverse(),
       selected,
     };
-  }, [props.entries, props.selectedToolCallId]);
+  }, [inspectorSelection.toolCallId, props.entries]);
 
   const completedCount = boardItems.filter((item) => statusKind(item.status) === "done").length;
   const activeItem = boardItems.find((item) => statusKind(item.status) === "active");
   const boardStatus = board?.presentation?.summary?.status;
-  const subagentRows = subagents.flatMap((entry) => {
-    const presentation = entry.presentation!;
-    const items = presentation.summary?.items;
-    const rows = items?.length ? items : [undefined];
-    return rows.map((item, itemIndex) => ({
-      entry,
-      item,
-      key: `${presentation.summary?.runId ?? entry.toolCallId ?? entry.id}:${item?.id ?? itemIndex}`,
-      status:
-        presentation.error?.severity === "error"
-          ? "failed"
-          : (item?.status ?? presentation.summary?.status ?? entry.toolLifecycleStatus),
-    }));
-  });
+  const subagentCount = subagents.reduce(
+    (count, entry) => count + Math.max(1, entry.presentation?.summary?.items?.length ?? 0),
+    0,
+  );
 
   return (
     <aside className="flex min-h-0 flex-1 flex-col overflow-auto p-4" aria-label="Takomi inspector">
@@ -300,9 +469,9 @@ export function TakomiInspector(props: {
           className="flex w-full items-center gap-2 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
         >
           <UsersIcon className="size-3.5" /> Subagent status matrix
-          {subagentRows.length > 0 ? (
+          {subagentCount > 0 ? (
             <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal tabular-nums">
-              {subagentRows.length}
+              {subagents.length} {subagents.length === 1 ? "run" : "runs"} · {subagentCount} agents
             </span>
           ) : null}
           <ChevronDownIcon
@@ -311,34 +480,15 @@ export function TakomiInspector(props: {
         </button>
         {subagentsOpen ? (
           <div className="mt-2 space-y-2 rounded-lg border border-border/65 bg-muted/20 p-3">
-            {subagentRows.length > 0 ? (
-              subagentRows.map(({ entry, item, key, status }) => {
-                const presentation = entry.presentation!;
-                return (
-                  <button
-                    type="button"
-                    key={key}
-                    onClick={() => props.onSelectToolCallId(entry.toolCallId ?? entry.id)}
-                    className="flex w-full items-start gap-2 rounded px-1 py-1 text-left hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
-                  >
-                    <StatusIcon status={status} />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-xs text-foreground/90">
-                        {item?.label ?? presentation.summary?.taskId ?? "Subagent run"}
-                      </p>
-                      <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
-                        {item?.detail ??
-                          presentation.detailText ??
-                          presentation.summary?.runId ??
-                          "Takomi subagent"}
-                      </p>
-                    </div>
-                    <span className="shrink-0 text-[10px] capitalize text-muted-foreground">
-                      {statusLabel(status)}
-                    </span>
-                  </button>
-                );
-              })
+            {subagents.length > 0 ? (
+              subagents.map((entry) => (
+                <SubagentRunGroup
+                  key={entry.presentation?.summary?.runId ?? entry.toolCallId ?? entry.id}
+                  entry={entry}
+                  selectedSelection={props.selectedToolCallId}
+                  onSelect={props.onSelectToolCallId}
+                />
+              ))
             ) : (
               <p className="text-xs text-muted-foreground">No subagent activity.</p>
             )}
@@ -351,7 +501,11 @@ export function TakomiInspector(props: {
           Context detail
         </p>
         {selected ? (
-          <DetailCard key={selected.toolCallId ?? selected.id} entry={selected} />
+          <DetailCard
+            key={`${selected.toolCallId ?? selected.id}:${inspectorSelection.agentId ?? "all"}`}
+            entry={selected}
+            selectedAgentId={inspectorSelection.agentId}
+          />
         ) : (
           <p className="text-xs leading-relaxed text-muted-foreground">
             Select a board, subagent, or inline tool call to inspect its latest detail here.
