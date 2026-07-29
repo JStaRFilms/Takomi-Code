@@ -417,6 +417,7 @@ const ToolPresentationArtifact = Schema.Struct({
 
 const ToolPresentationActivity = Schema.Struct({
   id: TrimmedNonEmptyStringSchema,
+  agentId: Schema.optional(TrimmedNonEmptyStringSchema),
   kind: Schema.Literals(["message", "tool", "status"]),
   label: TrimmedNonEmptyStringSchema,
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -443,6 +444,7 @@ export const ToolPresentationEnvelope = Schema.Struct({
       sessionId: Schema.optional(TrimmedNonEmptyStringSchema),
       runId: Schema.optional(TrimmedNonEmptyStringSchema),
       taskId: Schema.optional(TrimmedNonEmptyStringSchema),
+      mode: Schema.optional(TrimmedNonEmptyStringSchema),
       status: Schema.optional(TrimmedNonEmptyStringSchema),
       count: Schema.optional(NonNegativeInt),
       completed: Schema.optional(NonNegativeInt),
@@ -453,6 +455,7 @@ export const ToolPresentationEnvelope = Schema.Struct({
   detailText: Schema.optional(TrimmedNonEmptyStringSchema),
   inspectorDetailText: Schema.optional(TrimmedNonEmptyStringSchema),
   activity: Schema.optional(Schema.Array(ToolPresentationActivity)),
+  activityTruncated: Schema.optional(Schema.Boolean),
   artifactRefs: Schema.optional(Schema.Array(ToolPresentationArtifact)),
   error: Schema.optional(
     Schema.Struct({
