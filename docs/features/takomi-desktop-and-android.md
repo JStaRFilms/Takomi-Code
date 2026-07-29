@@ -159,7 +159,7 @@ A release APK built with Gradle embeds `assets/index.android.bundle` and does no
 Validated APK:
 
 ```text
-%USERPROFILE%\Desktop\Takomi-T3-Code-Standalone.apk
+%USERPROFILE%\Desktop\Takomi-Code-Standalone.apk
 ```
 
 Validated properties:
