@@ -766,7 +766,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (toolLifecycleStatus) {
     entry.toolLifecycleStatus = toolLifecycleStatus;
   }
-  const collapseKey = deriveToolLifecycleCollapseKey(entry);
+  const collapseKey =
+    isTaskActivity && typeof payload?.taskId === "string"
+      ? `task:${payload.taskId}`
+      : deriveToolLifecycleCollapseKey(entry);
   if (collapseKey) {
     entry.collapseKey = collapseKey;
   }
@@ -779,9 +782,11 @@ function collapseDerivedWorkLogEntries(
   const collapsed: DerivedWorkLogEntry[] = [];
   const activeIndexByCollapseKey = new Map<string, number>();
   for (const entry of entries) {
-    const previousIndex = entry.collapseKey
+    const keyedPreviousIndex = entry.collapseKey
       ? activeIndexByCollapseKey.get(entry.collapseKey)
       : undefined;
+    const fallbackPreviousIndex = collapsed.length > 0 ? collapsed.length - 1 : undefined;
+    const previousIndex = keyedPreviousIndex ?? fallbackPreviousIndex;
     const previous = previousIndex === undefined ? undefined : collapsed[previousIndex];
     if (
       previous &&
@@ -790,17 +795,19 @@ function collapseDerivedWorkLogEntries(
     ) {
       collapsed[previousIndex] = mergeDerivedWorkLogEntries(previous, entry);
       if (
-        entry.activityKind === "tool.completed" &&
+        (entry.activityKind === "tool.completed" || entry.activityKind === "task.completed") &&
         !isPersistentTakomiCollapseKey(entry.collapseKey!)
       ) {
         activeIndexByCollapseKey.delete(entry.collapseKey!);
+        if (previous.collapseKey) activeIndexByCollapseKey.delete(previous.collapseKey);
       }
       continue;
     }
     collapsed.push(entry);
     if (
       entry.collapseKey &&
-      (entry.activityKind !== "tool.completed" || isPersistentTakomiCollapseKey(entry.collapseKey))
+      ((entry.activityKind !== "tool.completed" && entry.activityKind !== "task.completed") ||
+        isPersistentTakomiCollapseKey(entry.collapseKey))
     ) {
       activeIndexByCollapseKey.set(entry.collapseKey, collapsed.length - 1);
     }
@@ -812,22 +819,23 @@ function shouldCollapseToolLifecycleEntries(
   previous: DerivedWorkLogEntry,
   next: DerivedWorkLogEntry,
 ): boolean {
-  if (
-    previous.activityKind !== "tool.started" &&
-    previous.activityKind !== "tool.updated" &&
-    previous.activityKind !== "tool.completed"
-  ) {
+  const previousIsLifecycle =
+    previous.activityKind === "tool.started" ||
+    previous.activityKind === "tool.updated" ||
+    previous.activityKind === "tool.completed" ||
+    previous.activityKind === "task.progress" ||
+    previous.activityKind === "task.completed";
+  const nextIsLifecycle =
+    next.activityKind === "tool.started" ||
+    next.activityKind === "tool.updated" ||
+    next.activityKind === "tool.completed" ||
+    next.activityKind === "task.progress" ||
+    next.activityKind === "task.completed";
+  if (!previousIsLifecycle || !nextIsLifecycle) {
     return false;
   }
   if (
-    next.activityKind !== "tool.started" &&
-    next.activityKind !== "tool.updated" &&
-    next.activityKind !== "tool.completed"
-  ) {
-    return false;
-  }
-  if (
-    previous.activityKind === "tool.completed" &&
+    (previous.activityKind === "tool.completed" || previous.activityKind === "task.completed") &&
     !isPersistentTakomiCollapseKey(previous.collapseKey)
   ) {
     return false;

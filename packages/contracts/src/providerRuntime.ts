@@ -418,7 +418,7 @@ const ToolPresentationArtifact = Schema.Struct({
 const ToolPresentationActivity = Schema.Struct({
   id: TrimmedNonEmptyStringSchema,
   agentId: Schema.optional(TrimmedNonEmptyStringSchema),
-  kind: Schema.Literals(["message", "tool", "status"]),
+  kind: Schema.Literals(["message", "thinking", "tool", "status"]),
   label: TrimmedNonEmptyStringSchema,
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   status: Schema.optional(TrimmedNonEmptyStringSchema),

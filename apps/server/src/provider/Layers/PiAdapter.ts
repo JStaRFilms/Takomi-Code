@@ -13,6 +13,7 @@ import {
   type ProviderUserInputAnswers,
   RuntimeItemId,
   RuntimeRequestId,
+  RuntimeTaskId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -46,6 +47,8 @@ import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/P
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const PI_RESUME_VERSION = 1 as const;
+const REASONING_DETAIL_LIMIT = 16_000;
+const REASONING_EMIT_INTERVAL = 500;
 const TAKOMI_EXTENSION_NAMES = [
   "takomi-runtime",
   "takomi-subagents",
@@ -93,6 +96,11 @@ interface PiSessionContext {
     ReadonlyArray<NonNullable<ToolPresentationEnvelope["activity"]>[number]>
   >;
   readonly truncatedToolActivityCallIds: Set<string>;
+  readonly reasoningBlocks: Map<
+    number,
+    { readonly taskId: RuntimeTaskId; text: string; lastEmittedLength: number }
+  >;
+  reasoningSequence: number;
   readonly turns: Array<PiTurnSnapshot>;
   activeTurnId: TurnId | undefined;
   abortingTurnId: TurnId | undefined;
@@ -360,7 +368,21 @@ function normalizeSubagentActivity(
       const content = Array.isArray(message.content) ? message.content : [];
       for (const [partIndex, partValue] of content.entries()) {
         const part = isRecord(partValue) ? partValue : undefined;
-        if (!part || (part.type !== "toolCall" && part.type !== "tool_call")) continue;
+        if (!part) continue;
+        if (part.type === "thinking") {
+          const detail = boundedText(part.thinking, 2_400);
+          if (detail) {
+            activity.push({
+              id: `result-${resultIndex}-message-${messageIndex}-thinking-${partIndex}`,
+              agentId,
+              kind: "thinking",
+              label: `${agentLabel} thinking`,
+              detail,
+            });
+          }
+          continue;
+        }
+        if (part.type !== "toolCall" && part.type !== "tool_call") continue;
         const toolName = boundedText(part.name ?? part.toolName, 100) ?? "Tool call";
         const detail = boundedText(jsonString(part.arguments ?? part.args), 500);
         activity.push({
@@ -529,7 +551,12 @@ function normalizeTakomiPresentation(input: {
   const sessionId = boundedText(source.sessionId ?? source.session ?? source.boardId, 120);
   const runId = boundedText(source.runId ?? source.run ?? source.workflowRunId, 120);
   const taskId = boundedText(source.taskId ?? source.task ?? source.id, 120);
-  const mode = boundedText(source.mode, 80);
+  const mode = boundedText(
+    input.toolName === "takomi_subagent" && (source.async === true || source.asyncId)
+      ? "async"
+      : source.mode,
+    80,
+  );
   const count = readFiniteCount(source.count ?? source.totalCount);
   const completed = readFiniteCount(source.completed ?? source.completedCount);
   const total = readFiniteCount(source.total ?? source.totalCount);
@@ -640,6 +667,47 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           : {}),
       }));
 
+    const getReasoningBlock = (context: PiSessionContext, contentIndex: number) => {
+      const existing = context.reasoningBlocks.get(contentIndex);
+      if (existing) return existing;
+      const block = {
+        taskId: RuntimeTaskId.make(
+          `pi-reasoning-${context.activeTurnId ?? context.session.threadId}-${context.reasoningSequence++}`,
+        ),
+        text: "",
+        lastEmittedLength: 0,
+      };
+      context.reasoningBlocks.set(contentIndex, block);
+      return block;
+    };
+
+    const emitReasoningProgress = Effect.fn("emitPiReasoningProgress")(function* (
+      context: PiSessionContext,
+      contentIndex: number,
+      message: PiRpcMessage,
+      force: boolean,
+    ) {
+      const block = context.reasoningBlocks.get(contentIndex);
+      const text = boundedText(block?.text, REASONING_DETAIL_LIMIT);
+      if (
+        !block ||
+        !text ||
+        (!force && block.text.length - block.lastEmittedLength < REASONING_EMIT_INTERVAL)
+      ) {
+        return;
+      }
+      block.lastEmittedLength = block.text.length;
+      yield* emit({
+        ...(yield* eventBase(context, message)),
+        type: "task.progress",
+        payload: {
+          taskId: block.taskId,
+          description: "Thinking",
+          summary: text,
+        },
+      });
+    });
+
     const sendRpc = (context: PiSessionContext, message: Record<string, unknown>) =>
       Effect.gen(function* () {
         const encoded = jsonString(message);
@@ -704,6 +772,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         },
       });
       context.activeTurnId = undefined;
+      context.reasoningBlocks.clear();
       context.turnFailure = undefined;
       const nextSession = {
         ...context.session,
@@ -844,6 +913,18 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             : undefined;
           const updateType = readString(update?.type);
           const delta = typeof update?.delta === "string" ? update.delta : undefined;
+          const contentIndex =
+            typeof update?.contentIndex === "number" && Number.isInteger(update.contentIndex)
+              ? update.contentIndex
+              : 0;
+          if (updateType === "thinking_start") {
+            getReasoningBlock(context, contentIndex);
+          }
+          if (updateType === "thinking_delta" && delta) {
+            const block = getReasoningBlock(context, contentIndex);
+            block.text += delta;
+            yield* emitReasoningProgress(context, contentIndex, message, false);
+          }
           if (delta && (updateType === "text_delta" || updateType === "thinking_delta")) {
             yield* emit({
               ...(yield* eventBase(context, message)),
@@ -853,6 +934,13 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 delta,
               },
             });
+          }
+          if (updateType === "thinking_end") {
+            const block = getReasoningBlock(context, contentIndex);
+            const content = readString(update?.content);
+            if (content) block.text = content;
+            yield* emitReasoningProgress(context, contentIndex, message, true);
+            context.reasoningBlocks.delete(contentIndex);
           }
           if (updateType === "error") {
             const error =
@@ -867,6 +955,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           break;
         }
         case "message_end": {
+          for (const contentIndex of context.reasoningBlocks.keys()) {
+            yield* emitReasoningProgress(context, contentIndex, message, true);
+            context.reasoningBlocks.delete(contentIndex);
+          }
           const piMessage = isRecord(message.message) ? message.message : undefined;
           if (piMessage?.role === "assistant") {
             const detail = extractText(piMessage.content);
@@ -1015,6 +1107,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           break;
         }
         case "agent_settled":
+          for (const contentIndex of context.reasoningBlocks.keys()) {
+            yield* emitReasoningProgress(context, contentIndex, message, true);
+            context.reasoningBlocks.delete(contentIndex);
+          }
           if (context.abortingTurnId) {
             context.abortingTurnId = undefined;
             yield* completeTurn(context, "interrupted");
@@ -1214,6 +1310,8 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         pendingRpc: new Map(),
         toolActivityByCallId: new Map(),
         truncatedToolActivityCallIds: new Set(),
+        reasoningBlocks: new Map(),
+        reasoningSequence: 0,
         turns: [],
         activeTurnId: undefined,
         abortingTurnId: undefined,
