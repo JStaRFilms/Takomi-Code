@@ -16,6 +16,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -93,6 +94,7 @@ interface PiSessionContext {
   activeCompactionItemId: RuntimeItemId | undefined;
   defaultModelSlug: string | undefined;
   appliedModelSlug: string | undefined;
+  appliedThinkingLevel: string | undefined;
   turnFailure: string | undefined;
   stopped: boolean;
 }
@@ -725,6 +727,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         activeCompactionItemId: undefined,
         defaultModelSlug: undefined,
         appliedModelSlug: undefined,
+        appliedThinkingLevel: undefined,
         turnFailure: undefined,
         stopped: false,
       };
@@ -896,7 +899,28 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             });
           }
           context.appliedModelSlug = targetModel;
+          context.appliedThinkingLevel = undefined;
           context.session = { ...context.session, model: selectedModel };
+        }
+
+        const thinkingLevel = getModelSelectionStringOptionValue(
+          input.modelSelection,
+          "reasoningEffort",
+        );
+        if (thinkingLevel && thinkingLevel !== context.appliedThinkingLevel) {
+          const response = yield* requestRpc(context, {
+            type: "set_thinking_level",
+            level: thinkingLevel,
+          });
+          if (response.success !== true) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "set_thinking_level",
+              detail:
+                readString(response.error) ?? `Pi rejected thinking level '${thinkingLevel}'.`,
+            });
+          }
+          context.appliedThinkingLevel = thinkingLevel;
         }
       }
 

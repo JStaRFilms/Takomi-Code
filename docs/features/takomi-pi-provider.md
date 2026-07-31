@@ -69,6 +69,7 @@ T3 sends Pi's abort command and then terminates the RPC process after settlement
 - process cleanup
 - persistent Pi session resumption
 - custom Pi provider instances and models
+- live discovery of Pi's configured models and model-specific thinking levels
 
 ## Question and extension UI bridge
 
@@ -155,7 +156,8 @@ Automatic discovery/import of independently created terminal Pi sessions into Ta
 - terminal-to-T3 Pi session import is not supported
 - unknown extension UI methods are ignored
 - richer question metadata is reduced to T3's current canonical shape
-- Takomi assets are not bundled into the desktop installer; global installation or a suite root is still required
+- Pi/Takomi slash-command discovery is not integrated into the command menu
+- Takomi runtime assets are not bundled into the desktop installer; global installation or a suite root is still required
 
 ## Verification history
 
