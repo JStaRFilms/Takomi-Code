@@ -79,7 +79,8 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
       )}
       to="/"
     >
-      <T3Wordmark />
+      {/* <T3Wordmark /> */}
+      <span className="font-bold tracking-tight text-sm text-foreground">Takomi</span>
       <span
         className={cn(
           "truncate text-sm font-medium tracking-tight",
