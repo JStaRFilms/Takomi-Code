@@ -6,12 +6,14 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  type ToolPresentationEnvelope,
   type ProviderSendTurnInput,
   type ProviderSession,
   type ProviderSessionStartInput,
   type ProviderUserInputAnswers,
   RuntimeItemId,
   RuntimeRequestId,
+  RuntimeTaskId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -46,6 +48,8 @@ import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/P
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const PI_RESUME_VERSION = 1 as const;
+const REASONING_DETAIL_LIMIT = 16_000;
+const REASONING_EMIT_INTERVAL = 500;
 const TAKOMI_EXTENSION_NAMES = [
   "takomi-runtime",
   "takomi-subagents",
@@ -88,6 +92,16 @@ interface PiSessionContext {
   readonly input: Queue.Queue<Uint8Array>;
   readonly pendingUi: Map<ApprovalRequestId, PendingUiRequest>;
   readonly pendingRpc: Map<string, Deferred.Deferred<PiRpcMessage>>;
+  readonly toolActivityByCallId: Map<
+    string,
+    ReadonlyArray<NonNullable<ToolPresentationEnvelope["activity"]>[number]>
+  >;
+  readonly truncatedToolActivityCallIds: Set<string>;
+  readonly reasoningBlocks: Map<
+    number,
+    { readonly taskId: RuntimeTaskId; text: string; lastEmittedLength: number }
+  >;
+  reasoningSequence: number;
   readonly turns: Array<PiTurnSnapshot>;
   activeTurnId: TurnId | undefined;
   abortingTurnId: TurnId | undefined;
@@ -112,8 +126,144 @@ function readPiResumeCursor(value: unknown): string | undefined {
   return readString(value.sessionFile);
 }
 
+const TAKOMI_TOOL_FAMILIES = {
+  takomi_mode: "status",
+  takomi_apply_routing_policy: "configuration",
+  takomi_config_routing: "configuration",
+  takomi_workflow: "lifecycle",
+  takomi_board: "lifecycle",
+  takomi_subagent: "execution",
+  skill_index: "collection",
+  skill_manifest: "collection",
+  skill_load: "collection",
+  policy_manifest: "collection",
+  policy_load: "collection",
+  context_report: "report",
+  todo: "lifecycle",
+} as const;
+
+type TakomiToolName = keyof typeof TAKOMI_TOOL_FAMILIES;
+
+type PiResourceSettings = {
+  readonly extensions: readonly string[];
+  readonly packages: readonly string[];
+};
+
+function parsePiResourceSettings(raw: string): PiResourceSettings {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      extensions: Array.isArray(parsed.extensions)
+        ? parsed.extensions.filter((value): value is string => typeof value === "string")
+        : [],
+      packages: Array.isArray(parsed.packages)
+        ? parsed.packages.filter((value): value is string => typeof value === "string")
+        : [],
+    };
+  } catch {
+    return { extensions: [], packages: [] };
+  }
+}
+
+function npmPackageName(source: string): string | undefined {
+  if (!source.startsWith("npm:")) return undefined;
+  const spec = source.slice("npm:".length);
+  if (!spec) return undefined;
+  if (!spec.startsWith("@")) return spec.split("@", 1)[0] || undefined;
+  const slash = spec.indexOf("/");
+  if (slash < 0) return undefined;
+  const version = spec.indexOf("@", slash);
+  return version < 0 ? spec : spec.slice(0, version);
+}
+
+function packageExtensionEntries(raw: string): readonly string[] {
+  try {
+    const parsed = JSON.parse(raw) as { pi?: { extensions?: unknown } };
+    return Array.isArray(parsed.pi?.extensions)
+      ? parsed.pi.extensions.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function discoverPiCompanionExtensions(input: {
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly homePath: string;
+}) {
+  return Effect.gen(function* () {
+    const configuredHome =
+      readString(input.homePath) ?? readString(input.environment.PI_CODING_AGENT_DIR);
+    const userHome =
+      readString(input.environment.USERPROFILE) ?? readString(input.environment.HOME);
+    const agentDir =
+      configuredHome ?? (userHome ? input.path.join(userHome, ".pi", "agent") : undefined);
+    if (!agentDir) return [];
+
+    const settingsRaw = yield* input.fileSystem
+      .readFileString(input.path.join(agentDir, "settings.json"))
+      .pipe(Effect.orElseSucceed(() => ""));
+    const resourceSettings = parsePiResourceSettings(settingsRaw);
+    const candidates = resourceSettings.extensions.map((extensionPath) =>
+      input.path.isAbsolute(extensionPath)
+        ? extensionPath
+        : input.path.resolve(agentDir, extensionPath),
+    );
+
+    const globalExtensionsDir = input.path.join(agentDir, "extensions");
+    const globalEntries = yield* input.fileSystem
+      .readDirectory(globalExtensionsDir)
+      .pipe(Effect.orElseSucceed(() => [] as string[]));
+    for (const entry of globalEntries) {
+      const extensionName = entry.replace(/\.ts$/u, "");
+      if (
+        TAKOMI_EXTENSION_NAMES.includes(extensionName as (typeof TAKOMI_EXTENSION_NAMES)[number])
+      ) {
+        continue;
+      }
+      candidates.push(
+        entry.endsWith(".ts")
+          ? input.path.join(globalExtensionsDir, entry)
+          : input.path.join(globalExtensionsDir, entry, "index.ts"),
+      );
+    }
+
+    for (const source of resourceSettings.packages) {
+      const packageName = npmPackageName(source);
+      if (!packageName) continue;
+      const packageDir = input.path.join(
+        agentDir,
+        "npm",
+        "node_modules",
+        ...packageName.split("/"),
+      );
+      const manifestRaw = yield* input.fileSystem
+        .readFileString(input.path.join(packageDir, "package.json"))
+        .pipe(Effect.orElseSucceed(() => ""));
+      for (const extensionPath of packageExtensionEntries(manifestRaw)) {
+        candidates.push(input.path.resolve(packageDir, extensionPath));
+      }
+    }
+
+    const existing = yield* Effect.filter([...new Set(candidates)], (candidate) =>
+      input.fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false)),
+    );
+    return existing;
+  });
+}
+
+function takomiFamily(toolName: string): ToolPresentationEnvelope["family"] | undefined {
+  const normalized = toolName.toLowerCase();
+  if (normalized.startsWith("takomi_flow_")) return "execution";
+  return TAKOMI_TOOL_FAMILIES[normalized as TakomiToolName];
+}
+
 function classifyTool(toolName: string) {
   const name = toolName.toLowerCase();
+  if (name === "takomi_subagent") return "collab_agent_tool_call" as const;
+  if (takomiFamily(name)) return "dynamic_tool_call" as const;
   if (name.includes("bash") || name.includes("command") || name.includes("shell")) {
     return "command_execution" as const;
   }
@@ -132,6 +282,339 @@ function classifyTool(toolName: string) {
   if (name.includes("image")) return "image_view" as const;
   if (name.includes("mcp")) return "mcp_tool_call" as const;
   return "dynamic_tool_call" as const;
+}
+
+const PRESENTATION_DETAIL_LIMIT = 600;
+const PRESENTATION_INSPECTOR_DETAIL_LIMIT = 16_000;
+const PRESENTATION_ITEM_LIMIT = 12;
+const PRESENTATION_ACTIVITY_LIMIT = 120;
+const PRESENTATION_ARTIFACT_LIMIT = 8;
+
+function boundedText(value: unknown, limit = PRESENTATION_DETAIL_LIMIT): string | undefined {
+  const text = readString(value);
+  if (!text) return undefined;
+  return text.length <= limit ? text : `${text.slice(0, limit - 1).trimEnd()}…`;
+}
+
+function firstRecord(...values: unknown[]): Record<string, unknown> | undefined {
+  return values.find(isRecord);
+}
+
+function readFiniteCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : undefined;
+}
+
+type ToolPresentationItem = NonNullable<
+  NonNullable<ToolPresentationEnvelope["summary"]>["items"]
+>[number];
+
+function normalizePresentationItems(value: unknown): ToolPresentationItem[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, PRESENTATION_ITEM_LIMIT).flatMap((entry, index) => {
+    const record = isRecord(entry) ? entry : undefined;
+    const label = boundedText(
+      record?.label ??
+        record?.name ??
+        record?.subject ??
+        record?.title ??
+        record?.agent ??
+        record?.task ??
+        record?.id ??
+        entry,
+      160,
+    );
+    if (!label) return [];
+    const rawId = record?.id ?? record?.taskId ?? record?.agentId ?? `${index}`;
+    const id = boundedText(typeof rawId === "number" ? String(rawId) : rawId, 120)!;
+    const exitCode = typeof record?.exitCode === "number" ? record.exitCode : undefined;
+    const status =
+      boundedText(record?.status ?? record?.state, 80) ??
+      (exitCode === undefined ? undefined : exitCode === 0 ? "completed" : "failed");
+    const metadata = [record?.stage, record?.role, record?.agent, record?.model]
+      .map(readString)
+      .filter((value): value is string => value !== undefined)
+      .join(" · ");
+    const detail =
+      boundedText(
+        record?.detail ??
+          record?.description ??
+          record?.activeForm ??
+          record?.message ??
+          record?.reason ??
+          record?.task,
+        180,
+      ) ?? metadata;
+    return [{ id, label, ...(status ? { status } : {}), ...(detail ? { detail } : {}) }];
+  });
+}
+
+type ToolPresentationActivity = NonNullable<ToolPresentationEnvelope["activity"]>[number];
+
+type ToolPresentationArtifact = NonNullable<ToolPresentationEnvelope["artifactRefs"]>[number];
+
+function normalizeSubagentActivity(
+  source: Record<string, unknown>,
+  lifecycleStatus: "inProgress" | "completed" | "failed",
+): ToolPresentationActivity[] {
+  const results = Array.isArray(source.results) ? source.results : [];
+  const progressRows = Array.isArray(source.progress) ? source.progress : [];
+  const activity: ToolPresentationActivity[] = [];
+
+  for (const [resultIndex, value] of results.entries()) {
+    const result = isRecord(value) ? value : undefined;
+    if (!result) continue;
+    const agent =
+      boundedText(result.agent ?? result.agentName, 80) ?? `Subagent ${resultIndex + 1}`;
+    const agentId = `result-${resultIndex}`;
+    const agentLabel = results.length > 1 ? `Task ${resultIndex + 1} · ${agent}` : agent;
+    const allMessages = Array.isArray(result.messages) ? result.messages : [];
+    const messageOffset = Math.max(0, allMessages.length - 80);
+    const messages = allMessages.slice(messageOffset);
+    for (const [localMessageIndex, messageValue] of messages.entries()) {
+      const messageIndex = messageOffset + localMessageIndex;
+      const message = isRecord(messageValue) ? messageValue : undefined;
+      if (!message) continue;
+      const role = boundedText(message.role, 40) ?? "message";
+      const content = Array.isArray(message.content) ? message.content : [];
+      for (const [partIndex, partValue] of content.entries()) {
+        const part = isRecord(partValue) ? partValue : undefined;
+        if (!part) continue;
+        if (part.type === "thinking") {
+          const detail = boundedText(part.thinking, 2_400);
+          if (detail) {
+            activity.push({
+              id: `result-${resultIndex}-message-${messageIndex}-thinking-${partIndex}`,
+              agentId,
+              kind: "thinking",
+              label: `${agentLabel} thinking`,
+              detail,
+            });
+          }
+          continue;
+        }
+        if (part.type !== "toolCall" && part.type !== "tool_call") continue;
+        const toolName = boundedText(part.name ?? part.toolName, 100) ?? "Tool call";
+        const detail = boundedText(jsonString(part.arguments ?? part.args), 500);
+        activity.push({
+          id: `result-${resultIndex}-message-${messageIndex}-tool-${partIndex}`,
+          agentId,
+          kind: "tool",
+          label: toolName,
+          ...(detail ? { detail } : {}),
+          status: "completed",
+        });
+      }
+      const text = boundedText(extractText(message.content), 1_200);
+      if (text) {
+        activity.push({
+          id: `result-${resultIndex}-message-${messageIndex}`,
+          agentId,
+          kind: "message",
+          label:
+            role === "assistant"
+              ? `${agentLabel} response`
+              : role === "user"
+                ? `${agentLabel} prompt`
+                : `${agentLabel} · ${role}`,
+          detail: text,
+        });
+      }
+    }
+
+    const allToolCalls = Array.isArray(result.toolCalls) ? result.toolCalls : [];
+    const toolCallOffset = Math.max(0, allToolCalls.length - 80);
+    const toolCalls = allToolCalls.slice(toolCallOffset);
+    for (const [localToolIndex, toolValue] of toolCalls.entries()) {
+      const toolIndex = toolCallOffset + localToolIndex;
+      const tool = isRecord(toolValue) ? toolValue : undefined;
+      if (!tool) continue;
+      const label = boundedText(tool.text, 180) ?? "Tool call";
+      const detail = boundedText(tool.expandedText, 1_200);
+      activity.push({
+        id: `result-${resultIndex}-tool-summary-${toolIndex}`,
+        agentId,
+        kind: "tool",
+        label,
+        ...(detail && detail !== label ? { detail } : {}),
+        status: "completed",
+      });
+    }
+
+    const progress = firstRecord(result.progress, progressRows[resultIndex]);
+    if (!progress) continue;
+    const recentTools = Array.isArray(progress.recentTools) ? progress.recentTools.slice(-8) : [];
+    for (const [toolIndex, toolValue] of recentTools.entries()) {
+      const tool = isRecord(toolValue) ? toolValue : undefined;
+      if (!tool) continue;
+      const label = boundedText(tool.tool ?? tool.name, 100) ?? "Tool call";
+      const detail = boundedText(tool.args, 500);
+      const endedAt =
+        typeof tool.endMs === "number" && Number.isFinite(tool.endMs) ? String(tool.endMs) : label;
+      activity.push({
+        id: `result-${resultIndex}-recent-tool-${toolIndex}-${endedAt}`,
+        agentId,
+        kind: "tool",
+        label,
+        ...(detail ? { detail } : {}),
+        status: "completed",
+      });
+    }
+    const currentTool = boundedText(progress.currentTool, 100);
+    const recentOutput = Array.isArray(progress.recentOutput)
+      ? progress.recentOutput.filter((line): line is string => typeof line === "string").slice(-8)
+      : [];
+    const activityDetail = boundedText(
+      currentTool ? progress.currentToolArgs : recentOutput.join("\n"),
+      1_200,
+    );
+    if (currentTool || activityDetail) {
+      activity.push({
+        id: `result-${resultIndex}-status`,
+        agentId,
+        kind: "status",
+        label: currentTool ? `${agentLabel} · ${currentTool}` : `${agentLabel} latest output`,
+        ...(activityDetail ? { detail: activityDetail } : {}),
+        status: currentTool
+          ? "running"
+          : (boundedText(result.status ?? result.state, 80) ?? lifecycleStatus),
+      });
+    }
+  }
+
+  return activity;
+}
+
+function normalizeArtifactRefs(value: unknown): ToolPresentationArtifact[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, PRESENTATION_ARTIFACT_LIMIT).flatMap((entry) => {
+    const record = isRecord(entry) ? entry : undefined;
+    const path = boundedText(record?.path ?? record?.filePath ?? record?.uri ?? entry, 260);
+    if (!path) return [];
+    const kind = boundedText(record?.kind ?? record?.type ?? "file", 80)!;
+    const label = boundedText(record?.label ?? record?.name, 120);
+    return [{ kind, path, ...(label ? { label } : {}) }];
+  });
+}
+
+function normalizeTakomiPresentation(input: {
+  toolName: string;
+  args: unknown;
+  result: unknown;
+  partialResult: unknown;
+  isError: boolean;
+  lifecycleStatus: "inProgress" | "completed" | "failed";
+}): ToolPresentationEnvelope | undefined {
+  const family = takomiFamily(input.toolName);
+  if (!family) return undefined;
+  const args = firstRecord(input.args) ?? {};
+  const result = firstRecord(input.result, input.partialResult) ?? {};
+  const structuredContent = firstRecord(result.structuredContent, result.details) ?? {};
+  const source = { ...args, ...result, ...structuredContent };
+  const takomiUx = firstRecord(source.takomiUx);
+  const sourceTasks =
+    input.toolName === "todo" && Array.isArray(source.tasks)
+      ? source.tasks.filter((task) => !isRecord(task) || task.status !== "deleted")
+      : source.tasks;
+  const items = normalizePresentationItems(
+    sourceTasks ??
+      takomiUx?.tasks ??
+      source.stages ??
+      source.agents ??
+      source.items ??
+      source.results ??
+      (source.task ? [source.task] : undefined),
+  );
+  const artifactRefs = normalizeArtifactRefs(source.artifacts ?? source.files ?? source.assets);
+  const modeDetail =
+    input.toolName === "takomi_mode" && readString(source.mode)
+      ? [
+          `Mode: ${readString(source.mode)}`,
+          readString(source.role) ? `Role: ${readString(source.role)}` : undefined,
+          readString(source.stage) ? `Stage: ${readString(source.stage)}` : undefined,
+          readString(source.reason) ? `Reason: ${readString(source.reason)}` : undefined,
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : undefined;
+  const rawDetailText =
+    modeDetail ??
+    source.summary ??
+    source.message ??
+    source.detail ??
+    source.reason ??
+    source.output ??
+    extractText(input.result) ??
+    extractText(input.partialResult);
+  const detailText = boundedText(rawDetailText);
+  const inspectorDetailText = boundedText(rawDetailText, PRESENTATION_INSPECTOR_DETAIL_LIMIT);
+  const activity =
+    input.toolName === "takomi_subagent"
+      ? normalizeSubagentActivity(source, input.lifecycleStatus)
+      : [];
+  const action = boundedText(source.action ?? source.operation ?? source.phase, 120);
+  const todoCompleted = items.filter((item) => item.status === "completed").length;
+  const todoInProgress = items.some((item) => item.status === "in_progress");
+  const status = boundedText(
+    source.status ??
+      source.state ??
+      (input.toolName === "takomi_mode"
+        ? source.mode
+        : input.toolName === "takomi_subagent"
+          ? input.lifecycleStatus
+          : input.toolName === "todo"
+            ? todoInProgress
+              ? "in_progress"
+              : items.length > 0 && todoCompleted === items.length
+                ? "completed"
+                : "pending"
+            : undefined),
+    80,
+  );
+  const sessionId = boundedText(source.sessionId ?? source.session ?? source.boardId, 120);
+  const runId = boundedText(source.runId ?? source.run ?? source.workflowRunId, 120);
+  const taskId = boundedText(source.taskId ?? source.task ?? source.id, 120);
+  const mode = boundedText(
+    input.toolName === "takomi_subagent" && (source.async === true || source.asyncId)
+      ? "async"
+      : source.mode,
+    80,
+  );
+  const count = readFiniteCount(source.count ?? source.totalCount);
+  const completed =
+    input.toolName === "todo"
+      ? todoCompleted
+      : readFiniteCount(source.completed ?? source.completedCount);
+  const total =
+    input.toolName === "todo" ? items.length : readFiniteCount(source.total ?? source.totalCount);
+  const summary = {
+    ...(sessionId ? { sessionId } : {}),
+    ...(runId ? { runId } : {}),
+    ...(taskId ? { taskId } : {}),
+    ...(mode ? { mode } : {}),
+    ...(status ? { status } : {}),
+    ...(count !== undefined ? { count } : {}),
+    ...(completed !== undefined ? { completed } : {}),
+    ...(total !== undefined ? { total } : {}),
+    ...(items.length > 0 ? { items } : {}),
+  };
+  const errorMessage = boundedText(source.error ?? source.errorMessage ?? source.message);
+  return {
+    schemaVersion: 1,
+    namespace: input.toolName.toLowerCase().startsWith("takomi_flow_") ? "takomi-flow" : "takomi",
+    toolName: input.toolName,
+    family,
+    ...(action ? { action } : {}),
+    ...(Object.keys(summary).length > 0 ? { summary } : {}),
+    ...(detailText ? { detailText } : {}),
+    ...(inspectorDetailText ? { inspectorDetailText } : {}),
+    ...(activity.length > 0 ? { activity } : {}),
+    ...(artifactRefs.length > 0 ? { artifactRefs } : {}),
+    ...(input.isError
+      ? { error: { severity: "error", message: errorMessage ?? "Tool call failed." } }
+      : {}),
+  };
 }
 
 function extractText(value: unknown): string | undefined {
@@ -212,6 +695,47 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           : {}),
       }));
 
+    const getReasoningBlock = (context: PiSessionContext, contentIndex: number) => {
+      const existing = context.reasoningBlocks.get(contentIndex);
+      if (existing) return existing;
+      const block = {
+        taskId: RuntimeTaskId.make(
+          `pi-reasoning-${context.activeTurnId ?? context.session.threadId}-${context.reasoningSequence++}`,
+        ),
+        text: "",
+        lastEmittedLength: 0,
+      };
+      context.reasoningBlocks.set(contentIndex, block);
+      return block;
+    };
+
+    const emitReasoningProgress = Effect.fn("emitPiReasoningProgress")(function* (
+      context: PiSessionContext,
+      contentIndex: number,
+      message: PiRpcMessage,
+      force: boolean,
+    ) {
+      const block = context.reasoningBlocks.get(contentIndex);
+      const text = boundedText(block?.text, REASONING_DETAIL_LIMIT);
+      if (
+        !block ||
+        !text ||
+        (!force && block.text.length - block.lastEmittedLength < REASONING_EMIT_INTERVAL)
+      ) {
+        return;
+      }
+      block.lastEmittedLength = block.text.length;
+      yield* emit({
+        ...(yield* eventBase(context, message)),
+        type: "task.progress",
+        payload: {
+          taskId: block.taskId,
+          description: "Thinking",
+          summary: text,
+        },
+      });
+    });
+
     const sendRpc = (context: PiSessionContext, message: Record<string, unknown>) =>
       Effect.gen(function* () {
         const encoded = jsonString(message);
@@ -276,6 +800,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         },
       });
       context.activeTurnId = undefined;
+      context.reasoningBlocks.clear();
       context.turnFailure = undefined;
       const nextSession = {
         ...context.session,
@@ -416,6 +941,18 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             : undefined;
           const updateType = readString(update?.type);
           const delta = typeof update?.delta === "string" ? update.delta : undefined;
+          const contentIndex =
+            typeof update?.contentIndex === "number" && Number.isInteger(update.contentIndex)
+              ? update.contentIndex
+              : 0;
+          if (updateType === "thinking_start") {
+            getReasoningBlock(context, contentIndex);
+          }
+          if (updateType === "thinking_delta" && delta) {
+            const block = getReasoningBlock(context, contentIndex);
+            block.text += delta;
+            yield* emitReasoningProgress(context, contentIndex, message, false);
+          }
           if (delta && (updateType === "text_delta" || updateType === "thinking_delta")) {
             yield* emit({
               ...(yield* eventBase(context, message)),
@@ -425,6 +962,13 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 delta,
               },
             });
+          }
+          if (updateType === "thinking_end") {
+            const block = getReasoningBlock(context, contentIndex);
+            const content = readString(update?.content);
+            if (content) block.text = content;
+            yield* emitReasoningProgress(context, contentIndex, message, true);
+            context.reasoningBlocks.delete(contentIndex);
           }
           if (updateType === "error") {
             const error =
@@ -439,6 +983,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           break;
         }
         case "message_end": {
+          for (const contentIndex of context.reasoningBlocks.keys()) {
+            yield* emitReasoningProgress(context, contentIndex, message, true);
+            context.reasoningBlocks.delete(contentIndex);
+          }
           const piMessage = isRecord(message.message) ? message.message : undefined;
           if (piMessage?.role === "assistant") {
             const detail = extractText(piMessage.content);
@@ -464,12 +1012,60 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         case "tool_execution_end": {
           const toolCallId = readString(message.toolCallId) ?? (yield* randomId);
           const toolName = readString(message.toolName) ?? "tool";
-          const detail =
+          const rawDetail =
             extractText(message.partialResult) ??
             extractText(message.result) ??
             (message.args === undefined ? undefined : jsonString(message.args));
           const isEnd = message.type === "tool_execution_end";
-          const item = { toolCallId, toolName, args: message.args, result: message.result };
+          const lifecycleStatus = isEnd
+            ? message.isError === true
+              ? ("failed" as const)
+              : ("completed" as const)
+            : ("inProgress" as const);
+          let presentation = normalizeTakomiPresentation({
+            toolName,
+            args: message.args,
+            result: message.result,
+            partialResult: message.partialResult,
+            isError: message.isError === true,
+            lifecycleStatus,
+          });
+          if (presentation && toolName.toLowerCase() === "takomi_subagent") {
+            const mergedActivity = new Map<string, ToolPresentationActivity>();
+            for (const activity of context.toolActivityByCallId.get(toolCallId) ?? []) {
+              mergedActivity.set(activity.id, activity);
+            }
+            for (const activity of presentation.activity ?? []) {
+              mergedActivity.set(activity.id, activity);
+            }
+            const allActivity = [...mergedActivity.values()];
+            const activity = allActivity.slice(-PRESENTATION_ACTIVITY_LIMIT);
+            if (allActivity.length > PRESENTATION_ACTIVITY_LIMIT) {
+              context.truncatedToolActivityCallIds.add(toolCallId);
+            }
+            if (activity.length > 0) {
+              context.toolActivityByCallId.set(toolCallId, activity);
+              presentation = {
+                ...presentation,
+                activity,
+                ...(context.truncatedToolActivityCallIds.has(toolCallId)
+                  ? { activityTruncated: true }
+                  : {}),
+              };
+            }
+          }
+          // Takomi details cross the WebSocket boundary, so never reuse an
+          // unbounded Pi result as the generic row preview.
+          const detail = presentation
+            ? (presentation.detailText ?? boundedText(rawDetail))
+            : rawDetail;
+          const item = {
+            toolCallId,
+            toolName,
+            ...(presentation ? { presentation } : {}),
+            args: message.args,
+            result: message.result,
+          };
           if (isEnd) appendTurnItem(context, item);
           yield* emit({
             ...(yield* eventBase(context, message)),
@@ -482,12 +1078,16 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             itemId: RuntimeItemId.make(toolCallId),
             payload: {
               itemType: classifyTool(toolName),
-              status: isEnd ? (message.isError === true ? "failed" : "completed") : "inProgress",
+              status: lifecycleStatus,
               title: toolName,
               ...(detail ? { detail } : {}),
               data: item,
             },
           });
+          if (isEnd) {
+            context.toolActivityByCallId.delete(toolCallId);
+            context.truncatedToolActivityCallIds.delete(toolCallId);
+          }
           break;
         }
         case "compaction_start": {
@@ -535,6 +1135,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           break;
         }
         case "agent_settled":
+          for (const contentIndex of context.reasoningBlocks.keys()) {
+            yield* emitReasoningProgress(context, contentIndex, message, true);
+            context.reasoningBlocks.delete(contentIndex);
+          }
           if (context.abortingTurnId) {
             context.abortingTurnId = undefined;
             yield* completeTurn(context, "interrupted");
@@ -657,10 +1261,21 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           });
         }
       }
+      const companionExtensionPaths = settings.suiteRoot
+        ? yield* discoverPiCompanionExtensions({
+            fileSystem,
+            path,
+            environment: options.environment,
+            homePath: settings.homePath,
+          })
+        : [];
       const takomiArgs = settings.suiteRoot
         ? [
             "--no-extensions",
-            ...takomiExtensionPaths.flatMap((extensionPath) => ["--extension", extensionPath]),
+            ...[...companionExtensionPaths, ...takomiExtensionPaths].flatMap((extensionPath) => [
+              "--extension",
+              extensionPath,
+            ]),
             ...(takomiPromptPath ? ["--prompt-template", takomiPromptPath] : []),
           ]
         : [];
@@ -721,6 +1336,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         input: rpcInput,
         pendingUi: new Map(),
         pendingRpc: new Map(),
+        toolActivityByCallId: new Map(),
+        truncatedToolActivityCallIds: new Set(),
+        reasoningBlocks: new Map(),
+        reasoningSequence: 0,
         turns: [],
         activeTurnId: undefined,
         abortingTurnId: undefined,

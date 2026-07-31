@@ -83,18 +83,24 @@ describe("brand-assets", () => {
     expect(resolveWebAssetBrandForPackageVersion("0.0.29-nightly.20260723.882")).toBe("nightly");
   });
 
-  it("keeps development, nightly, and production icon families separate", () => {
+  it("uses the shared Takomi icon across application channels", () => {
     expect([
-      BRAND_ASSET_PATHS.developmentIconComposerProject,
-      BRAND_ASSET_PATHS.nightlyIconComposerProject,
-      BRAND_ASSET_PATHS.productionIconComposerProject,
+      BRAND_ASSET_PATHS.developmentDesktopIconPng,
+      BRAND_ASSET_PATHS.nightlyMacIconPng,
+      BRAND_ASSET_PATHS.productionMacIconPng,
     ]).toEqual([
-      "assets/dev/app-icon.icon",
-      "assets/nightly/app-icon.icon",
-      "assets/prod/app-icon.icon",
+      "assets/takomi/takomi-icon-1024.png",
+      "assets/takomi/takomi-icon-1024.png",
+      "assets/takomi/takomi-icon-1024.png",
     ]);
-    expect(BRAND_ASSET_PATHS.developmentDesktopIconPng).toMatch(/^assets\/dev\/blueprint-/);
-    expect(BRAND_ASSET_PATHS.nightlyMacIconPng).toMatch(/^assets\/nightly\/nightly-/);
-    expect(BRAND_ASSET_PATHS.productionMacIconPng).toMatch(/^assets\/prod\/black-/);
+    expect([
+      BRAND_ASSET_PATHS.developmentWindowsIconIco,
+      BRAND_ASSET_PATHS.nightlyWindowsIconIco,
+      BRAND_ASSET_PATHS.productionWindowsIconIco,
+    ]).toEqual([
+      "assets/takomi/takomi-icon.ico",
+      "assets/takomi/takomi-icon.ico",
+      "assets/takomi/takomi-icon.ico",
+    ]);
   });
 });

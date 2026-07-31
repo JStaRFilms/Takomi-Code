@@ -31,7 +31,7 @@ const DEFAULT_PI_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities
 });
 
 const PI_PRESENTATION = {
-  displayName: "Takomi (Pi)",
+  displayName: "Takomi",
   showInteractionModeToggle: true,
 } as const;
 

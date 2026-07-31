@@ -27,7 +27,7 @@ flowchart LR
 - **Web icon mapping:** `apps/web/src/components/chat/providerIconUtils.ts`
 - **Session logic:** `apps/web/src/session-logic.ts`
 
-The provider driver kind is `pi`; its display name is `Takomi (Pi)`.
+The provider driver kind remains `pi` for compatibility, but its visible product/provider name is `Takomi`. Pi is treated as the internal runtime harness rather than a separate visible provider.
 
 ## Data flow
 
@@ -92,13 +92,16 @@ Current fidelity limitations:
 - rich previews are not carried through
 - multi-select metadata is not explicitly mapped
 - unsupported Pi extension UI methods are ignored
-- most Takomi tools use generic T3 tool cards rather than custom components
+
+Core Takomi tools now use the semantic tool presentation described in [Takomi tool-call UI](./takomi-tool-call-ui-audit.md). Unknown tools intentionally retain the generic fallback.
 
 ## Tool presentation
 
 Pi emits `tool_execution_start`, `tool_execution_update`, and `tool_execution_end`. The adapter turns these into T3 runtime items and classifies common file, shell, search, MCP, subagent, and dynamic tool names.
 
-Tools such as Takomi boards, todos, and subagents run inside Pi. Unless a dedicated T3 component exists, their structured arguments/results appear in generic work-log cards.
+Core Takomi boards, todos, subagents, routing, workflow, skill, policy, and context tools are normalized into a bounded `ToolPresentationEnvelope`. The envelope survives activity projection for canonical inline cards and the optional inspector. Unknown tools and unsupported extensions remain legible through generic work-log cards.
+
+Main-agent `thinking_delta` events are projected as throttled reasoning progress, and subagent thinking blocks are retained as child-specific activity when emitted by the model.
 
 ## Configuration
 
@@ -122,6 +125,8 @@ With blank overrides, Pi discovers global assets from locations such as:
 ```
 
 For Takomi source development, set **Takomi suite root** to the VibeCode Protocol Suite checkout. The adapter then loads Takomi extensions and prompt templates from that checkout directly.
+
+Suite mode also discovers globally installed Pi companion packages from Pi settings and npm manifests. Companion extensions are loaded explicitly while duplicate global Takomi packages are excluded, preserving tools such as `ask_user_question`, `todo`, context-mode, browser/preview integrations, and other installed packages.
 
 `Pi agent directory` sets `PI_CODING_AGENT_DIR`. Do not point it at the whole Takomi suite unless that directory is intentionally structured as a Pi agent home.
 
@@ -157,6 +162,7 @@ Automatic discovery/import of independently created terminal Pi sessions into Ta
 - unknown extension UI methods are ignored
 - richer question metadata is reduced to T3's current canonical shape
 - Pi/Takomi slash-command discovery is not integrated into the command menu
+- live Pi model/thinking-level discovery is not integrated into composer controls
 - Takomi runtime assets are not bundled into the desktop installer; global installation or a suite root is still required
 
 ## Verification history

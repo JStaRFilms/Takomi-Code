@@ -186,6 +186,11 @@ export function projectActivityPayload(
   if ("kind" in data) {
     projectedData.kind = data.kind;
   }
+  // Pi adapters add this already bounded, provider-neutral envelope. Keep it
+  // while discarding raw args/results so semantic clients can render safely.
+  if ("presentation" in data) {
+    projectedData.presentation = data.presentation;
+  }
 
   const rawOutput = projectRawOutput(data.rawOutput);
   if (rawOutput) {
