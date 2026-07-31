@@ -143,7 +143,7 @@ function discoverPiModels(
   env: Record<string, string | undefined>,
 ): Effect.Effect<
   ReadonlyArray<ServerProviderModel>,
-  unknown,
+  never,
   ChildProcessSpawner.ChildProcessSpawner
 > {
   return Effect.scoped(
@@ -167,10 +167,7 @@ function discoverPiModels(
       const input = yield* Queue.unbounded<Uint8Array>();
       yield* Effect.addFinalizer(() => Queue.shutdown(input));
       yield* Stream.run(Stream.fromQueue(input), child.stdin).pipe(Effect.forkScoped);
-      yield* Queue.offer(
-        input,
-        new TextEncoder().encode(`${JSON.stringify({ type: "get_available_models" })}\n`),
-      );
+      yield* Queue.offer(input, new TextEncoder().encode('{"type":"get_available_models"}\n'));
       const response = yield* child.stdout.pipe(
         Stream.decodeText(),
         Stream.splitLines,
@@ -182,7 +179,7 @@ function discoverPiModels(
       if (Option.isNone(response)) return [];
       return serverModelsFromPiModels(response.value);
     }),
-  );
+  ).pipe(Effect.orElseSucceed(() => []));
 }
 
 export function makePendingPiProvider(enabled = true): Effect.Effect<ServerProviderDraft> {
@@ -267,9 +264,7 @@ export function checkPiProviderStatus(
     const rawVersion = versionResult.value.stdout.trim() || versionResult.value.stderr.trim();
     const version = parseGenericCliVersion(rawVersion) ?? (rawVersion || "unknown");
 
-    const discoveredModels = yield* discoverPiModels(settings, _cwd, env).pipe(
-      Effect.catch(() => Effect.succeed([])),
-    );
+    const discoveredModels = yield* discoverPiModels(settings, _cwd, env);
     const models = providerModelsFromSettings(
       [...BUILT_IN_MODELS, ...discoveredModels],
       settings.customModels,
