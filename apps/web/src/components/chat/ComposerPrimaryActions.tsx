@@ -53,6 +53,10 @@ const preventPointerFocus: PointerEventHandler<HTMLElement> = (event) => {
   event.preventDefault();
 };
 
+export function shouldShowComposerInterrupt(isRunning: boolean, hasSendableContent: boolean) {
+  return isRunning && !hasSendableContent;
+}
+
 export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   compact,
   pendingAction,
@@ -147,7 +151,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     );
   }
 
-  if (isRunning) {
+  if (shouldShowComposerInterrupt(isRunning, hasSendableContent)) {
     return renderStopGenerationButton(false);
   }
 

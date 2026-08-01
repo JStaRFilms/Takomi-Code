@@ -311,9 +311,10 @@ function deriveUnsettledTurnId(
 }
 
 /**
- * Settled turns fold their commentary and tool activity behind a
- * "Worked for ..." row anchored at the turn's first foldable entry; the
- * terminal assistant message stays visible below the fold.
+ * Settled turns fold tool activity behind a "Worked for ..." row while
+ * keeping every assistant message visible. Providers such as Pi can emit
+ * commentary between tool batches, and hiding it makes separate messages
+ * appear merged into one response.
  */
 function deriveTurnFolds(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
@@ -401,8 +402,9 @@ function deriveTurnFolds(input: {
     }
 
     const firstEntry = group.entries[0];
+    const firstFoldableEntry = group.entries.find((entry) => entry.kind === "work");
     const lastEntry = group.entries.at(-1);
-    if (!firstEntry || !lastEntry) {
+    if (!firstEntry || !firstFoldableEntry || !lastEntry) {
       continue;
     }
 
@@ -431,10 +433,10 @@ function deriveTurnFolds(input: {
         ? `Worked for ${duration}`
         : "Worked";
 
-    foldsByAnchorEntryId.set(firstEntry.id, {
+    foldsByAnchorEntryId.set(firstFoldableEntry.id, {
       turnId,
-      anchorEntryId: firstEntry.id,
-      createdAt: firstEntry.createdAt,
+      anchorEntryId: firstFoldableEntry.id,
+      createdAt: firstFoldableEntry.createdAt,
       hiddenEntryIds,
       label,
     });

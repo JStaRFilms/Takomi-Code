@@ -310,9 +310,12 @@ type ToolPresentationItem = NonNullable<
   NonNullable<ToolPresentationEnvelope["summary"]>["items"]
 >[number];
 
-function normalizePresentationItems(value: unknown): ToolPresentationItem[] {
+function normalizePresentationItems(
+  value: unknown,
+  itemLimit = PRESENTATION_ITEM_LIMIT,
+): ToolPresentationItem[] {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, PRESENTATION_ITEM_LIMIT).flatMap((entry, index) => {
+  return value.slice(0, itemLimit).flatMap((entry, index) => {
     const record = isRecord(entry) ? entry : undefined;
     const label = boundedText(
       record?.label ??
@@ -498,7 +501,7 @@ function normalizeArtifactRefs(value: unknown): ToolPresentationArtifact[] {
   });
 }
 
-function normalizeTakomiPresentation(input: {
+export function normalizeTakomiPresentation(input: {
   toolName: string;
   args: unknown;
   result: unknown;
@@ -525,6 +528,9 @@ function normalizeTakomiPresentation(input: {
       source.items ??
       source.results ??
       (source.task ? [source.task] : undefined),
+    // Todo is a durable task list, not a compact tool summary. Preserve the
+    // entire list so its count and the expanded chat card stay truthful.
+    input.toolName === "todo" ? Number.POSITIVE_INFINITY : PRESENTATION_ITEM_LIMIT,
   );
   const artifactRefs = normalizeArtifactRefs(source.artifacts ?? source.files ?? source.assets);
   const modeDetail =
@@ -539,14 +545,16 @@ function normalizeTakomiPresentation(input: {
           .join("\n")
       : undefined;
   const rawDetailText =
-    modeDetail ??
-    source.summary ??
-    source.message ??
-    source.detail ??
-    source.reason ??
-    source.output ??
-    extractText(input.result) ??
-    extractText(input.partialResult);
+    input.toolName === "todo" && items.length > 0
+      ? undefined
+      : (modeDetail ??
+        source.summary ??
+        source.message ??
+        source.detail ??
+        source.reason ??
+        source.output ??
+        extractText(input.result) ??
+        extractText(input.partialResult));
   const detailText = boundedText(rawDetailText);
   const inspectorDetailText = boundedText(rawDetailText, PRESENTATION_INSPECTOR_DETAIL_LIMIT);
   const activity =

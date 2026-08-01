@@ -106,7 +106,12 @@ export function TakomiToolCallCard(props: {
             <p className="whitespace-pre-wrap text-muted-foreground">{presentation.detailText}</p>
           ) : null}
           {presentation.summary?.items?.length ? (
-            <div className={cn("space-y-1", presentation.detailText && "mt-2")}>
+            <div
+              className={cn(
+                "max-h-60 space-y-1 overflow-y-auto pr-1",
+                presentation.detailText && "mt-2",
+              )}
+            >
               {presentation.summary.items.map((item) => (
                 <div key={item.id} className="flex gap-2 text-muted-foreground">
                   <span className="min-w-0 flex-1 truncate">{item.label}</span>

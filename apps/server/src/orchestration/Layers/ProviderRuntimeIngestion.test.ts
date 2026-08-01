@@ -1025,6 +1025,54 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("keeps separate assistant messages distinct within one provider turn", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-assistant-segments");
+    const itemId = asItemId("item-assistant-segments");
+
+    for (const [index, text] of ["first response", "second response"].entries()) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-assistant-segment-delta-${index}`),
+        provider: ProviderDriverKind.make("pi"),
+        createdAt: now,
+        threadId,
+        turnId,
+        itemId,
+        payload: { streamKind: "assistant_text", delta: text },
+      });
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId(`evt-assistant-segment-completed-${index}`),
+        provider: ProviderDriverKind.make("pi"),
+        createdAt: now,
+        threadId,
+        turnId,
+        itemId,
+        payload: { itemType: "assistant_message", status: "completed" },
+      });
+    }
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.messages.filter(
+          (message: ProviderRuntimeTestMessage) =>
+            message.turnId === "turn-assistant-segments" && !message.streaming,
+        ).length === 2,
+    );
+    const messages = thread.messages.filter(
+      (message: ProviderRuntimeTestMessage) => message.turnId === "turn-assistant-segments",
+    );
+
+    expect(messages.map((message: ProviderRuntimeTestMessage) => message.text)).toEqual([
+      "first response",
+      "second response",
+    ]);
+  });
+
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

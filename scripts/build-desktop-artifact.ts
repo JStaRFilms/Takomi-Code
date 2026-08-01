@@ -1913,6 +1913,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     packageManager: rootPackageJson.packageManager,
     description: "Takomi Code desktop build",
     author: "JStaRFilms",
+    repository: "https://github.com/JStaRFilms/Takomi-Code",
     main: "apps/desktop/dist-electron/main.cjs",
     build: yield* createBuildConfig(
       options.platform,

@@ -1,6 +1,10 @@
 {
   "name": "@t3tools/monorepo",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JStaRFilms/Takomi-Code.git"
+  },
   "type": "module",
   "scripts": {
     "prepare": "node scripts/clean-tsgo-backups.mjs && effect-tsgo patch && vp config --no-agent",

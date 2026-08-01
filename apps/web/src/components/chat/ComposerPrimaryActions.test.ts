@@ -59,6 +59,11 @@ function renderStandaloneStop() {
     }),
   );
 }
+import {
+  ComposerPrimaryActions,
+  formatPendingPrimaryActionLabel,
+  shouldShowComposerInterrupt,
+} from "./ComposerPrimaryActions";
 
 describe("formatPendingPrimaryActionLabel", () => {
   it("returns 'Submitting...' while responding", () => {
@@ -163,5 +168,15 @@ describe("ComposerPrimaryActions", () => {
     expect(renderPendingActions(true)).toContain("size-8 sm:size-7");
     expect(renderStandaloneStop()).toContain("size-8 sm:h-8 sm:w-8");
     expect(renderStandaloneStop()).not.toContain("sm:size-7");
+  });
+});
+
+describe("shouldShowComposerInterrupt", () => {
+  it("keeps the send action available for a steering prompt", () => {
+    expect(shouldShowComposerInterrupt(true, true)).toBe(false);
+  });
+
+  it("shows interrupt only when no prompt is ready to send", () => {
+    expect(shouldShowComposerInterrupt(true, false)).toBe(true);
   });
 });

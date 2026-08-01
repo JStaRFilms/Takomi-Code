@@ -1001,6 +1001,20 @@ const make = Effect.gen(function* () {
   const clearAssistantSegmentStateForTurn = (threadId: ThreadId, turnId: TurnId) =>
     Cache.invalidate(assistantSegmentStateByTurnKey, providerTurnKey(threadId, turnId));
 
+  const deactivateAssistantSegmentForTurn = (threadId: ThreadId, turnId: TurnId) =>
+    getAssistantSegmentStateForTurn(threadId, turnId).pipe(
+      Effect.flatMap((state) =>
+        Option.match(state, {
+          onNone: () => Effect.void,
+          onSome: (value) =>
+            setAssistantSegmentStateForTurn(threadId, turnId, {
+              ...value,
+              activeMessageId: null,
+            }),
+        }),
+      ),
+    );
+
   const getActiveAssistantMessageIdForTurn = (threadId: ThreadId, turnId: TurnId) =>
     getAssistantSegmentStateForTurn(threadId, turnId).pipe(
       Effect.map((state) =>
@@ -1809,7 +1823,10 @@ const make = Effect.gen(function* () {
         }
 
         if (turnId) {
-          yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
+          // A provider can emit several assistant messages during one turn.
+          // Keep the segment counter so the next message receives a distinct
+          // ID instead of appending to this completed message.
+          yield* deactivateAssistantSegmentForTurn(thread.id, turnId);
         }
       }
 
