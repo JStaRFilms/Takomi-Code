@@ -1,3 +1,6 @@
+import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
+import serverPackageJson from "../apps/server/package.json" with { type: "json" };
+import webPackageJson from "../apps/web/package.json" with { type: "json" };
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -85,6 +88,11 @@ function iconResizeSpawnerLayer(
 }
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
+  it("keeps the desktop bundle client and server versions aligned", () => {
+    assert.equal(webPackageJson.version, desktopPackageJson.version);
+    assert.equal(serverPackageJson.version, desktopPackageJson.version);
+  });
+
   it("resolves the dedicated nightly updater channel from nightly versions", () => {
     assert.equal(resolveDesktopUpdateChannel("0.0.17-nightly.20260413.42"), "nightly");
     assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
