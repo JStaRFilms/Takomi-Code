@@ -958,6 +958,7 @@ function collapseDerivedWorkLogEntries(
   for (const entry of entries) {
     const isTaskRow =
       entry.taskId !== undefined &&
+      !entry.taskId.startsWith("pi-reasoning-") &&
       !entry.isBackgroundTask &&
       (entry.activityKind === "task.started" ||
         entry.activityKind === "task.progress" ||
@@ -990,13 +991,15 @@ function collapseDerivedWorkLogEntries(
     }
 
     const collapseKey = entry.collapseKey;
-    const keyedPreviousIndex = collapseKey
-      ? activeIndexByCollapseKey.get(collapseKey)
-      : undefined;
+    const keyedPreviousIndex = collapseKey ? activeIndexByCollapseKey.get(collapseKey) : undefined;
     const fallbackPreviousIndex = collapsed.length > 0 ? collapsed.length - 1 : undefined;
     const previousIndex = keyedPreviousIndex ?? fallbackPreviousIndex;
     const previous = previousIndex === undefined ? undefined : collapsed[previousIndex];
-    if (previous && previousIndex !== undefined && shouldCollapseToolLifecycleEntries(previous, entry)) {
+    if (
+      previous &&
+      previousIndex !== undefined &&
+      shouldCollapseToolLifecycleEntries(previous, entry)
+    ) {
       collapsed[previousIndex] = mergeDerivedWorkLogEntries(previous, entry);
       if (
         (entry.activityKind === "tool.completed" || entry.activityKind === "task.completed") &&

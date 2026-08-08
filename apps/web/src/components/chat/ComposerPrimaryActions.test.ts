@@ -10,8 +10,6 @@ vi.mock("../SidebarStageBackdrop", () => ({
   useSidebarStageBackdropVariant: () => null,
 }));
 
-import { ComposerPrimaryActions, formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
-
 function renderPendingActions(isRunning: boolean) {
   return renderToStaticMarkup(
     createElement(ComposerPrimaryActions, {
