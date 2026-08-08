@@ -45,6 +45,7 @@ import {
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
 import type * as TextGeneration from "../../textGeneration/TextGeneration.ts";
+import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
 
@@ -59,6 +60,7 @@ const UPDATE = makeStaticProviderMaintenanceResolver(
 );
 
 export type PiDriverEnv =
+  | BackgroundPolicy.BackgroundPolicy
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem

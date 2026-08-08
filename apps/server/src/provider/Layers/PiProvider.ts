@@ -7,6 +7,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -29,6 +30,8 @@ const DRIVER_KIND = ProviderDriverKind.make("pi");
 const DEFAULT_PI_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
 });
+
+const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const PI_PRESENTATION = {
   displayName: "Takomi",
@@ -66,7 +69,7 @@ function readString(value: unknown): string | undefined {
 
 function decodePiModelsResponse(line: string): ReadonlyArray<PiModelRecord> | undefined {
   try {
-    const response: unknown = JSON.parse(line);
+    const response = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(line);
     if (
       !isRecord(response) ||
       response.command !== "get_available_models" ||
@@ -143,7 +146,7 @@ function discoverPiModels(
   env: Record<string, string | undefined>,
 ): Effect.Effect<
   ReadonlyArray<ServerProviderModel>,
-  unknown,
+  never,
   ChildProcessSpawner.ChildProcessSpawner
 > {
   return Effect.scoped(
@@ -169,7 +172,7 @@ function discoverPiModels(
       yield* Stream.run(Stream.fromQueue(input), child.stdin).pipe(Effect.forkScoped);
       yield* Queue.offer(
         input,
-        new TextEncoder().encode(`${JSON.stringify({ type: "get_available_models" })}\n`),
+        new TextEncoder().encode(`${encodeUnknownJsonString({ type: "get_available_models" })}\n`),
       );
       const response = yield* child.stdout.pipe(
         Stream.decodeText(),
@@ -182,7 +185,7 @@ function discoverPiModels(
       if (Option.isNone(response)) return [];
       return serverModelsFromPiModels(response.value);
     }),
-  );
+  ).pipe(Effect.orElseSucceed(() => []));
 }
 
 export function makePendingPiProvider(enabled = true): Effect.Effect<ServerProviderDraft> {
@@ -268,7 +271,7 @@ export function checkPiProviderStatus(
     const version = parseGenericCliVersion(rawVersion) ?? (rawVersion || "unknown");
 
     const discoveredModels = yield* discoverPiModels(settings, _cwd, env).pipe(
-      Effect.catch(() => Effect.succeed([])),
+      Effect.orElseSucceed(() => []),
     );
     const models = providerModelsFromSettings(
       [...BUILT_IN_MODELS, ...discoveredModels],

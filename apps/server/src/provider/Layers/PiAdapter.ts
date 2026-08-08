@@ -58,8 +58,9 @@ const TAKOMI_EXTENSION_NAMES = [
   "notify-sound",
 ] as const;
 const encoder = new TextEncoder();
-const decodeJsonString = Schema.decodeUnknownExit(Schema.UnknownFromJsonString);
-const encodeJsonString = Schema.encodeUnknownExit(Schema.UnknownFromJsonString);
+const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
+const decodeJsonString = Schema.decodeUnknownExit(UnknownFromJsonString);
+const encodeJsonString = Schema.encodeUnknownExit(UnknownFromJsonString);
 
 function jsonString(value: unknown): string | undefined {
   const encoded = encodeJsonString(value);
