@@ -1,10 +1,16 @@
 # Takomi Code
 
-> **Fork of [T3 Code](https://github.com/pingdotgg/t3code)** by [JStaRFilms](https://github.com/JStaRFilms), adding the Pi/Takomi provider and custom branding.
+> **Fork of [T3 Code](https://github.com/pingdotgg/t3code)** by [JStaRFilms](https://github.com/JStaRFilms).
+
+Takomi Code tracks upstream T3 Code and adds the Pi/Takomi provider, Takomi tool-call surfaces, and separate desktop/mobile branding. The fork is currently built from source; the upstream installation and release commands below install T3 Code, not Takomi Code.
+
+- [Takomi / Pi provider](./docs/features/takomi-pi-provider.md)
+- [Takomi desktop and Android builds](./docs/features/takomi-desktop-and-android.md)
+- [Current Takomi implementation status](./docs/features/takomi-code-handoff.md)
 
 ---
 
-# T3 Code
+## Upstream T3 Code overview
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
 

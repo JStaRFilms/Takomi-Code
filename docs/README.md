@@ -30,7 +30,6 @@ Mobile app: [apps/mobile/README.md](../apps/mobile/README.md)
 Everything below is for maintainers. Setup lives in the [root README](../README.md);
 policy in [CONTRIBUTING.md](../CONTRIBUTING.md); agent rules in [AGENTS.md](../AGENTS.md).
 
-- [Getting started](./getting-started/quick-start.md)
 - [Architecture overview](./internals/overview.md)
 - [Workspace layout](./internals/workspace-layout.md)
 - [Glossary](./internals/glossary.md)

@@ -169,7 +169,7 @@ Package: com.t3tools.t3code.dev
 Application label: Takomi Code Dev
 Architecture: arm64-v8a
 Embedded JavaScript bundle: assets/index.android.bundle
-Approximate size: 91 MB
+Approximate size: 89 MB
 ```
 
 This APK uses the generated debug signing key for local testing. It is not suitable for Play Store distribution.

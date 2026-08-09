@@ -1,6 +1,6 @@
 # Chat Conversation
 
-Note: _This is purely the output of the chat conversation and does not contain any raw data, codebase snippets, etc. used to generate the output._
+Note: _This is an archived chat transcript, not current operational documentation. Commands, branch state, and absolute `file:///` links reflect the machine at the time of the conversation and may now be stale. Use [the current handoff](../docs/features/takomi-code-handoff.md) and [build documentation](../docs/features/takomi-desktop-and-android.md) for the maintained state._
 
 ### User Input
 

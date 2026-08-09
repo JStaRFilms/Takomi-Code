@@ -1,6 +1,6 @@
 # Takomi tool-call UI
 
-**Status:** Implemented on `feat/takomi-tool-call-ui`
+**Status:** Implemented on `Takomi-Code`
 
 ## Overview
 
@@ -147,19 +147,5 @@ Manual smoke testing should use a fresh thread and cover a board session, Todo u
 - historical activities cannot recover structured content discarded before the presentation contract existed;
 - mobile has not yet implemented native semantic tool cards or the inspector;
 - Pi/Takomi slash-command discovery is deferred;
-- live Pi model and thinking-level discovery is deferred;
 - model providers that hide reasoning cannot expose a thinking trace;
 - arbitrary Pi widgets, headers, footers, and terminal-rendered extension chrome are not streamed into Takomi Code.
-
-## Implementation history
-
-```text
-928c17cbf feat(web): add Takomi tool call surfaces
-c9f4bfba8 fix(provider): preserve Pi package extensions in suite mode
-e86114ef4 fix(web): restore live Takomi inspector detail
-f14364d99 fix(web): enrich Takomi inspector activity
-2ee6818c7 fix(web): retain compact subagent activity history
-5a151963f fix(web): organize parallel subagent transcripts
-deb31b173 feat(web): surface Takomi thinking traces
-c004aa256 fix(web): flatten single agents and persist todos
-```

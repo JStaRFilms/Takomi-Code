@@ -1,5 +1,8 @@
 # Desktop Build + Full Rebrand Plan
 
+> [!NOTE]
+> This plan is archived and has been superseded. Its open questions and proposed paths describe the repository before the Takomi desktop/mobile work was completed. Use [the current handoff](../docs/features/takomi-code-handoff.md) and [build documentation](../docs/features/takomi-desktop-and-android.md) instead.
+
 ## Part 1: Building the Desktop App
 
 The desktop app uses Electron + Vite+. Here's the build sequence:
