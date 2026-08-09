@@ -82,8 +82,8 @@ pnpm dist:desktop:win:x64
 Validated output:
 
 ```text
-release\Takomi-Code-0.0.30-x64.exe
-release\Takomi-Code-0.0.30-x64.exe.blockmap
+release\Takomi-Code-0.0.34-x64.exe
+release\Takomi-Code-0.0.34-x64.exe.blockmap
 ```
 
 The validated executable metadata was:
@@ -92,7 +92,7 @@ The validated executable metadata was:
 ProductName: Takomi Code (Alpha)
 FileDescription: Takomi Code desktop build
 CompanyName: JStaRFilms
-FileVersion: 0.0.30
+FileVersion: 0.0.34
 ```
 
 The local installer is unsigned and may trigger Windows SmartScreen.
@@ -159,14 +159,14 @@ A release APK built with Gradle embeds `assets/index.android.bundle` and does no
 Validated APK:
 
 ```text
-%USERPROFILE%\Desktop\Takomi-Code-Standalone.apk
+release\Takomi-Code-Standalone-1.0.2.apk
 ```
 
 Validated properties:
 
 ```text
 Package: com.t3tools.t3code.dev
-Application label at the time of that build: T3 Code Dev
+Application label: Takomi Code Dev
 Architecture: arm64-v8a
 Embedded JavaScript bundle: assets/index.android.bundle
 Approximate size: 91 MB
@@ -217,7 +217,7 @@ It:
 4. runs a clean Expo Android prebuild when needed
 5. writes `android/local.properties`
 6. builds `app:assembleRelease` for `arm64-v8a`
-7. copies the standalone APK to the Desktop
+7. copies the standalone APK to the repository's `release` directory
 
 Manual core build command from the generated Android project:
 
@@ -285,16 +285,14 @@ Resolution: use a real short worktree on `C:` rather than a substituted drive.
 
 Cause: the debug development-client APK was installed.
 
-Resolution: uninstall/replace it with `Takomi-T3-Code-Standalone.apk`, which contains the embedded JavaScript bundle.
+Resolution: uninstall/replace it with `Takomi-Code-Standalone-1.0.2.apk`, which contains the embedded JavaScript bundle.
 
 ## Next distribution work
 
-Before calling the Android app Takomi Code or distributing it publicly:
+Before distributing the Android app publicly:
 
-- change all mobile display names and package IDs
-- use `com.jstarfilms.takomicode` and separate dev/preview IDs
-- replace URL schemes
-- replace icons and splash assets
+- migrate package IDs to `com.jstarfilms.takomicode` with separate dev/preview IDs
+- migrate URL schemes to Takomi-owned values
 - create a new Expo owner/project ID
 - replace or disable the upstream EAS update URL
 - configure Takomi-owned Clerk/OAuth values, or define a local-only path

@@ -162,7 +162,6 @@ Automatic discovery/import of independently created terminal Pi sessions into Ta
 - unknown extension UI methods are ignored
 - richer question metadata is reduced to T3's current canonical shape
 - Pi/Takomi slash-command discovery is not integrated into the command menu
-- live Pi model/thinking-level discovery is not integrated into composer controls
 - Takomi runtime assets are not bundled into the desktop installer; global installation or a suite root is still required
 
 ## Verification history
@@ -176,12 +175,3 @@ The implementation was validated against a real Pi/Takomi installation for:
 - session persistence and restart resumption
 - interruption
 - model switching
-
-Relevant implementation commits:
-
-```text
-63e3c96be feat(provider): add Pi/Takomi provider driver
-f958d26da feat(web): register Pi/Takomi provider in frontend
-0ae1acdc7 feat(provider): add Takomi suite support and rewrite Pi adapter
-aed343097 fix(provider): fix RPC response ordering and validate session startup
-```
