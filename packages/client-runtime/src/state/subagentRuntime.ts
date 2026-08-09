@@ -117,6 +117,13 @@ const ROSTER_LIMIT = 100;
  * as they did before this feature existed.
  */
 export function isBackgroundTaskActivity(payload: Record<string, unknown>): boolean {
+  // Pi emitted reasoning progress before it could declare taskType: "reasoning".
+  // Keep those persisted legacy rows out of the roster even though old servers
+  // stamped their otherwise-unknown task type as an agent.
+  const taskId = payload.taskId;
+  if (typeof taskId === "string" && taskId.startsWith("pi-reasoning-")) {
+    return true;
+  }
   return payload.agentKind !== "agent";
 }
 

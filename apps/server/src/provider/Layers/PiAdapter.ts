@@ -739,6 +739,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         type: "task.progress",
         payload: {
           taskId: block.taskId,
+          taskType: "reasoning",
           description: "Thinking",
           summary: text,
         },

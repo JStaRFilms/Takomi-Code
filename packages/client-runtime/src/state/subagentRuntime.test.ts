@@ -593,6 +593,17 @@ describe("background task exclusion", () => {
     expect(agents).toHaveLength(1);
   });
 
+  it("excludes Pi reasoning rows stamped as agents by older servers", () => {
+    const agents = fold([
+      activity("task.progress", {
+        taskId: "pi-reasoning-turn-1-0",
+        agentKind: "agent",
+        summary: "Thinking",
+      }),
+    ]);
+    expect(agents).toEqual([]);
+  });
+
   it("the server stamp is the only classifier: no stamp means no roster row", () => {
     const agents = fold([
       // Stamped background: agent-looking fields don't matter.
