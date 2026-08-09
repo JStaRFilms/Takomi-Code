@@ -4,10 +4,6 @@ Type: Cloned Repository
 Source: https://github.com/pingdotgg/t3code.git
 Date: 2026-07-22
 
-We need to investigate the question asking tool. I don't like the fact that when I click on it, it automatically answers it. I should be able to click on it and then click okay, something like that, like a confirmation.
-
-Then also, when I want to type the answer manually, it doesn't let me do that. I don't know why it never sends properly. It's just really weird.
-
 I ened the ability to continue an already exiiting pi thread and then the able to refresh already existing session. maybe I descide to runt he terminal and close t chat then later Ic aome back i can refresh.
 
 then also I wan tot be able to have access to all my slash commands from pi in Takomi GUI
