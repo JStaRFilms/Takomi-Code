@@ -440,7 +440,7 @@ describe("deriveMessagesTimelineRows", () => {
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
   });
 
-  it("keeps settled-turn commentary visible while folding work", () => {
+  it("keeps Takomi commentary visible without changing upstream folding for other providers", () => {
     const timelineEntries = [
       {
         id: "user-entry",
@@ -480,6 +480,12 @@ describe("deriveMessagesTimelineRows", () => {
           turnId: "turn-1" as never,
           label: "Ran command",
           tone: "tool" as const,
+          presentation: {
+            schemaVersion: 1 as const,
+            namespace: "takomi" as const,
+            toolName: "bash",
+            family: "execution" as const,
+          },
         },
       },
       {
@@ -540,6 +546,23 @@ describe("deriveMessagesTimelineRows", () => {
     expect(
       expandedRows.find((row) => row.kind === "turn-fold" && row.expanded === true),
     ).toBeDefined();
+
+    const upstreamRows = deriveMessagesTimelineRows({
+      timelineEntries: timelineEntries.map((entry) => {
+        if (entry.kind !== "work") return entry;
+        const { presentation: _presentation, ...workEntry } = entry.entry;
+        return { ...entry, entry: workEntry };
+      }),
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+    expect(upstreamRows.map((row) => row.id)).toEqual([
+      "user-entry",
+      "turn-fold:turn-1",
+      "assistant-final-entry",
+    ]);
   });
 
   it("derives a sane duration for a steer-superseded turn with one instant commentary message", () => {

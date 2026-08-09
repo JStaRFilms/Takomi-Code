@@ -311,10 +311,9 @@ function deriveUnsettledTurnId(
 }
 
 /**
- * Settled turns fold tool activity behind a "Worked for ..." row while
- * keeping every assistant message visible. Providers such as Pi can emit
- * commentary between tool batches, and hiding it makes separate messages
- * appear merged into one response.
+ * Settled turns use upstream's compact commentary-and-tool fold by default.
+ * Takomi turns keep assistant messages visible because Pi can emit separate
+ * commentary between tool batches that would otherwise appear merged.
  */
 function deriveTurnFolds(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
@@ -384,18 +383,24 @@ function deriveTurnFolds(input: {
     if (group.hasStreamingMessage) {
       continue;
     }
+    const keepAssistantMessagesVisible = group.entries.some(
+      (entry) =>
+        entry.kind === "work" &&
+        (entry.entry.presentation?.namespace === "takomi" ||
+          entry.entry.presentation?.namespace === "takomi-flow"),
+    );
     const hiddenEntryIds = new Set<string>();
     for (const entry of group.entries) {
       if (entry.id === group.terminalEntry?.id) {
         continue;
       }
-      if (entry.kind !== "work") {
+      if (entry.kind === "message" && keepAssistantMessagesVisible) {
         continue;
       }
       // Agent-spawn CTA rows never fold: workflows outlive their launching
       // turn (dynamic spawns, background execution), and folding the CTA
       // when the turn settles makes a still-running fleet invisible.
-      if (entry.entry.agentSpawn !== undefined) {
+      if (entry.kind === "work" && entry.entry.agentSpawn !== undefined) {
         continue;
       }
       hiddenEntryIds.add(entry.id);
@@ -405,9 +410,11 @@ function deriveTurnFolds(input: {
     }
 
     const firstEntry = group.entries[0];
-    const firstFoldableEntry = group.entries.find((entry) => entry.kind === "work");
+    const anchorEntry = keepAssistantMessagesVisible
+      ? group.entries.find((entry) => entry.kind === "work")
+      : firstEntry;
     const lastEntry = group.entries.at(-1);
-    if (!firstEntry || !firstFoldableEntry || !lastEntry) {
+    if (!firstEntry || !anchorEntry || !lastEntry) {
       continue;
     }
 
@@ -436,10 +443,10 @@ function deriveTurnFolds(input: {
         ? `Worked for ${duration}`
         : "Worked";
 
-    foldsByAnchorEntryId.set(firstFoldableEntry.id, {
+    foldsByAnchorEntryId.set(anchorEntry.id, {
       turnId,
-      anchorEntryId: firstFoldableEntry.id,
-      createdAt: firstFoldableEntry.createdAt,
+      anchorEntryId: anchorEntry.id,
+      createdAt: anchorEntry.createdAt,
       hiddenEntryIds,
       label,
     });
