@@ -34,6 +34,10 @@ const makeEnvironment = (
 ) =>
   DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(makeEnvironmentLayer(overrides, env)));
 
+const normalize = (value: string) => value.replaceAll("\\", "/").replace(/^[A-Za-z]:/, "");
+const normalizeOption = (option: Option.Option<string>) =>
+  Option.map(option, (value) => normalize(value));
+
 describe("DesktopEnvironment", () => {
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
@@ -51,22 +55,34 @@ describe("DesktopEnvironment", () => {
       );
 
       assert.equal(environment.isDevelopment, true);
-      assert.equal(environment.appDataDirectory, "/Users/alice/Library/Application Support");
-      assert.equal(environment.baseDir, "/tmp/t3");
-      assert.equal(environment.stateDir, "/tmp/t3/userdata");
-      assert.equal(environment.desktopSettingsPath, "/tmp/t3/userdata/desktop-settings.json");
-      assert.equal(environment.clientSettingsPath, "/tmp/t3/userdata/client-settings.json");
       assert.equal(
-        environment.savedEnvironmentRegistryPath,
+        normalize(environment.appDataDirectory),
+        "/Users/alice/Library/Application Support",
+      );
+      assert.equal(normalize(environment.baseDir), "/tmp/t3");
+      assert.equal(normalize(environment.stateDir), "/tmp/t3/userdata");
+      assert.equal(
+        normalize(environment.desktopSettingsPath),
+        "/tmp/t3/userdata/desktop-settings.json",
+      );
+      assert.equal(
+        normalize(environment.clientSettingsPath),
+        "/tmp/t3/userdata/client-settings.json",
+      );
+      assert.equal(
+        normalize(environment.savedEnvironmentRegistryPath),
         "/tmp/t3/userdata/saved-environments.json",
       );
-      assert.equal(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
-      assert.equal(environment.logDir, "/tmp/t3/userdata/logs");
-      assert.equal(environment.browserArtifactsDir, "/tmp/t3/userdata/browser-artifacts");
-      assert.equal(environment.rootDir, "/repo");
-      assert.equal(environment.appRoot, "/repo");
-      assert.equal(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
-      assert.equal(environment.backendCwd, "/repo");
+      assert.equal(normalize(environment.serverSettingsPath), "/tmp/t3/userdata/settings.json");
+      assert.equal(normalize(environment.logDir), "/tmp/t3/userdata/logs");
+      assert.equal(
+        normalize(environment.browserArtifactsDir),
+        "/tmp/t3/userdata/browser-artifacts",
+      );
+      assert.equal(normalize(environment.rootDir), "/repo");
+      assert.equal(normalize(environment.appRoot), "/repo");
+      assert.equal(normalize(environment.backendEntryPath), "/repo/apps/server/dist/bin.mjs");
+      assert.equal(normalize(environment.backendCwd), "/repo");
       assert.equal(environment.appUserModelId, "com.jstarfilms.takomicode.dev");
       assert.equal(environment.linuxWmClass, "takomi-code-dev");
       assert.deepEqual(
@@ -91,10 +107,13 @@ describe("DesktopEnvironment", () => {
       );
 
       assert.equal(environment.isDevelopment, false);
-      assert.equal(environment.stateDir, "/tmp/t3/userdata");
-      assert.equal(environment.logDir, "/tmp/t3/userdata/logs");
-      assert.equal(environment.browserArtifactsDir, "/tmp/t3/userdata/browser-artifacts");
-      assert.equal(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
+      assert.equal(normalize(environment.stateDir), "/tmp/t3/userdata");
+      assert.equal(normalize(environment.logDir), "/tmp/t3/userdata/logs");
+      assert.equal(
+        normalize(environment.browserArtifactsDir),
+        "/tmp/t3/userdata/browser-artifacts",
+      );
+      assert.equal(normalize(environment.serverSettingsPath), "/tmp/t3/userdata/settings.json");
     }),
   );
 
@@ -106,8 +125,8 @@ describe("DesktopEnvironment", () => {
       );
       const production = yield* makeEnvironment();
 
-      assert.equal(development.stateDir, "/Users/alice/.takomi-code/dev");
-      assert.equal(production.stateDir, "/Users/alice/.takomi-code/userdata");
+      assert.equal(normalize(development.stateDir), "/Users/alice/.takomi-code/dev");
+      assert.equal(normalize(production.stateDir), "/Users/alice/.takomi-code/userdata");
     }),
   );
 
@@ -135,11 +154,11 @@ describe("DesktopEnvironment", () => {
         Option.none(),
       );
       assert.deepEqual(
-        environment.resolvePickFolderDefaultPath({ initialPath: "~" }),
+        normalizeOption(environment.resolvePickFolderDefaultPath({ initialPath: "~" })),
         Option.some("/Users/alice"),
       );
       assert.deepEqual(
-        environment.resolvePickFolderDefaultPath({ initialPath: "~/project" }),
+        normalizeOption(environment.resolvePickFolderDefaultPath({ initialPath: "~/project" })),
         Option.some("/Users/alice/project"),
       );
     }),

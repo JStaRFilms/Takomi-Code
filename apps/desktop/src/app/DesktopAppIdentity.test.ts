@@ -149,7 +149,10 @@ describe("DesktopAppIdentity", () => {
         const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
         const userDataPath = yield* identity.resolveUserDataPath;
 
-        assert.equal(userDataPath, "/Users/alice/Library/Application Support/Takomi Code (Alpha)");
+        assert.equal(
+          userDataPath.replaceAll("\\", "/"),
+          "/Users/alice/Library/Application Support/Takomi Code (Alpha)",
+        );
       }),
       { legacyPathExists: true },
     ),
@@ -171,11 +174,11 @@ describe("DesktopAppIdentity", () => {
         const error = yield* identity.resolveUserDataPath.pipe(Effect.flip);
 
         assert.instanceOf(error, DesktopAppIdentity.DesktopUserDataPathResolutionError);
-        assert.equal(error.legacyPath, legacyPath);
+        assert.equal(error.legacyPath.replaceAll("\\", "/"), legacyPath);
         assert.strictEqual(error.cause, cause);
         assert.equal(
           error.message,
-          `Failed to inspect legacy desktop user-data path at "${legacyPath}".`,
+          `Failed to inspect legacy desktop user-data path at "${error.legacyPath}".`,
         );
       }),
       { legacyPathProbeError: cause },
