@@ -81,6 +81,7 @@ describe("DesktopEnvironment", () => {
       );
       assert.equal(normalize(environment.rootDir), "/repo");
       assert.equal(normalize(environment.appRoot), "/repo");
+      assert.equal(normalize(environment.serverRoot), "/repo");
       assert.equal(normalize(environment.backendEntryPath), "/repo/apps/server/dist/bin.mjs");
       assert.equal(normalize(environment.backendCwd), "/repo");
       assert.equal(environment.appUserModelId, "com.jstarfilms.takomicode.dev");
@@ -117,6 +118,24 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
+  it.effect("uses the packaged Windows server sidecar as the backend root", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment({
+        platform: "win32",
+        isPackaged: true,
+        appPath: "/install/resources/app.asar",
+        resourcesPath: "/install/resources",
+      });
+
+      assert.equal(normalize(environment.appRoot), "/install/resources/app.asar");
+      assert.equal(normalize(environment.serverRoot), "/install/resources/server.asar");
+      assert.equal(
+        normalize(environment.backendEntryPath),
+        "/install/resources/server.asar/apps/server/dist/bin.mjs",
+      );
+    }),
+  );
+
   it.effect("keeps implicit development state separate from production state", () =>
     Effect.gen(function* () {
       const development = yield* makeEnvironment(
@@ -135,12 +154,12 @@ describe("DesktopEnvironment", () => {
       const environment = yield* makeEnvironment(
         {},
         {
-          T3CODE_DESKTOP_APP_USER_MODEL_ID: " com.t3tools.t3code.dev.local ",
+          T3CODE_DESKTOP_APP_USER_MODEL_ID: " com.jstarfilms.takomicode.dev.local ",
           VITE_DEV_SERVER_URL: "http://localhost:5173",
         },
       );
 
-      assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev.local");
+      assert.equal(environment.appUserModelId, "com.jstarfilms.takomicode.dev.local");
     }),
   );
 
