@@ -1049,8 +1049,18 @@ function collapseDerivedWorkLogEntries(
   const groupKeyByTaskId = new Map<string, string>();
   const toolLifecycleRowIndex = new Map<string, number>();
   for (const entry of entries) {
+    const previous = collapsed.at(-1);
+    if (
+      previous?.taskId?.startsWith("pi-reasoning-") &&
+      previous.taskId === entry.taskId &&
+      entry.sourceActivityKind === "task.progress"
+    ) {
+      collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(previous, entry);
+      continue;
+    }
     const isTaskRow =
       entry.taskId !== undefined &&
+      !entry.taskId.startsWith("pi-reasoning-") &&
       !entry.isBackgroundTask &&
       (entry.sourceActivityKind === "task.started" ||
         entry.sourceActivityKind === "task.progress" ||
@@ -1107,12 +1117,12 @@ function collapseDerivedWorkLogEntries(
       }
       toolLifecycleRowIndex.delete(lifecycleKey);
     }
-    const previous = collapsed.at(-1);
-    if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
+    const adjacentPrevious = collapsed.at(-1);
+    if (adjacentPrevious && shouldCollapseToolLifecycleEntries(adjacentPrevious, entry)) {
       const previousIndex = collapsed.length - 1;
-      const previousKey = toolLifecycleCollapseMapKey(previous);
+      const previousKey = toolLifecycleCollapseMapKey(adjacentPrevious);
       if (previousKey !== undefined) toolLifecycleRowIndex.delete(previousKey);
-      const merged = mergeDerivedWorkLogEntries(previous, entry);
+      const merged = mergeDerivedWorkLogEntries(adjacentPrevious, entry);
       collapsed[previousIndex] = merged;
       const mergedKey = toolLifecycleCollapseMapKey(merged);
       if (mergedKey !== undefined) toolLifecycleRowIndex.set(mergedKey, previousIndex);
