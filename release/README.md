@@ -77,6 +77,29 @@ The Android build requires Java and the Android SDK. It uses the managed short p
 a standalone arm64 preview APK, signed with the generated debug key for direct installation. It
 does not require Metro.
 
+## Windows desktop build troubleshooting
+
+The desktop build verifies the packaged server from an isolated temporary directory. If the build
+reports that a user-level directory such as `C:\Users\<username>\node_modules` is visible from the
+probe directory, use a temporary directory outside the user profile and rerun the build in the
+same PowerShell session:
+
+```powershell
+New-Item -ItemType Directory -Force C:\t3code-tmp | Out-Null
+$env:TEMP = "C:\t3code-tmp"
+$env:TMP = "C:\t3code-tmp"
+$env:TMPDIR = "C:\t3code-tmp"
+vp run dist:local:desktop
+```
+
+This can happen even when the command is launched from T3 Code and the working directory is the
+repository. Windows chooses the probe location from the temporary-directory environment variables,
+not from the terminal's working directory. The variables above affect only the current PowerShell
+session.
+
+The warning about a missing WSL `node-pty` prebuild does not fail the build, but the packaged WSL
+backend will remain unavailable until a Linux `pty.node` is bundled.
+
 ## What stays in GitHub/EAS
 
 The local Android APK is deliberately **not Play Store uploadable**. GitHub/EAS remains responsible
