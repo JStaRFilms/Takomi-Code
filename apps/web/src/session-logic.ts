@@ -530,9 +530,6 @@ function parseUserInputQuestions(
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
-      if (options.length === 0) {
-        return null;
-      }
       return {
         id: question.id,
         header: question.header,
@@ -1174,7 +1171,22 @@ function shouldCollapseToolLifecycleEntries(
   if (next.sourceActivityKind !== "tool.updated" && next.sourceActivityKind !== "tool.completed") {
     return false;
   }
-  if (previous.turnId !== next.turnId) {
+  const isSameTakomiSubagentInvocation =
+    previous.presentation?.toolName === "takomi_subagent" &&
+    next.presentation?.toolName === "takomi_subagent" &&
+    previous.toolCallId !== undefined &&
+    previous.toolCallId === next.toolCallId;
+  const previousRunId = previous.presentation?.summary?.runId;
+  const nextRunId = next.presentation?.summary?.runId;
+  if (
+    isSameTakomiSubagentInvocation &&
+    previousRunId !== undefined &&
+    nextRunId !== undefined &&
+    previousRunId !== nextRunId
+  ) {
+    return false;
+  }
+  if (previous.turnId !== next.turnId && !isSameTakomiSubagentInvocation) {
     return false;
   }
   if (
@@ -1252,6 +1264,9 @@ function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | un
   }
   if (presentation?.toolName === "todo") {
     return "takomi-state:todo";
+  }
+  if (presentation?.toolName === "takomi_subagent" && entry.toolCallId) {
+    return `takomi-invocation:${entry.toolCallId}`;
   }
   if (presentation?.toolName === "takomi_subagent" && presentation.summary?.runId) {
     return `takomi-state:subagent:${presentation.summary.runId}`;

@@ -6,6 +6,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
+  type RuntimeTaskUsage,
   type ToolPresentationEnvelope,
   type ToolLifecycleItemType,
   type ProviderSendTurnInput,
@@ -380,6 +381,7 @@ export type TakomiSubagentTask = {
   readonly role?: string;
   readonly model?: string;
   readonly effort?: string;
+  readonly typedUsage?: RuntimeTaskUsage;
   readonly parentAgentId?: string;
   readonly workflowName?: string;
   readonly agentIndex?: number;
@@ -608,15 +610,21 @@ function normalizeSubagentActivity(
       1_200,
     );
     if (currentTool || activityDetail) {
+      const resultStatus = normalizeTakomiTaskStatus(result.status ?? result.state);
       activity.push({
         id: `result-${resultIndex}-status`,
         agentId,
         kind: "status",
         label: currentTool ? `${agentLabel} · ${currentTool}` : `${agentLabel} latest output`,
         ...(activityDetail ? { detail: activityDetail } : {}),
-        status: currentTool
-          ? "running"
-          : (boundedText(result.status ?? result.state, 80) ?? lifecycleStatus),
+        status:
+          resultStatus && isTerminalTakomiTaskStatus(resultStatus)
+            ? resultStatus
+            : lifecycleStatus === "completed" || lifecycleStatus === "failed"
+              ? lifecycleStatus
+              : currentTool
+                ? "running"
+                : (boundedText(result.status ?? result.state, 80) ?? lifecycleStatus),
       });
     }
   }
@@ -699,6 +707,40 @@ function nativeTakomiTaskStatus(
   return normalizeTakomiTaskStatus(record.status ?? record.state) ?? fallback;
 }
 
+function takomiTaskUsage(
+  record: Record<string, unknown>,
+  progress: Record<string, unknown> | undefined,
+): RuntimeTaskUsage | undefined {
+  const usage = firstRecord(record.usage, progress?.usage);
+  const tokenUsage = firstRecord(record.totalTokens, progress?.totalTokens);
+  const inputTokens = readFiniteCount(usage?.input ?? tokenUsage?.input);
+  const cachedInputTokens = readFiniteCount(usage?.cacheRead ?? tokenUsage?.cacheRead);
+  const outputTokens = readFiniteCount(usage?.output ?? tokenUsage?.output);
+  const totalTokens =
+    readFiniteCount(tokenUsage?.total) ??
+    readFiniteCount(record.tokens ?? progress?.tokens) ??
+    (inputTokens !== undefined || outputTokens !== undefined
+      ? (inputTokens ?? 0) + (outputTokens ?? 0)
+      : undefined);
+  const durationMs =
+    readFiniteCount(record.durationMs ?? progress?.durationMs) ??
+    (typeof record.startedAt === "number" && typeof record.endedAt === "number"
+      ? readFiniteCount(record.endedAt - record.startedAt)
+      : undefined);
+  const toolUses = readFiniteCount(record.toolCount ?? progress?.toolCount);
+  if (totalTokens === undefined && durationMs === undefined && toolUses === undefined) {
+    return undefined;
+  }
+  return {
+    totalTokens: totalTokens ?? 0,
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(toolUses !== undefined ? { toolUses } : {}),
+  };
+}
+
 function takomiTaskFromRecord(
   value: unknown,
   defaults: {
@@ -750,6 +792,7 @@ function takomiTaskFromRecord(
   const role = boundedText(record.role ?? record.subagentType ?? record.subagent_type, 120);
   const model = boundedText(record.model ?? record.modelId ?? record.model_id, 160);
   const effort = boundedText(record.effort ?? record.thinkingLevel ?? record.thinking_level, 80);
+  const typedUsage = takomiTaskUsage(record, progress);
   const agentIndex =
     readFiniteCount(record.agentIndex ?? record.agent_index ?? record.index ?? record.flatIndex) ??
     defaults.agentIndex;
@@ -764,6 +807,7 @@ function takomiTaskFromRecord(
     ...(role ? { role } : {}),
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
+    ...(typedUsage ? { typedUsage } : {}),
     ...(defaults.parentAgentId ? { parentAgentId: defaults.parentAgentId } : {}),
     ...(defaults.workflowName ? { workflowName: defaults.workflowName } : {}),
     ...(agentIndex !== undefined ? { agentIndex } : {}),
@@ -914,6 +958,7 @@ function taskFingerprint(task: TakomiSubagentTask): string {
     task.role ?? "",
     task.model ?? "",
     task.effort ?? "",
+    task.typedUsage ? JSON.stringify(task.typedUsage) : "",
     task.parentAgentId ?? "",
     task.workflowName ?? "",
     task.agentIndex ?? "",
@@ -1013,7 +1058,7 @@ export function normalizeTakomiPresentation(input: {
     input.toolName === "todo" && Array.isArray(source.tasks)
       ? source.tasks.filter((task) => !isRecord(task) || task.status !== "deleted")
       : source.tasks;
-  const items = normalizePresentationItems(
+  const rawItems = normalizePresentationItems(
     sourceTasks ??
       takomiUx?.tasks ??
       source.stages ??
@@ -1026,6 +1071,15 @@ export function normalizeTakomiPresentation(input: {
     input.toolName === "todo" ? Number.POSITIVE_INFINITY : PRESENTATION_ITEM_LIMIT,
     input.toolName === "takomi_subagent" ? resolveTakomiChildIdentity : undefined,
   );
+  const items =
+    input.toolName === "takomi_subagent" && input.lifecycleStatus !== "inProgress"
+      ? rawItems.map((item) => {
+          const status = normalizeTakomiTaskStatus(item.status);
+          return status && isTerminalTakomiTaskStatus(status)
+            ? item
+            : { ...item, status: input.lifecycleStatus };
+        })
+      : rawItems;
   const artifactRefs = normalizeArtifactRefs(source.artifacts ?? source.files ?? source.assets);
   const modeDetail =
     input.toolName === "takomi_mode" && readString(source.mode)
@@ -1058,9 +1112,13 @@ export function normalizeTakomiPresentation(input: {
   const action = boundedText(source.action ?? source.operation ?? source.phase, 120);
   const todoCompleted = items.filter((item) => item.status === "completed").length;
   const todoInProgress = items.some((item) => item.status === "in_progress");
+  const sourceTakomiStatus = normalizeTakomiTaskStatus(source.status ?? source.state);
   const status = boundedText(
-    source.status ??
-      source.state ??
+    (input.toolName === "takomi_subagent" && input.lifecycleStatus !== "inProgress"
+      ? sourceTakomiStatus && isTerminalTakomiTaskStatus(sourceTakomiStatus)
+        ? sourceTakomiStatus
+        : input.lifecycleStatus
+      : (source.status ?? source.state)) ??
       (input.toolName === "takomi_mode"
         ? source.mode
         : input.toolName === "takomi_subagent"
@@ -1293,6 +1351,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 ...(event.task.summary ? { summary: event.task.summary } : {}),
                 ...(event.task.lastToolName ? { lastToolName: event.task.lastToolName } : {}),
                 ...(event.task.error ? { error: event.task.error } : {}),
+                ...(event.task.typedUsage ? { typedUsage: event.task.typedUsage } : {}),
                 status: event.task.status,
                 ...linkage,
               },
@@ -1320,6 +1379,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 taskId: RuntimeTaskId.make(event.task.taskId),
                 status: event.completionStatus,
                 ...(event.task.summary ? { summary: event.task.summary } : {}),
+                ...(event.task.typedUsage ? { typedUsage: event.task.typedUsage } : {}),
                 ...linkage,
               },
             });

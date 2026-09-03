@@ -7319,6 +7319,7 @@ function ChatViewContent(props: ChatViewProps) {
       <TakomiInspector
         entries={workLogEntries}
         selectedToolCallId={renderedRightPanelSurface.toolCallId}
+        sessionLive={agentSessionLive}
         onSelectToolCallId={(toolCallId) => {
           useRightPanelStore.getState().openTakomiInspector(activeThreadRef, toolCallId);
         }}

@@ -223,6 +223,14 @@ describe("Takomi subagent task synthesis", () => {
         parentAgentId: "call-native",
         status: "completed",
         taskType: "local_agent",
+        typedUsage: {
+          totalTokens: 20,
+          inputTokens: 12,
+          cachedInputTokens: 0,
+          outputTokens: 8,
+          durationMs: 10,
+          toolUses: 1,
+        },
         runHandles: { runId: "run-native-7" },
       },
       {
@@ -231,6 +239,14 @@ describe("Takomi subagent task synthesis", () => {
         status: "failed",
         error: "tests failed",
         taskType: "local_agent",
+        typedUsage: {
+          totalTokens: 14,
+          inputTokens: 10,
+          cachedInputTokens: 0,
+          outputTokens: 4,
+          durationMs: 20,
+          toolUses: 1,
+        },
       },
       {
         taskId: "call-native",
@@ -239,6 +255,28 @@ describe("Takomi subagent task synthesis", () => {
         runHandles: { runId: "run-native-7" },
       },
     ]);
+  });
+
+  it("uses live progress token totals when placeholder usage is still zero", () => {
+    const [task] = normalizeTakomiSubagentTasks({
+      toolCallId: "call-live-usage",
+      partialResult: {
+        details: {
+          results: [
+            {
+              agent: "reviewer",
+              task: "Review the change",
+              usage: { input: 0, output: 0 },
+              progress: { index: 0, status: "running", tokens: 37, durationMs: 15 },
+            },
+          ],
+        },
+      },
+      result: undefined,
+      lifecycleStatus: "inProgress",
+    });
+
+    expect(task?.typedUsage).toMatchObject({ totalTokens: 37, durationMs: 15 });
   });
 
   it("keeps live direct Details and final wrapped results on the same task IDs", () => {
@@ -482,6 +520,56 @@ describe("normalizeTakomiPresentation", () => {
 
     expect(presentation?.summary?.items?.map((item) => item.id)).toEqual(["42", "result-1"]);
     expect(presentation?.activity?.map((item) => item.agentId)).toEqual(["42", "result-1"]);
+  });
+
+  it("reconciles stale active subagent statuses when the tool has completed", () => {
+    const presentation = normalizeTakomiPresentation({
+      toolName: "takomi_subagent",
+      args: {},
+      result: {
+        status: "InProgress",
+        results: [
+          {
+            id: "child-1",
+            agent: "reviewer",
+            status: "InProgress",
+            progress: { currentTool: "read", currentToolArgs: "PiAdapter.ts" },
+          },
+        ],
+      },
+      partialResult: undefined,
+      isError: false,
+      lifecycleStatus: "completed",
+    });
+
+    expect(presentation?.summary?.status).toBe("completed");
+    expect(presentation?.summary?.items?.[0]?.status).toBe("completed");
+    expect(presentation?.activity?.at(-1)?.status).toBe("completed");
+  });
+
+  it("preserves terminal child status when transport lifecycle differs", () => {
+    const presentation = normalizeTakomiPresentation({
+      toolName: "takomi_subagent",
+      args: {},
+      result: {
+        status: "failed",
+        results: [
+          {
+            id: "child-1",
+            agent: "reviewer",
+            status: "failed",
+            progress: { currentTool: "read" },
+          },
+        ],
+      },
+      partialResult: undefined,
+      isError: false,
+      lifecycleStatus: "completed",
+    });
+
+    expect(presentation?.summary?.status).toBe("failed");
+    expect(presentation?.summary?.items?.[0]?.status).toBe("failed");
+    expect(presentation?.activity?.at(-1)?.status).toBe("failed");
   });
 
   it("preserves every non-deleted todo item", () => {

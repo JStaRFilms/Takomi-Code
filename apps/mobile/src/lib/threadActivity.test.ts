@@ -16,6 +16,7 @@ import {
   buildPendingUserInputAnswers,
   buildThreadFeed,
   derivePendingApprovals,
+  derivePendingUserInputs,
   deriveThreadFeedPresentation,
   isPendingUserInputOptionSelected,
   setPendingUserInputCustomAnswer,
@@ -140,6 +141,35 @@ describe("pending user input answers", () => {
         "  Orders  ",
       ),
     ).toBe(false);
+  });
+});
+
+describe("pending user input requests", () => {
+  it("keeps free-text prompts that do not provide options", () => {
+    const activity = makeActivity({
+      id: EventId.make("user-input-free-text"),
+      kind: "user-input.requested",
+      summary: "User input requested",
+      createdAt: "2026-08-24T00:00:00.000Z",
+      payload: {
+        requestId: "req-user-input-free-text",
+        questions: [
+          {
+            id: "req-user-input-free-text",
+            header: "Pi input",
+            question: "Describe the change",
+            options: [],
+          },
+        ],
+      },
+    });
+
+    expect(derivePendingUserInputs([activity])).toMatchObject([
+      {
+        requestId: "req-user-input-free-text",
+        questions: [{ id: "req-user-input-free-text", options: [] }],
+      },
+    ]);
   });
 });
 

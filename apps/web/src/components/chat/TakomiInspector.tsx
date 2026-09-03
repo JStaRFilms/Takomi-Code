@@ -26,9 +26,16 @@ type PresentationActivity = NonNullable<
 function statusKind(status: string | undefined): "done" | "active" | "failed" | "pending" {
   const normalized = status?.toLowerCase() ?? "";
   if (/completed|complete|passed|done|success/u.test(normalized)) return "done";
-  if (/failed|error|blocked|cancel/u.test(normalized)) return "failed";
+  if (/failed|error|blocked|cancel|interrupt|stopped/u.test(normalized)) return "failed";
   if (/running|active|progress|executing|working/u.test(normalized)) return "active";
   return "pending";
+}
+
+export function reconcileTakomiLivenessStatus(
+  status: string | undefined,
+  sessionLive: boolean,
+): string | undefined {
+  return !sessionLive && statusKind(status) === "active" ? "interrupted" : status;
 }
 
 function StatusIcon({ status }: { status: string | undefined }) {
@@ -67,7 +74,14 @@ export function subagentPresentationIdentity(itemId: string, index: number): str
   return itemId.trim() || `result-${index}`;
 }
 
-function ActivityTranscriptRow({ activity }: { activity: PresentationActivity }) {
+function ActivityTranscriptRow({
+  activity,
+  sessionLive,
+}: {
+  activity: PresentationActivity;
+  sessionLive: boolean;
+}) {
+  const activityStatus = reconcileTakomiLivenessStatus(activity.status, sessionLive);
   const Icon =
     activity.kind === "tool"
       ? WrenchIcon
@@ -82,13 +96,13 @@ function ActivityTranscriptRow({ activity }: { activity: PresentationActivity })
         <Icon
           className={cn(
             "mt-0.5 size-3.5 shrink-0 text-muted-foreground",
-            activity.status === "running" && "animate-pulse text-blue-500",
+            statusKind(activityStatus) === "active" && "animate-pulse text-blue-500",
           )}
         />
         <p className="min-w-0 flex-1 truncate font-medium text-foreground/90">{activity.label}</p>
-        {activity.status ? (
+        {activityStatus ? (
           <span className="shrink-0 text-[10px] capitalize text-muted-foreground">
-            {statusLabel(activity.status)}
+            {statusLabel(activityStatus)}
           </span>
         ) : null}
         {activity.detail ? (
@@ -107,17 +121,21 @@ function ActivityTranscriptRow({ activity }: { activity: PresentationActivity })
 function DetailCard({
   entry,
   selectedAgentId,
+  sessionLive,
 }: {
   entry: WorkLogEntry;
   selectedAgentId: string | null;
+  sessionLive: boolean;
 }) {
   const [activityOpen, setActivityOpen] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const followLatestRef = useRef(true);
   const presentation = entry.presentation;
-  const status =
-    presentation?.error?.message ?? presentation?.summary?.status ?? entry.toolLifecycleStatus;
+  const status = reconcileTakomiLivenessStatus(
+    presentation?.error?.message ?? presentation?.summary?.status ?? entry.toolLifecycleStatus,
+    sessionLive,
+  );
   const selectedAgentIndex = selectedAgentId?.match(/^result-(\d+)$/u)?.[1];
   const selectedItem =
     presentation?.summary?.items?.find((item) => item.id === selectedAgentId) ??
@@ -208,7 +226,7 @@ function DetailCard({
             </button>
             <div className="mt-1 space-y-1">
               {(activityOpen ? activity : activity.slice(-1)).map((item) => (
-                <ActivityTranscriptRow key={item.id} activity={item} />
+                <ActivityTranscriptRow key={item.id} activity={item} sessionLive={sessionLive} />
               ))}
             </div>
           </div>
@@ -216,8 +234,10 @@ function DetailCard({
         {displayedItems.length ? (
           <div className="mt-2 space-y-2 border-t border-border/50 pt-2">
             {displayedItems.map((item) => {
-              const itemStatus =
-                item.status ?? (presentation.toolName === "takomi_subagent" ? status : undefined);
+              const itemStatus = reconcileTakomiLivenessStatus(
+                item.status ?? (presentation.toolName === "takomi_subagent" ? status : undefined),
+                sessionLive,
+              );
               return (
                 <div key={item.id} className="flex items-start gap-2">
                   <StatusIcon status={itemStatus} />
@@ -281,6 +301,7 @@ function SubagentRunGroup(props: {
   entry: WorkLogEntry;
   selectedSelection: string | null;
   onSelect: (selection: string) => void;
+  sessionLive: boolean;
 }) {
   const presentation = props.entry.presentation!;
   const items = presentation.summary?.items?.length
@@ -293,10 +314,12 @@ function SubagentRunGroup(props: {
         },
       ] as PresentationItem[]);
   const mode = presentation.summary?.mode ?? (items.length > 1 ? "parallel" : "single");
-  const status =
+  const status = reconcileTakomiLivenessStatus(
     presentation.error?.severity === "error"
       ? "failed"
-      : (presentation.summary?.status ?? props.entry.toolLifecycleStatus);
+      : (presentation.summary?.status ?? props.entry.toolLifecycleStatus),
+    props.sessionLive,
+  );
   const [open, setOpen] = useState(() => statusKind(status) === "active");
   const toolCallId = props.entry.toolCallId ?? props.entry.id;
   const modeLabel =
@@ -313,7 +336,7 @@ function SubagentRunGroup(props: {
   if (items.length === 1 && (mode === "single" || mode === "async")) {
     const item = items[0]!;
     const selection = subagentSelectionKey(toolCallId, subagentPresentationIdentity(item.id, 0));
-    const itemStatus = item.status ?? status;
+    const itemStatus = reconcileTakomiLivenessStatus(item.status ?? status, props.sessionLive);
     return (
       <button
         type="button"
@@ -371,7 +394,10 @@ function SubagentRunGroup(props: {
           {items.map((item, itemIndex) => {
             const agentId = subagentPresentationIdentity(item.id, itemIndex);
             const selection = subagentSelectionKey(toolCallId, agentId);
-            const itemStatus = item.status ?? status;
+            const itemStatus = reconcileTakomiLivenessStatus(
+              item.status ?? status,
+              props.sessionLive,
+            );
             return (
               <button
                 type="button"
@@ -410,6 +436,7 @@ export function TakomiInspector(props: {
   entries: ReadonlyArray<WorkLogEntry>;
   selectedToolCallId: string | null;
   onSelectToolCallId: (toolCallId: string) => void;
+  sessionLive: boolean;
 }) {
   const [subagentsOpen, setSubagentsOpen] = useState(true);
   const inspectorSelection = parseInspectorSelection(props.selectedToolCallId);
@@ -533,6 +560,7 @@ export function TakomiInspector(props: {
                   entry={entry}
                   selectedSelection={props.selectedToolCallId}
                   onSelect={props.onSelectToolCallId}
+                  sessionLive={props.sessionLive}
                 />
               ))
             ) : (
@@ -551,6 +579,7 @@ export function TakomiInspector(props: {
             key={`${selected.toolCallId ?? selected.id}:${inspectorSelection.agentId ?? "all"}`}
             entry={selected}
             selectedAgentId={inspectorSelection.agentId}
+            sessionLive={props.sessionLive}
           />
         ) : (
           <p className="text-xs leading-relaxed text-muted-foreground">

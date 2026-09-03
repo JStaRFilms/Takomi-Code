@@ -337,6 +337,36 @@ describe("derivePendingUserInputs", () => {
     ]);
   });
 
+  it("keeps free-text prompts that do not provide options", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "user-input-free-text",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "User input requested",
+        tone: "info",
+        payload: {
+          requestId: "req-user-input-free-text",
+          questions: [
+            {
+              id: "req-user-input-free-text",
+              header: "Pi input",
+              question: "Describe the change",
+              options: [],
+            },
+          ],
+        },
+      }),
+    ];
+
+    expect(derivePendingUserInputs(activities)).toMatchObject([
+      {
+        requestId: "req-user-input-free-text",
+        questions: [{ id: "req-user-input-free-text", options: [] }],
+      },
+    ]);
+  });
+
   it("clears stale pending user-input prompts when the provider reports an orphaned request", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -1477,6 +1507,133 @@ describe("deriveWorkLogEntries", () => {
         toolLifecycleStatus: "completed",
       },
     ]);
+  });
+
+  it("collapses a Takomi subagent invocation when the run id appears on completion", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "subagent-progress",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        turnId: "turn-1",
+        kind: "tool.updated",
+        summary: "Subagent running",
+        payload: {
+          itemType: "dynamic_tool_call",
+          toolCallId: "call-subagent",
+          status: "inProgress",
+          data: {
+            presentation: {
+              schemaVersion: 1,
+              namespace: "takomi",
+              toolName: "takomi_subagent",
+              family: "execution",
+              summary: { status: "inProgress" },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "other-tool-complete",
+        createdAt: "2026-02-23T00:00:01.500Z",
+        turnId: "turn-1",
+        kind: "tool.completed",
+        summary: "Other tool completed",
+        payload: {
+          itemType: "dynamic_tool_call",
+          toolCallId: "call-other",
+          status: "completed",
+        },
+      }),
+      makeActivity({
+        id: "subagent-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        turnId: "turn-2",
+        kind: "tool.completed",
+        summary: "Subagent completed",
+        payload: {
+          itemType: "dynamic_tool_call",
+          toolCallId: "call-subagent",
+          status: "completed",
+          data: {
+            presentation: {
+              schemaVersion: 1,
+              namespace: "takomi",
+              toolName: "takomi_subagent",
+              family: "execution",
+              summary: { runId: "run-late", status: "completed" },
+            },
+          },
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries).toHaveLength(2);
+    expect(entries).toMatchObject([
+      {
+        id: "subagent-complete",
+        toolCallId: "call-subagent",
+        toolLifecycleStatus: "completed",
+      },
+      { id: "other-tool-complete", toolCallId: "call-other" },
+    ]);
+  });
+
+  it("does not collapse reused Takomi tool call ids with conflicting run ids", () => {
+    const entries = deriveWorkLogEntries([
+      makeActivity({
+        id: "subagent-run-one",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        turnId: "turn-1",
+        kind: "tool.updated",
+        summary: "First subagent run",
+        payload: {
+          itemType: "dynamic_tool_call",
+          toolCallId: "reused-subagent-call",
+          status: "inProgress",
+          data: {
+            presentation: {
+              schemaVersion: 1,
+              namespace: "takomi",
+              toolName: "takomi_subagent",
+              family: "execution",
+              summary: { runId: "run-one", status: "inProgress" },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "other-tool-between-runs",
+        createdAt: "2026-02-23T00:00:01.500Z",
+        turnId: "turn-1",
+        kind: "tool.completed",
+        summary: "Other tool completed",
+        payload: { itemType: "dynamic_tool_call", toolCallId: "other-call" },
+      }),
+      makeActivity({
+        id: "subagent-run-two",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        turnId: "turn-2",
+        kind: "tool.completed",
+        summary: "Second subagent run completed",
+        payload: {
+          itemType: "dynamic_tool_call",
+          toolCallId: "reused-subagent-call",
+          status: "completed",
+          data: {
+            presentation: {
+              schemaVersion: 1,
+              namespace: "takomi",
+              toolName: "takomi_subagent",
+              family: "execution",
+              summary: { runId: "run-two", status: "completed" },
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(entries).toHaveLength(3);
   });
 
   it("does not merge reused tool call ids across turns", () => {
