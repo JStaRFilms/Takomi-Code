@@ -29,6 +29,7 @@ import {
   useSidebar,
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
 
@@ -67,7 +68,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
       <SidebarBrand onBackdrop={backdropVariant !== null} />
       {pillLabel ? (
         <Badge
-          className="relative z-10 ml-1 rounded-full px-1.5 text-muted-foreground"
+          className="relative z-10 ml-1 hidden rounded-full px-1.5 text-muted-foreground @[15rem]/sidebar-header:inline-flex"
           data-environment-identification="pill"
           size="sm"
           variant="secondary"
@@ -89,7 +90,7 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
       )}
       to="/"
     >
-      <TakomiWordmark />
+      <span className="-translate-y-px text-sm font-semibold tracking-tight">Takomi</span>
       <span
         className={cn(
           "-translate-y-px truncate text-sm font-medium tracking-tight",
@@ -99,36 +100,6 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
         Code
       </span>
     </Link>
-  );
-}
-
-/**
- * SVG wordmark for "Takomi" brand. Uses `currentColor` so it inherits the
- * parent's text color and works correctly in both light and dark mode,
- * including on stage-backdrop tinted headers.
- */
-function TakomiWordmark() {
-  return (
-    <svg
-      aria-label="Takomi"
-      className="h-3 w-auto shrink-0"
-      viewBox="0 0 145 42"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <text
-        x="0"
-        y="34"
-        fontFamily="'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif"
-        fontWeight="800"
-        fontSize="38"
-        letterSpacing="-1.5"
-        textLength="140"
-        lengthAdjust="spacingAndGlyphs"
-        fill="currentColor"
-      >
-        Takomi
-      </text>
-    </svg>
   );
 }
 
@@ -186,7 +157,10 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   }, [isMobile, setOpenMobile]);
   const handlePullRequestsClick = useCallback(() => {
     closeMobileSidebar();
-    void navigate({ to: "/pull-requests", search: { involvement: "all", state: "open" } });
+    void navigate({
+      to: "/pull-requests",
+      search: readPullRequestListPreferences(),
+    });
   }, [closeMobileSidebar, navigate]);
   const handleSettingsClick = useCallback(() => {
     closeMobileSidebar();

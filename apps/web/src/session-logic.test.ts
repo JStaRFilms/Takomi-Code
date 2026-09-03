@@ -7,6 +7,7 @@ import {
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
+import { resolveWorkEntryToolPresentation } from "@t3tools/client-runtime/work-log/presentation";
 
 import {
   deriveActiveWorkStartedAt,
@@ -1066,6 +1067,59 @@ describe("deriveWorkLogEntries", () => {
     });
   });
 
+  it("preserves and collapses Takomi board lifecycle presentations", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "takomi-board-update",
+        kind: "tool.updated",
+        turnId: "turn-takomi",
+        summary: "takomi_board",
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: "inProgress",
+          data: {
+            toolCallId: "board-call-1",
+            presentation: {
+              schemaVersion: 1,
+              namespace: "takomi",
+              toolName: "takomi_board",
+              family: "lifecycle",
+              summary: { sessionId: "session-1", completed: 0, total: 2 },
+            },
+          },
+        },
+      }),
+      makeActivity({
+        id: "takomi-board-complete",
+        kind: "tool.completed",
+        turnId: "turn-takomi",
+        summary: "takomi_board",
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: "completed",
+          data: {
+            toolCallId: "board-call-1",
+            presentation: {
+              schemaVersion: 1,
+              namespace: "takomi",
+              toolName: "takomi_board",
+              family: "lifecycle",
+              summary: { sessionId: "session-1", completed: 2, total: 2 },
+            },
+          },
+        },
+      }),
+    ];
+
+    expect(deriveWorkLogEntries(activities)).toMatchObject([
+      {
+        id: "takomi-board-complete",
+        toolCallId: "board-call-1",
+        presentation: { toolName: "takomi_board", summary: { completed: 2, total: 2 } },
+      },
+    ]);
+  });
+
   it("uses payload summary as label for task entries when available", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -1287,6 +1341,36 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.toolData).toEqual(item);
   });
 
+  it.each([
+    ["inProgress", "Clicking in the preview browser"],
+    ["completed", "Clicked in the preview browser"],
+    ["failed", "Failed to click in the preview browser"],
+  ] as const)(
+    "preserves Claude MCP identity behind generic titles while %s",
+    (status, displayName) => {
+      const data = {
+        toolName: "mcp__t3_code__preview_click",
+        input: { selector: "#submit" },
+        ...(status === "inProgress"
+          ? {}
+          : { result: { type: "tool_result", is_error: status === "failed", content: "Result" } }),
+      };
+      const [entry] = deriveWorkLogEntries([
+        makeActivity({
+          kind: status === "inProgress" ? "tool.updated" : "tool.completed",
+          summary: "MCP tool call",
+          payload: { itemType: "mcp_tool_call", title: "MCP tool call", status, data },
+        }),
+      ]);
+
+      expect(entry).toMatchObject({ toolTitle: "MCP tool call", toolData: data });
+      expect(resolveWorkEntryToolPresentation(entry!)).toEqual({
+        displayName,
+        icon: "browser",
+      });
+    },
+  );
+
   it("keeps MCP payloads while collapsing lifecycle updates", () => {
     const item = {
       type: "mcpToolCall",
@@ -1320,6 +1404,9 @@ describe("deriveWorkLogEntries", () => {
     const [entry] = deriveWorkLogEntries(activities);
     expect(entry?.toolData).toEqual(item);
     expect(entry?.toolCallId).toBe("call-1");
+    expect(resolveWorkEntryToolPresentation(entry!)?.displayName).toBe(
+      "Took a snapshot of the preview page",
+    );
   });
 
   it("collapses interleaved lifecycle updates by tool call id", () => {
@@ -1688,6 +1775,44 @@ describe("deriveWorkLogEntries", () => {
       toolTitle: "Read File",
       detail: 'import * as Effect from "effect/Effect"',
       itemType: "dynamic_tool_call",
+    });
+  });
+
+  it("keeps viewed image metadata while collapsing a streamed Claude Read", () => {
+    const imagePath = `/workspace/${"nested folder/".repeat(16)}reference image.webp`;
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "image-read-update",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Image view",
+        payload: {
+          toolCallId: "tool-read-image",
+          itemType: "image_view",
+          detail: `${imagePath.slice(0, 177)}...`,
+          data: { imagePath },
+        },
+      }),
+      makeActivity({
+        id: "image-read-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Image view",
+        payload: {
+          toolCallId: "tool-read-image",
+          itemType: "image_view",
+          detail: `${imagePath.slice(0, 177)}...`,
+          data: {},
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "image-read-complete",
+      itemType: "image_view",
+      viewedImagePath: imagePath,
     });
   });
 
@@ -2192,18 +2317,21 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
         payload: { taskId: "wf-1", taskType: "local_workflow", workflowName: "math-check" },
         sequence: 1,
       }),
+      // Pi keeps result-slot IDs stable across live and final Details
+      // snapshots. The provider-neutral parent link, not a `:wf:` spelling,
+      // must keep all children under the coordinator CTA.
       makeActivity({
         kind: "task.progress",
         summary: "member",
         tone: "info",
-        payload: { taskId: "wf-1:wf:0", status: "running", parentAgentId: "wf-1" },
+        payload: { taskId: "wf-1:result:0", status: "running", parentAgentId: "wf-1" },
         sequence: 2,
       }),
       makeActivity({
         kind: "task.completed",
         summary: "member done",
         tone: "info",
-        payload: { taskId: "wf-1:wf:1", status: "completed", parentAgentId: "wf-1" },
+        payload: { taskId: "wf-1:result:1", status: "completed", parentAgentId: "wf-1" },
         sequence: 3,
       }),
     ]);
@@ -2211,7 +2339,7 @@ describe("deriveWorkLogEntries quiet-timeline guarantee", () => {
     expect(spawnRows).toHaveLength(1);
     expect(spawnRows[0]!.agentSpawn!.workflowId).toBe("wf-1");
     expect(spawnRows[0]!.agentSpawn!.agentTaskIds).toEqual(
-      expect.arrayContaining(["wf-1", "wf-1:wf:0", "wf-1:wf:1"]),
+      expect.arrayContaining(["wf-1", "wf-1:result:0", "wf-1:result:1"]),
     );
   });
 

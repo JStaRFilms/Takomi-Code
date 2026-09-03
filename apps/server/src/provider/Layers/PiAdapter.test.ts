@@ -434,6 +434,56 @@ describe("Takomi subagent task synthesis", () => {
 });
 
 describe("normalizeTakomiPresentation", () => {
+  it("uses the same ID-priority for subagent summaries and activities", () => {
+    const presentation = normalizeTakomiPresentation({
+      toolName: "takomi_subagent",
+      args: {},
+      result: {
+        results: [
+          {
+            id: "canonical-child",
+            agentId: "conflicting-agent",
+            agent: "researcher",
+            messages: [{ role: "assistant", content: [{ type: "text", text: "Found it" }] }],
+          },
+        ],
+      },
+      partialResult: undefined,
+      isError: false,
+      lifecycleStatus: "completed",
+    });
+
+    expect(presentation?.summary?.items?.[0]?.id).toBe("canonical-child");
+    expect(presentation?.activity?.[0]?.agentId).toBe("canonical-child");
+  });
+
+  it("uses numeric subagent IDs and preserves the result-N fallback consistently", () => {
+    const presentation = normalizeTakomiPresentation({
+      toolName: "takomi_subagent",
+      args: {},
+      result: {
+        results: [
+          {
+            id: 42,
+            agentId: 7,
+            agent: "researcher",
+            messages: [{ role: "assistant", content: [{ type: "text", text: "Found it" }] }],
+          },
+          {
+            agent: "builder",
+            messages: [{ role: "assistant", content: [{ type: "text", text: "Built it" }] }],
+          },
+        ],
+      },
+      partialResult: undefined,
+      isError: false,
+      lifecycleStatus: "completed",
+    });
+
+    expect(presentation?.summary?.items?.map((item) => item.id)).toEqual(["42", "result-1"]);
+    expect(presentation?.activity?.map((item) => item.agentId)).toEqual(["42", "result-1"]);
+  });
+
   it("preserves every non-deleted todo item", () => {
     const presentation = normalizeTakomiPresentation({
       toolName: "todo",

@@ -428,9 +428,19 @@ type ToolPresentationItem = NonNullable<
   NonNullable<ToolPresentationEnvelope["summary"]>["items"]
 >[number];
 
+function resolveTakomiChildIdentity(value: unknown, resultIndex: number): string {
+  const record = isRecord(value) ? value : undefined;
+  const rawId =
+    record?.id ?? record?.taskId ?? record?.task_id ?? record?.agentId ?? record?.agent_id;
+  const id =
+    typeof rawId === "number" && Number.isFinite(rawId) ? String(rawId) : readString(rawId);
+  return boundedText(id, 120) ?? `result-${resultIndex}`;
+}
+
 function normalizePresentationItems(
   value: unknown,
   itemLimit = PRESENTATION_ITEM_LIMIT,
+  resolveItemId?: (entry: unknown, index: number) => string,
 ): ToolPresentationItem[] {
   if (!Array.isArray(value)) return [];
   return value.slice(0, itemLimit).flatMap((entry, index) => {
@@ -447,7 +457,14 @@ function normalizePresentationItems(
       160,
     );
     if (!label) return [];
-    const rawId = record?.id ?? record?.taskId ?? record?.agentId ?? `${index}`;
+    const rawId =
+      resolveItemId?.(entry, index) ??
+      record?.id ??
+      record?.taskId ??
+      record?.task_id ??
+      record?.agentId ??
+      record?.agent_id ??
+      `${index}`;
     const id = boundedText(typeof rawId === "number" ? String(rawId) : rawId, 120)!;
     const exitCode = typeof record?.exitCode === "number" ? record.exitCode : undefined;
     const status =
@@ -488,9 +505,7 @@ function normalizeSubagentActivity(
     if (!result) continue;
     const agent =
       boundedText(result.agent ?? result.agentName, 80) ?? `Subagent ${resultIndex + 1}`;
-    // Preserve the source identity when Takomi provides one; the positional
-    // fallback remains presentation-only for older result payloads.
-    const agentId = readTakomiTaskId(result) ?? `result-${resultIndex}`;
+    const agentId = resolveTakomiChildIdentity(result, resultIndex);
     const agentLabel = results.length > 1 ? `Task ${resultIndex + 1} · ${agent}` : agent;
     const allMessages = Array.isArray(result.messages) ? result.messages : [];
     const messageOffset = Math.max(0, allMessages.length - 80);
@@ -1009,6 +1024,7 @@ export function normalizeTakomiPresentation(input: {
     // Todo is a durable task list, not a compact tool summary. Preserve the
     // entire list so its count and the expanded chat card stay truthful.
     input.toolName === "todo" ? Number.POSITIVE_INFINITY : PRESENTATION_ITEM_LIMIT,
+    input.toolName === "takomi_subagent" ? resolveTakomiChildIdentity : undefined,
   );
   const artifactRefs = normalizeArtifactRefs(source.artifacts ?? source.files ?? source.assets);
   const modeDetail =

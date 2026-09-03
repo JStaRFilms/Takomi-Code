@@ -62,6 +62,11 @@ function parseInspectorSelection(selection: string | null) {
       };
 }
 
+/** Matches Pi's native presentation/activity identity; old payloads use result-N. */
+export function subagentPresentationIdentity(itemId: string, index: number): string {
+  return itemId.trim() || `result-${index}`;
+}
+
 function ActivityTranscriptRow({ activity }: { activity: PresentationActivity }) {
   const Icon =
     activity.kind === "tool"
@@ -115,9 +120,10 @@ function DetailCard({
     presentation?.error?.message ?? presentation?.summary?.status ?? entry.toolLifecycleStatus;
   const selectedAgentIndex = selectedAgentId?.match(/^result-(\d+)$/u)?.[1];
   const selectedItem =
-    selectedAgentIndex === undefined
+    presentation?.summary?.items?.find((item) => item.id === selectedAgentId) ??
+    (selectedAgentIndex === undefined
       ? undefined
-      : presentation?.summary?.items?.[Number(selectedAgentIndex)];
+      : presentation?.summary?.items?.[Number(selectedAgentIndex)]);
   const detailText = selectedAgentId
     ? selectedItem?.detail
     : (presentation?.inspectorDetailText ?? presentation?.detailText);
@@ -306,7 +312,7 @@ function SubagentRunGroup(props: {
 
   if (items.length === 1 && (mode === "single" || mode === "async")) {
     const item = items[0]!;
-    const selection = subagentSelectionKey(toolCallId, "result-0");
+    const selection = subagentSelectionKey(toolCallId, subagentPresentationIdentity(item.id, 0));
     const itemStatus = item.status ?? status;
     return (
       <button
@@ -363,7 +369,7 @@ function SubagentRunGroup(props: {
       {open ? (
         <div className="space-y-1 border-t border-border/45 p-1.5">
           {items.map((item, itemIndex) => {
-            const agentId = `result-${itemIndex}`;
+            const agentId = subagentPresentationIdentity(item.id, itemIndex);
             const selection = subagentSelectionKey(toolCallId, agentId);
             const itemStatus = item.status ?? status;
             return (
