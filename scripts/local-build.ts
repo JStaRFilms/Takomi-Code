@@ -88,7 +88,12 @@ function run(
     env: options.env,
     encoding: "utf8",
     maxBuffer: 32 * 1024 * 1024,
-    shell: process.platform === "win32" && (command === "vp" || command.endsWith(".bat")),
+    shell:
+      process.platform === "win32" &&
+      (command === "vp" ||
+        command === "pnpm" ||
+        command.endsWith(".bat") ||
+        command.endsWith(".cmd")),
     stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
   });
 
@@ -381,7 +386,7 @@ function buildAndroid(root: string, dryRun: boolean): void {
   };
   run("vp", ["install", "--filter=@t3tools/mobile..."], worktree, { env: buildEnv });
   const mobileRoot = Path.join(worktree, "apps", "mobile");
-  run("vp", ["exec", "expo", "prebuild", "--clean", "--platform", "android"], mobileRoot, {
+  run("pnpm", ["exec", "expo", "prebuild", "--clean", "--platform", "android"], mobileRoot, {
     env: buildEnv,
   });
   writeAndroidLocalProperties(worktree);
