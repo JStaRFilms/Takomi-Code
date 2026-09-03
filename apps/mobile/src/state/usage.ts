@@ -33,6 +33,10 @@ export interface EnvironmentUsageStatus {
   readonly summary: UsageSummary | null;
 }
 
+// Keep the last successful answer available when the route remounts. The RPC
+// still revalidates in the background, so this only removes repeat loading gaps.
+const usageMemoryCache = new Map<string, UsageSummary>();
+
 /**
  * Reads every environment's summary for one window.
  *
@@ -48,12 +52,16 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
     const statuses: EnvironmentUsageStatus[] = [];
     for (const [environmentId, presentation] of presentations) {
       const result = get(serverEnvironment.usageSummary({ environmentId, input }));
+      const cacheKey = `${environmentId}:${windowKey}`;
+      const freshSummary = Option.getOrNull(AsyncResult.value(result));
+      if (freshSummary !== null) usageMemoryCache.set(cacheKey, freshSummary);
+
       statuses.push({
         environmentId,
         label: presentation.entry.target.label,
         isPending: result.waiting,
         error: result._tag === "Failure" ? "This environment could not report usage." : null,
-        summary: Option.getOrNull(AsyncResult.value(result)),
+        summary: freshSummary ?? usageMemoryCache.get(cacheKey) ?? null,
       });
     }
     return statuses;
