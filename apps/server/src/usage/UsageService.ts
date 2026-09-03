@@ -1,8 +1,8 @@
 /**
  * UsageService - scans provider transcripts and returns priced usage buckets.
  *
- * The scan reads the provider CLIs' own session files (Claude Code, Codex, and
- * Grok Build) rather than T3 Code's orchestration projections, so usage covers
+ * The scan reads the provider CLIs' own session files (Claude Code, Codex,
+ * Grok Build, and Takomi/Pi) rather than T3 Code's orchestration projections, so usage covers
  * turns driven outside T3 Code too. This is the approach `ccusage` takes.
  *
  * Transcripts are append-only, so parsed records are memoised per file by
@@ -202,6 +202,39 @@ export const make = Effect.gen(function* () {
       return nestedExists ? nested : path.join(homePath, "projects");
     });
 
+  /** Resolves the configured Pi home or either supported default session layout. */
+  const resolveTakomiTranscriptDir = (config: { readonly homePath: string }) =>
+    Effect.gen(function* () {
+      const configuredHome = config.homePath.trim();
+      if (configuredHome.length > 0) {
+        const home = path.resolve(expandHomePath(configuredHome));
+        const agentSessions = path.join(home, "agent", "sessions");
+        const directSessions = path.join(home, "sessions");
+        if (
+          yield* fileSystem
+            .exists(agentSessions)
+            .pipe(Effect.catchCause(() => Effect.succeed(false)))
+        ) {
+          return agentSessions;
+        }
+        if (
+          yield* fileSystem
+            .exists(directSessions)
+            .pipe(Effect.catchCause(() => Effect.succeed(false)))
+        ) {
+          return directSessions;
+        }
+        return home;
+      }
+
+      const defaultAgentSessions = path.join(NodeOS.homedir(), ".pi", "agent", "sessions");
+      const defaultSessions = path.join(NodeOS.homedir(), ".pi", "sessions");
+      const hasAgentSessions = yield* fileSystem
+        .exists(defaultAgentSessions)
+        .pipe(Effect.catchCause(() => Effect.succeed(false)));
+      return hasAgentSessions ? defaultAgentSessions : defaultSessions;
+    });
+
   /** Resolves the transcript directory for each provider. */
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* () {
     // A settings failure must surface as an error: swallowing it here would
@@ -223,6 +256,7 @@ export const make = Effect.gen(function* () {
     const claudeHome = yield* resolveClaudeHomePath(settings.providers.claudeAgent);
     const claudeDir = yield* resolveClaudeTranscriptDir(claudeHome);
     const codexLayout = yield* resolveCodexHomeLayout(settings.providers.codex);
+    const takomiDir = yield* resolveTakomiTranscriptDir(settings.providers.pi);
     // Grok Settings only expose the binary path; home is `$GROK_HOME` or `~/.grok`.
     // Empty/whitespace GROK_HOME must fall back: coalescing alone would scan cwd.
     const grokHomeEnv = hostEnvironment["GROK_HOME"]?.trim() ?? "";
@@ -234,6 +268,7 @@ export const make = Effect.gen(function* () {
     return [
       { provider: "claude" as const, dir: claudeDir },
       { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
+      { provider: "takomi" as const, dir: takomiDir },
       {
         provider: "grok" as const,
         dir: path.join(grokHome, "sessions"),

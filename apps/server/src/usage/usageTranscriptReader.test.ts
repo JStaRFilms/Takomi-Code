@@ -49,6 +49,23 @@ function codexModelLine(model: string): string {
   })}\n`;
 }
 
+function takomiSessionLine(): string {
+  return `${JSON.stringify({ type: "session", id: "takomi-session-1" })}\n`;
+}
+
+function takomiModelLine(model: string): string {
+  return `${JSON.stringify({ type: "model_change", modelId: model })}\n`;
+}
+
+function takomiUsageLine(outputTokens: number): string {
+  return `${JSON.stringify({
+    type: "message",
+    id: `takomi-message-${outputTokens}`,
+    timestamp: "2026-08-01T10:00:05Z",
+    message: { role: "assistant", usage: { input: 100, output: outputTokens } },
+  })}\n`;
+}
+
 function codexUsageLine(outputTokens: number, secondsOffset: number): string {
   return `${JSON.stringify({
     type: "event_msg",
@@ -98,6 +115,21 @@ describe("readTranscriptRecords resume", () => {
     assert.strictEqual(second.records.length, 1);
     assert.strictEqual(second.records[0]?.model, "gpt-5.2-codex");
     assert.strictEqual(second.records[0]?.sessionId, "codex-session-1");
+  });
+
+  it("carries Takomi session and model metadata across the resume boundary", async () => {
+    const path = NodePath.join(dir, "takomi.jsonl");
+    await NodeFSP.writeFile(path, takomiSessionLine() + takomiModelLine("gpt-5.6-terra"));
+    const first = await readTranscriptRecords(path, "takomi");
+    assert.isNotNull(first);
+    assert.strictEqual(first.records.length, 0);
+
+    await NodeFSP.appendFile(path, takomiUsageLine(9));
+    const second = await readTranscriptRecords(path, "takomi", first.position);
+    assert.isNotNull(second);
+    assert.isTrue(second.resumed);
+    assert.strictEqual(second.records[0]?.model, "gpt-5.6-terra");
+    assert.strictEqual(second.records[0]?.sessionId, "takomi-session-1");
   });
 
   it("suppresses a Codex duplicate usage event that straddles the boundary", async () => {

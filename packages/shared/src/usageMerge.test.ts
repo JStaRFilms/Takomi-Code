@@ -158,7 +158,7 @@ describe("mergeUsage", () => {
           summary(
             [bucket()],
             [{ provider: "claude", hostId: "linux", homePath: "/b" }],
-            USAGE_CONTRACT_VERSION - 2,
+            USAGE_CONTRACT_VERSION - 3,
           ),
         ),
       ],
@@ -312,6 +312,42 @@ describe("mergeUsage", () => {
     );
 
     expect(merged.providers).toEqual([]);
+  });
+
+  it("merges Takomi buckets alongside Claude, Codex, and Grok", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket({ provider: "claude", costUsd: 10 }),
+              bucket({ provider: "codex", model: "gpt-5.6-sol", costUsd: 15 }),
+              bucket({ provider: "grok", model: "grok-4.5-build", costUsd: 20 }),
+              bucket({ provider: "takomi", model: "gpt-5.6-terra", costUsd: 25 }),
+            ],
+            [
+              { provider: "claude", hostId: "host", homePath: "/home/.claude" },
+              { provider: "codex", hostId: "host", homePath: "/home/.codex" },
+              { provider: "grok", hostId: "host", homePath: "/home/.grok" },
+              { provider: "takomi", hostId: "host", homePath: "/home/.pi/agent/sessions" },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(70);
+    expect(merged.providers.map((provider) => provider.provider).toSorted()).toEqual([
+      "claude",
+      "codex",
+      "grok",
+      "takomi",
+    ]);
+    expect(merged.providers.find((provider) => provider.provider === "takomi")?.costShare).toBe(
+      25 / 70,
+    );
   });
 
   it("derives hourly totals without losing the daily rollup", () => {

@@ -20,7 +20,7 @@ import * as NodePath from "node:path";
 import type { UsageProviderKind } from "@t3tools/contracts";
 
 import { GUARD_LENGTH, type TranscriptParsePosition } from "./usageTranscriptReader.ts";
-import type { CodexScanState, UsageRecord } from "./usageTranscripts.ts";
+import type { CodexScanState, TakomiScanState, UsageRecord } from "./usageTranscripts.ts";
 
 // v2: Codex fork-copy suppression changed what a file parses to, so v1
 // entries would keep serving double-counted records forever.
@@ -74,8 +74,10 @@ interface SerializedFile {
   readonly o: number;
   readonly gl: number;
   readonly gh: number;
-  /** Codex reducer state at `o`; `null` for stateless providers. */
+  /** Codex reducer state at `o`; `null` for other providers. */
   readonly cs: CodexScanState | null;
+  /** Takomi reducer state at `o`; `null` for other providers. */
+  readonly ts: TakomiScanState | null;
 }
 
 interface SerializedCache {
@@ -126,6 +128,7 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
       gl: entry.position.guardLength,
       gh: entry.position.guardHash,
       cs: entry.position.codexState,
+      ts: entry.position.takomiState,
     };
   }
 
@@ -219,7 +222,9 @@ export function decodeScanCache(document: unknown): ScanCache {
     if (typeof raw !== "object" || raw === null) continue;
     const entry = raw as Partial<SerializedFile>;
     if (typeof entry.s !== "number" || typeof entry.m !== "number") continue;
-    if (entry.p !== "claude" && entry.p !== "codex" && entry.p !== "grok") continue;
+    if (entry.p !== "claude" && entry.p !== "codex" && entry.p !== "grok" && entry.p !== "takomi") {
+      continue;
+    }
     if (!isRecordArray(entry.r) || !isRecordArray(entry.t)) continue;
     // Position fields feed byte offsets and a Buffer allocation in the reader,
     // so anything outside their real ranges must reject the entry: a bogus
@@ -240,7 +245,8 @@ export function decodeScanCache(document: unknown): ScanCache {
       continue;
     }
     const codexState = decodeCodexState(entry.cs);
-    if (codexState === undefined) continue;
+    const takomiState = decodeTakomiState(entry.ts);
+    if (codexState === undefined || takomiState === undefined) continue;
 
     const provider: UsageProviderKind = entry.p;
     const records = decodeRecords(entry.r, provider);
@@ -258,6 +264,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         guardLength: entry.gl,
         guardHash: entry.gh,
         codexState,
+        takomiState,
       },
     });
   }
@@ -271,7 +278,7 @@ export function decodeScanCache(document: unknown): ScanCache {
  * appended usage to the wrong model or replay fork-copied history.
  */
 function decodeCodexState(value: unknown): CodexScanState | null | undefined {
-  if (value === null) return null;
+  if (value === undefined || value === null) return null;
   if (typeof value !== "object") return undefined;
   const state = value as Partial<CodexScanState>;
   if (
@@ -293,6 +300,15 @@ function decodeCodexState(value: unknown): CodexScanState | null | undefined {
     suppressingForkCopies: state.suppressingForkCopies,
     forkCopyAnchorMs: state.forkCopyAnchorMs,
   };
+}
+
+/** Missing `ts` is valid for v3 cache entries, which predate Takomi scans. */
+function decodeTakomiState(value: unknown): TakomiScanState | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object") return undefined;
+  const state = value as Partial<TakomiScanState>;
+  if (typeof state.model !== "string" || typeof state.sessionId !== "string") return undefined;
+  return { model: state.model, sessionId: state.sessionId };
 }
 
 export interface PruneOptions {

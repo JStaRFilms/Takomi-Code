@@ -3,9 +3,11 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   GROK_COST_USD_TICKS_PER_DOLLAR,
   initialCodexScanState,
+  initialTakomiScanState,
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parseTakomiLine,
   totalTokens,
 } from "./usageTranscripts.ts";
 
@@ -235,6 +237,70 @@ describe("parseCodexLine", () => {
       );
       expect(record).not.toBeNull();
     });
+  });
+});
+
+describe("parseTakomiLine", () => {
+  it("attributes assistant usage, cost, model, and session metadata", () => {
+    const state = initialTakomiScanState();
+    expect(
+      parseTakomiLine(JSON.stringify({ type: "session", id: "takomi-session-1" }), state),
+    ).toBeNull();
+    expect(
+      parseTakomiLine(
+        JSON.stringify({ type: "model_change", provider: "openai", modelId: "gpt-5.6-terra" }),
+        state,
+      ),
+    ).toBeNull();
+
+    const record = parseTakomiLine(
+      JSON.stringify({
+        type: "message",
+        id: "message-1",
+        timestamp: "2026-08-07T12:00:00.000Z",
+        message: {
+          role: "assistant",
+          usage: {
+            input: 1500,
+            output: 200,
+            cacheRead: 8000,
+            cacheWrite: 50,
+            reasoning: 40,
+            cost: { total: 0.0067 },
+          },
+        },
+      }),
+      state,
+    );
+
+    expect(record).toMatchObject({
+      provider: "takomi",
+      model: "gpt-5.6-terra",
+      sessionId: "takomi-session-1",
+      reportedCostUsd: 0.0067,
+      dedupeKey: "takomi-session-1:message-1",
+      totals: {
+        uncachedInputTokens: 1500,
+        cachedInputTokens: 8000,
+        cacheCreationTokens: 50,
+        outputTokens: 200,
+        reasoningTokens: 40,
+      },
+    });
+  });
+
+  it("ignores non-assistant messages that happen to carry usage", () => {
+    const state = initialTakomiScanState();
+    expect(
+      parseTakomiLine(
+        JSON.stringify({
+          type: "message",
+          timestamp: "2026-08-07T12:00:00.000Z",
+          message: { role: "user", usage: { input: 10, output: 10 } },
+        }),
+        state,
+      ),
+    ).toBeNull();
   });
 });
 

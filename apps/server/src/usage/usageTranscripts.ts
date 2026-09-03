@@ -68,7 +68,7 @@ export function totalTokens(totals: UsageTokenTotals): number {
  * an order of magnitude.
  */
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
-  if (provider === "claude") return line.includes('"usage"');
+  if (provider === "claude" || provider === "takomi") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
   return line.includes('"token_count"');
 }
@@ -356,6 +356,113 @@ function grokTotalsToUsage(totals: GrokUsageTotals): UsageTokenTotals {
     reasoningTokens: Math.min(outputTokens, totals.reasoningTokens),
   };
 }
+
+/* -------------------------------------------------------------------------- */
+/* Takomi / Pi                                                                */
+/* -------------------------------------------------------------------------- */
+
+/** Metadata carried forward between lines in one Pi session transcript. */
+export interface TakomiScanState {
+  model: string;
+  sessionId: string;
+}
+
+export function initialTakomiScanState(): TakomiScanState {
+  return { model: "", sessionId: "" };
+}
+
+/**
+ * Parses one line of a Takomi / Pi session transcript.
+ *
+ * Session and model-change events establish the metadata for later assistant
+ * messages. Each assistant message carries per-response usage and may include
+ * a provider-reported cost, which takes precedence over rate-table pricing.
+ */
+export function parseTakomiLine(line: string, state: TakomiScanState): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+
+  const record = parsed as Record<string, unknown>;
+  if (record["type"] === "session") {
+    if (typeof record["id"] === "string") state.sessionId = record["id"];
+    return null;
+  }
+  if (record["type"] === "model_change") {
+    if (typeof record["modelId"] === "string") state.model = record["modelId"];
+    return null;
+  }
+  if (record["type"] !== "message") return null;
+
+  const message = record["message"];
+  if (typeof message !== "object" || message === null) return null;
+  const messageRecord = message as Record<string, unknown>;
+  if (messageRecord["role"] !== "assistant") return null;
+
+  const usage = messageRecord["usage"];
+  if (typeof usage !== "object" || usage === null) return null;
+  const usageRecord = usage as Record<string, unknown>;
+
+  const timestampMs =
+    parseTimestampMs(record["timestamp"]) ??
+    parseTimestampMs(messageRecord["timestamp"]) ??
+    (typeof record["timestamp"] === "number" && Number.isFinite(record["timestamp"])
+      ? record["timestamp"]
+      : typeof messageRecord["timestamp"] === "number" &&
+          Number.isFinite(messageRecord["timestamp"])
+        ? messageRecord["timestamp"]
+        : null);
+  if (timestampMs === null) return null;
+
+  const model =
+    (typeof messageRecord["model"] === "string" && messageRecord["model"].length > 0
+      ? messageRecord["model"]
+      : typeof messageRecord["modelId"] === "string" && messageRecord["modelId"].length > 0
+        ? messageRecord["modelId"]
+        : state.model) || "unknown";
+  const outputTokens = int(usageRecord["output"] ?? usageRecord["output_tokens"]);
+  const totals: UsageTokenTotals = {
+    uncachedInputTokens: int(usageRecord["input"] ?? usageRecord["input_tokens"]),
+    cachedInputTokens: int(usageRecord["cacheRead"] ?? usageRecord["cache_read_input_tokens"]),
+    cacheCreationTokens: int(
+      usageRecord["cacheWrite"] ?? usageRecord["cache_creation_input_tokens"],
+    ),
+    outputTokens,
+    reasoningTokens: Math.min(
+      outputTokens,
+      int(usageRecord["reasoning"] ?? usageRecord["reasoning_output_tokens"]),
+    ),
+  };
+  if (totalTokens(totals) === 0) return null;
+
+  const cost = usageRecord["cost"] ?? record["costUSD"];
+  let reportedCostUsd: number | null = null;
+  if (typeof cost === "number" && Number.isFinite(cost)) {
+    reportedCostUsd = cost;
+  } else if (typeof cost === "object" && cost !== null) {
+    const total = (cost as Record<string, unknown>)["total"];
+    if (typeof total === "number" && Number.isFinite(total)) reportedCostUsd = total;
+  }
+  const messageId = typeof record["id"] === "string" ? record["id"] : null;
+
+  return {
+    provider: "takomi",
+    timestampMs,
+    model,
+    sessionId: state.sessionId,
+    totals,
+    reportedCostUsd,
+    dedupeKey: messageId === null ? null : `${state.sessionId}:${messageId}`,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Grok Build                                                                 */
+/* -------------------------------------------------------------------------- */
 
 /**
  * Parses one line of a Grok Build `updates.jsonl` session log.

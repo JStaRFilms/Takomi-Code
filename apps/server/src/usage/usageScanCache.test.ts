@@ -35,6 +35,7 @@ function position(overrides: Partial<CachedFile["position"]> = {}): CachedFile["
     guardLength: 64,
     guardHash: 0xdeadbeef,
     codexState: null,
+    takomiState: null,
     ...overrides,
   };
 }
@@ -70,6 +71,18 @@ describe("scan cache round trip", () => {
       tailRecords: [record({ provider: "grok", model: "grok-4.5-build", dedupeKey: null })],
       position: position({ resumeOffset: 30, guardLength: 30, guardHash: 123 }),
     });
+    original.set("/takomi.jsonl", {
+      size: 60,
+      mtimeMs: 350,
+      provider: "takomi",
+      records: [
+        record({ provider: "takomi", model: "gpt-5.6-terra", dedupeKey: "takomi:message-1" }),
+      ],
+      tailRecords: [],
+      position: position({
+        takomiState: { model: "gpt-5.6-terra", sessionId: "takomi" },
+      }),
+    });
     original.set("/codex.jsonl", {
       size: 80,
       mtimeMs: 400,
@@ -90,10 +103,11 @@ describe("scan cache round trip", () => {
 
     const restored = decodeScanCache(JSON.parse(JSON.stringify(encodeScanCache(original))));
 
-    expect(restored.size).toBe(4);
+    expect(restored.size).toBe(5);
     expect(restored.get("/a.jsonl")).toEqual(original.get("/a.jsonl"));
     expect(restored.get("/b.jsonl")).toEqual(original.get("/b.jsonl"));
     expect(restored.get("/grok.jsonl")).toEqual(original.get("/grok.jsonl"));
+    expect(restored.get("/takomi.jsonl")).toEqual(original.get("/takomi.jsonl"));
     expect(restored.get("/codex.jsonl")).toEqual(original.get("/codex.jsonl"));
   });
 
