@@ -203,8 +203,12 @@ function prepareManagedWorktree(root: string, sha: string): string {
 
   // The marker and git-common-dir checks above establish ownership before either
   // command can discard the previous build's generated files or overlay.
-  run("git", ["reset", "--hard", sha], localWorktree);
-  run("git", ["clean", "-fdx", "-e", ownershipMarkerName], localWorktree);
+  run("git", ["-c", "core.longpaths=true", "reset", "--hard", sha], localWorktree);
+  run(
+    "git",
+    ["-c", "core.longpaths=true", "clean", "-fdx", "-e", ownershipMarkerName],
+    localWorktree,
+  );
   return localWorktree;
 }
 
@@ -301,7 +305,24 @@ function buildDesktop(root: string, dryRun: boolean): void {
   log(`[local-build] Desktop artifacts: ${outputDir}`);
   if (!dryRun) {
     FS.mkdirSync(outputDir, { recursive: true });
-    run(process.execPath, args, root);
+    const cachedMonitor = Path.join(
+      root,
+      "native/resource-monitor/target/x86_64-pc-windows-msvc/release/t3-resource-monitor.exe",
+    );
+    const tempDir = "C:\\Temp";
+    if (!FS.existsSync(tempDir)) {
+      FS.mkdirSync(tempDir, { recursive: true });
+    }
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      TMPDIR: process.env["TMPDIR"] ?? tempDir,
+      TEMP: process.env["TEMP"] ?? tempDir,
+      TMP: process.env["TMP"] ?? tempDir,
+      ...(FS.existsSync(cachedMonitor) && !process.env["T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR"]
+        ? { T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: "true" }
+        : {}),
+    };
+    run(process.execPath, args, root, { env });
   } else {
     log(`[local-build] Would run: ${commandDisplay(process.execPath, args)}`);
   }
