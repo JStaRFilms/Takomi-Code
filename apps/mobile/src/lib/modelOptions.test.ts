@@ -5,6 +5,9 @@ import { ProviderInstanceId, type ModelSelection, type ServerConfig } from "@t3t
 import {
   buildModelOptions,
   groupByProvider,
+  normalizeProviderDispatchModes,
+  providerRuntimeModes,
+  providerSupportsPlanMode,
   resolveDefaultableModelSelection,
   resolveNewTaskModelSelection,
   resolveSelectableModelSelection,
@@ -12,6 +15,50 @@ import {
 } from "./modelOptions";
 
 describe("mobile model options", () => {
+  it("uses provider capability descriptors to gate Pi runtime and Plan controls", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "pi",
+          capabilities: {
+            runtimeModes: ["full-access"],
+            interactionModes: ["default"],
+          },
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    expect(providerRuntimeModes(config, "pi")).toEqual(["full-access"]);
+    expect(providerSupportsPlanMode(config, "pi")).toBe(false);
+    expect(providerRuntimeModes(null, "pi")).toContain("approval-required");
+  });
+
+  it.each(["online new task", "offline queued creation", "existing-thread provider switch"])(
+    "normalizes stale modes for Pi at the %s dispatch boundary",
+    (_boundary) => {
+      const config = {
+        providers: [
+          {
+            instanceId: "pi",
+            capabilities: {
+              runtimeModes: ["full-access"],
+              interactionModes: ["default"],
+            },
+          },
+        ],
+      } as unknown as ServerConfig;
+
+      expect(
+        normalizeProviderDispatchModes({
+          config,
+          modelSelection: { instanceId: ProviderInstanceId.make("pi"), model: "pi" },
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+        }),
+      ).toEqual({ runtimeMode: "full-access", interactionMode: "default" });
+    },
+  );
+
   it("groups models by provider and flags legacy entries", () => {
     const config = {
       providers: [

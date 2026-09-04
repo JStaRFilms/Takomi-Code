@@ -8,6 +8,7 @@ import {
   TurnId,
   type OrchestrationEvent,
   type ProviderRuntimeEvent,
+  type ProviderInstanceId,
   type VcsStatusLocalResult,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -154,11 +155,21 @@ const make = Effect.gen(function* () {
 
   const resolveSessionRuntimeForThread = Effect.fn("resolveSessionRuntimeForThread")(function* (
     threadId: ThreadId,
-  ): Effect.fn.Return<Option.Option<{ readonly threadId: ThreadId; readonly cwd: string }>> {
+  ): Effect.fn.Return<
+    Option.Option<{
+      readonly threadId: ThreadId;
+      readonly cwd: string;
+      readonly providerInstanceId: ProviderInstanceId | undefined;
+    }>
+  > {
     const sessions = yield* providerService.listSessions();
     const session = sessions.find((entry) => entry.threadId === threadId);
     return session?.cwd
-      ? Option.some({ threadId: session.threadId, cwd: session.cwd })
+      ? Option.some({
+          threadId: session.threadId,
+          cwd: session.cwd,
+          providerInstanceId: session.providerInstanceId,
+        })
       : Option.none();
   });
 
@@ -713,6 +724,25 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.catch(() => Effect.void));
       return;
     }
+    // A filesystem restore and a provider conversation are one user-visible
+    // revert. Check the provider boundary first so an unsupported rollback
+    // cannot leave the workspace restored while Pi retains later context.
+    if (sessionRuntime.value.providerInstanceId) {
+      const capabilities = yield* providerService.getCapabilities(
+        sessionRuntime.value.providerInstanceId,
+      );
+      if (capabilities.conversationRollback === false) {
+        yield* appendRevertFailureActivity({
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          detail:
+            "This provider does not support conversation rollback, so files were not restored.",
+          createdAt: now,
+        }).pipe(Effect.catch(() => Effect.void));
+        return;
+      }
+    }
+
     if (!isGitWorkspace(sessionRuntime.value.cwd)) {
       yield* appendRevertFailureActivity({
         threadId: event.payload.threadId,

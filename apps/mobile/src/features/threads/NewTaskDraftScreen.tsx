@@ -80,7 +80,10 @@ import {
   type ComposerDraft,
 } from "../../state/use-composer-drafts";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
-import { resolveSelectableModelSelection } from "../../lib/modelOptions";
+import {
+  normalizeProviderDispatchModes,
+  resolveSelectableModelSelection,
+} from "../../lib/modelOptions";
 import { deriveThreadTitleFromPrompt } from "../../lib/projectThreadStartTurn";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
@@ -312,7 +315,8 @@ export function NewTaskDraftScreen(props: {
     hasThread: false,
     enabled: isComposerFocused && !isComposerInteractionLocked,
     onChangeDraftMessage: flow.setPrompt,
-    onUpdateInteractionMode: flow.planModeEnabled ? flow.setInteractionMode : undefined,
+    onUpdateInteractionMode:
+      flow.planModeEnabled && flow.supportsPlanMode ? flow.setInteractionMode : undefined,
   });
   const voiceInput = useVoiceInputController({
     ownerKey: flow.draftKey,
@@ -871,15 +875,22 @@ export function NewTaskDraftScreen(props: {
     const selectedWorktreePath =
       draft.workspaceSelection?.worktreePath ?? flow.selectedWorktreePath;
     const startFromOrigin = draft.workspaceSelection?.startFromOrigin ?? flow.startFromOrigin;
-    const runtimeMode = draft.runtimeMode ?? flow.runtimeMode;
-    const interactionMode = flow.planModeEnabled
-      ? (draft.interactionMode ?? flow.interactionMode)
-      : "default";
+    const dispatchModes = modelSelection
+      ? normalizeProviderDispatchModes({
+          config: selectedEnvironmentServerConfig,
+          modelSelection,
+          runtimeMode: draft.runtimeMode ?? flow.runtimeMode,
+          interactionMode: flow.planModeEnabled
+            ? (draft.interactionMode ?? flow.interactionMode)
+            : "default",
+        })
+      : null;
     const initialMessageText = draft.text.trim();
 
     if (
       attachmentBlockReason !== null ||
       !modelSelection ||
+      !dispatchModes ||
       initialMessageText.length === 0 ||
       flow.submitting ||
       (workspaceMode === "worktree" && !selectedBranchName)
@@ -963,8 +974,8 @@ export function NewTaskDraftScreen(props: {
       branch: creationBranch,
       worktreePath: workspaceMode === "worktree" ? null : selectedWorktreePath,
       startFromOrigin,
-      runtimeMode,
-      interactionMode,
+      runtimeMode: dispatchModes.runtimeMode,
+      interactionMode: dispatchModes.interactionMode,
       initialMessageText,
       initialAttachments: draft.attachments,
       onAttachmentsUploaded: async (attachments) => {
@@ -1300,7 +1311,7 @@ export function NewTaskDraftScreen(props: {
                       maxWidth={152}
                       onPress={settingsSheetPresentation.open}
                     />
-                    {flow.planModeEnabled ? (
+                    {flow.planModeEnabled && flow.supportsPlanMode ? (
                       <ComposerInlineControl
                         accessibilityHint={`Switches to ${flow.interactionMode === "plan" ? "Build" : "Plan"} mode`}
                         accessibilityLabel={`Interaction mode: ${flow.interactionMode === "plan" ? "Plan" : "Build"}`}

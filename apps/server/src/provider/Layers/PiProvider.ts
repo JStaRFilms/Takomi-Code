@@ -2,6 +2,7 @@ import {
   type PiSettings,
   type ModelCapabilities,
   type ServerProviderModel,
+  type ServerProviderCapabilities,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -35,9 +36,19 @@ const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
 const decodeUnknownJsonString = Schema.decodeUnknownSync(UnknownFromJsonString);
 const encodeUnknownJsonString = Schema.encodeUnknownSync(UnknownFromJsonString);
 
+const PI_CAPABILITIES = {
+  runtimeModes: ["full-access"],
+  interactionModes: ["default"],
+  modelSwitching: true,
+  conversationRollback: false,
+} satisfies ServerProviderCapabilities;
+
 const PI_PRESENTATION = {
   displayName: "Takomi",
-  showInteractionModeToggle: true,
+  // Legacy clients read this field instead of interactionModes. Keep Plan
+  // hidden there too because Pi rejects it.
+  showInteractionModeToggle: false,
+  capabilities: PI_CAPABILITIES,
 } as const;
 
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [

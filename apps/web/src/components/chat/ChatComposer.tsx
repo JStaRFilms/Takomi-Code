@@ -317,7 +317,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
-import { getProviderInteractionModeToggle } from "../../providerModels";
+import { getProviderInteractionModeToggle, getProviderRuntimeModes } from "../../providerModels";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -374,7 +374,6 @@ const runtimeModeConfig: Record<
   },
 };
 
-const runtimeModeOptions = Object.keys(runtimeModeConfig) as RuntimeMode[];
 const COMPOSER_FLOATING_LAYER_SELECTOR = [
   '[data-composer-drawer-layer="true"]',
   '[data-slot="popover-popup"]',
@@ -420,6 +419,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   showInteractionModeToggle: boolean;
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
+  runtimeModes: ReadonlyArray<RuntimeMode>;
   onToggleInteractionMode: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
@@ -479,7 +479,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
             <SelectValue>{runtimeModeOption.label}</SelectValue>
           </TooltipTrigger>
           <SelectPopup alignItemWithTrigger={false}>
-            {runtimeModeOptions.map((mode) => {
+            {props.runtimeModes.map((mode) => {
               const option = runtimeModeConfig[mode];
               const OptionIcon = option.icon;
               return (
@@ -1221,10 +1221,32 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerProviderControls = useMemo(
     () => ({
       showInteractionModeToggle:
-        planModeUiEnabled && getProviderInteractionModeToggle(providerStatuses, selectedProvider),
+        planModeUiEnabled && getProviderInteractionModeToggle(providerStatuses, selectedInstanceId),
+      runtimeModes: getProviderRuntimeModes(providerStatuses, selectedInstanceId),
     }),
-    [planModeUiEnabled, providerStatuses, selectedProvider],
+    [planModeUiEnabled, providerStatuses, selectedInstanceId],
   );
+  const effectiveRuntimeMode = composerProviderControls.runtimeModes.includes(runtimeMode)
+    ? runtimeMode
+    : (composerProviderControls.runtimeModes[0] ?? runtimeMode);
+  const effectiveInteractionMode = composerProviderControls.showInteractionModeToggle
+    ? interactionMode
+    : "default";
+  useEffect(() => {
+    if (effectiveRuntimeMode !== runtimeMode) {
+      handleRuntimeModeChange(effectiveRuntimeMode);
+    }
+    if (effectiveInteractionMode !== interactionMode) {
+      handleInteractionModeChange(effectiveInteractionMode);
+    }
+  }, [
+    effectiveInteractionMode,
+    effectiveRuntimeMode,
+    handleInteractionModeChange,
+    handleRuntimeModeChange,
+    interactionMode,
+    runtimeMode,
+  ]);
   const selectedModelSelection = useMemo<ModelSelection>(
     () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
     [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
@@ -4306,8 +4328,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
                   {isComposerFooterCompact ? (
                     <CompactComposerControlsMenu
-                      interactionMode={interactionMode}
-                      runtimeMode={runtimeMode}
+                      interactionMode={effectiveInteractionMode}
+                      runtimeMode={effectiveRuntimeMode}
+                      runtimeModes={composerProviderControls.runtimeModes}
                       showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                       traitsMenuContent={providerTraitsMenuContent}
                       onToggleInteractionMode={toggleInteractionMode}
@@ -4328,8 +4351,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         showInteractionModeToggle={
                           composerProviderControls.showInteractionModeToggle
                         }
-                        interactionMode={interactionMode}
-                        runtimeMode={runtimeMode}
+                        interactionMode={effectiveInteractionMode}
+                        runtimeMode={effectiveRuntimeMode}
+                        runtimeModes={composerProviderControls.runtimeModes}
                         onToggleInteractionMode={toggleInteractionMode}
                         onRuntimeModeChange={handleRuntimeModeChange}
                       />

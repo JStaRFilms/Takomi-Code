@@ -19,6 +19,7 @@ import {
 } from "./keybindings.ts";
 import { EditorId, FileManagerRevealKind, RemoteOpenTarget } from "./editor.ts";
 import { ModelCapabilities } from "./model.ts";
+import { ProviderInteractionMode, RuntimeMode } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerSettings } from "./settings.ts";
 
@@ -60,6 +61,50 @@ export const ServerProviderAuth = Schema.Struct({
   email: Schema.optional(TrimmedNonEmptyString),
 });
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
+
+/**
+ * Optional per-instance behavior advertised to clients. Omitted means a
+ * legacy producer, not an unsupported capability; clients retain their
+ * existing behavior until a provider publishes this descriptor. Within a
+ * published descriptor, missing/false fields are unsupported. Discovery uses
+ * `"unavailable"` rather than omission so a failed probe is not presented as
+ * a provider that definitively lacks the resource.
+ */
+export const ServerProviderCapabilities = Schema.Struct({
+  runtimeModes: Schema.optional(Schema.Array(RuntimeMode)),
+  interactionModes: Schema.optional(Schema.Array(ProviderInteractionMode)),
+  modelSwitching: Schema.optional(Schema.Boolean),
+  promptQueues: Schema.optional(Schema.Boolean),
+  controls: Schema.optional(
+    Schema.Struct({
+      compaction: Schema.optional(Schema.Boolean),
+      retry: Schema.optional(Schema.Boolean),
+      bash: Schema.optional(Schema.Boolean),
+    }),
+  ),
+  sessions: Schema.optional(
+    Schema.Struct({
+      list: Schema.optional(Schema.Boolean),
+      resume: Schema.optional(Schema.Boolean),
+      fork: Schema.optional(Schema.Boolean),
+      tree: Schema.optional(Schema.Boolean),
+      import: Schema.optional(Schema.Boolean),
+      export: Schema.optional(Schema.Boolean),
+    }),
+  ),
+  commandDiscovery: Schema.optional(Schema.Literals(["available", "unavailable"])),
+  skillDiscovery: Schema.optional(Schema.Literals(["available", "unavailable"])),
+  extensionInputMethods: Schema.optional(
+    Schema.Array(Schema.Literals(["confirm", "select", "input", "editor"])),
+  ),
+  extensionCustomUi: Schema.optional(Schema.Literals(["canonical", "native"])),
+  context: Schema.optional(Schema.Boolean),
+  board: Schema.optional(Schema.Boolean),
+  subagents: Schema.optional(Schema.Boolean),
+  transcriptFidelity: Schema.optional(Schema.Literals(["partial", "full"])),
+  conversationRollback: Schema.optional(Schema.Boolean),
+});
+export type ServerProviderCapabilities = typeof ServerProviderCapabilities.Type;
 
 export const ServerProviderModel = Schema.Struct({
   slug: TrimmedNonEmptyString,
@@ -209,6 +254,7 @@ export const ServerProvider = Schema.Struct({
   // Human-readable reason populated when `availability === "unavailable"`.
   // Surfaces in the UI alongside the missing-driver affordance.
   unavailableReason: Schema.optional(TrimmedNonEmptyString),
+  capabilities: Schema.optional(ServerProviderCapabilities),
   models: Schema.Array(ServerProviderModel),
   slashCommands: Schema.Array(ServerProviderSlashCommand).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),

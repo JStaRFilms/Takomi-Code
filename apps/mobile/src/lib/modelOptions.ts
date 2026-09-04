@@ -1,7 +1,10 @@
-import type {
-  ModelCapabilities,
-  ModelSelection,
-  ServerConfig as T3ServerConfig,
+import {
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  type ModelCapabilities,
+  type ModelSelection,
+  type ProviderInteractionMode,
+  type RuntimeMode,
+  type ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
 import {
   buildExplicitProviderOptionSelectionsFromDescriptors,
@@ -26,6 +29,66 @@ export type ProviderGroup = {
   readonly providerLabel: string;
   readonly models: ReadonlyArray<ModelOption>;
 };
+
+const LEGACY_RUNTIME_MODES: ReadonlyArray<RuntimeMode> = [
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+];
+
+export function providerRuntimeModes(
+  config: T3ServerConfig | null | undefined,
+  instanceId: string | null | undefined,
+): ReadonlyArray<RuntimeMode> {
+  const provider = config?.providers.find((candidate) => candidate.instanceId === instanceId);
+  return provider?.capabilities ? (provider.capabilities.runtimeModes ?? []) : LEGACY_RUNTIME_MODES;
+}
+
+export function providerSupportsPlanMode(
+  config: T3ServerConfig | null | undefined,
+  instanceId: string | null | undefined,
+): boolean {
+  const provider = config?.providers.find((candidate) => candidate.instanceId === instanceId);
+  return provider?.capabilities
+    ? provider.capabilities.interactionModes?.includes("plan") === true
+    : true;
+}
+
+/**
+ * Uses a resolved provider instance's published capability descriptor at the
+ * command boundary. Legacy or unavailable snapshots keep their stored values;
+ * a published descriptor must explicitly support both dispatched modes.
+ */
+export function normalizeProviderDispatchModes(input: {
+  readonly config: T3ServerConfig | null | undefined;
+  readonly modelSelection: ModelSelection;
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+}): {
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+} | null {
+  const provider = input.config?.providers.find(
+    (candidate) => candidate.instanceId === input.modelSelection.instanceId,
+  );
+  if (!provider?.capabilities) {
+    return {
+      runtimeMode: input.runtimeMode,
+      interactionMode: input.interactionMode,
+    };
+  }
+
+  const runtimeMode = provider.capabilities.runtimeModes?.includes(input.runtimeMode)
+    ? input.runtimeMode
+    : provider.capabilities.runtimeModes?.[0];
+  const interactionMode = provider.capabilities.interactionModes?.includes(input.interactionMode)
+    ? input.interactionMode
+    : provider.capabilities.interactionModes?.includes(DEFAULT_PROVIDER_INTERACTION_MODE)
+      ? DEFAULT_PROVIDER_INTERACTION_MODE
+      : provider.capabilities.interactionModes?.[0];
+  return runtimeMode && interactionMode ? { runtimeMode, interactionMode } : null;
+}
 
 function providerDisplayLabel(provider: {
   readonly displayName?: string | undefined;

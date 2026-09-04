@@ -37,6 +37,7 @@ import {
   resolveDraftHeroState,
   scheduleEnvironmentReconnectWarning,
   startNewThreadForProject,
+  supportsConversationRollback,
   codexArtifactTemplatePromptToAppend,
   shouldDockDraftHeroForSubmission,
   shouldReleaseTimelineAnchorForToolActivity,
@@ -889,6 +890,22 @@ describe("shouldShowBranchMismatchBanner", () => {
     expect(
       shouldShowBranchMismatchBanner({ ...base, composerHasContent: true, hasMismatch: false }),
     ).toBe(false);
+  });
+});
+
+describe("conversation rollback capability", () => {
+  it("suppresses rollback for published descriptors that omit or reject it", () => {
+    expect(supportsConversationRollback({ capabilities: { conversationRollback: false } })).toBe(
+      false,
+    );
+    expect(supportsConversationRollback({ capabilities: {} })).toBe(false);
+  });
+
+  it("preserves rollback for legacy snapshots and Codex or Claude descriptors", () => {
+    expect(supportsConversationRollback({})).toBe(true);
+    expect(supportsConversationRollback({ capabilities: { conversationRollback: true } })).toBe(
+      true,
+    );
   });
 });
 

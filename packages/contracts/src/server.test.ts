@@ -45,6 +45,28 @@ describe("ServerProvider", () => {
     expect(parsed.skills).toEqual([]);
     expect(parsed.versionAdvisory).toBeUndefined();
     expect(parsed.updateState).toBeUndefined();
+    expect(parsed.capabilities).toBeUndefined();
+  });
+
+  it("decodes finite provider capabilities without requiring them from legacy snapshots", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      capabilities: {
+        runtimeModes: ["full-access"],
+        interactionModes: ["default"],
+        modelSwitching: true,
+        conversationRollback: false,
+        commandDiscovery: "unavailable",
+      },
+    });
+
+    expect(parsed.capabilities).toEqual({
+      runtimeModes: ["full-access"],
+      interactionModes: ["default"],
+      modelSwitching: true,
+      conversationRollback: false,
+      commandDiscovery: "unavailable",
+    });
   });
 
   it("defaults one-click update support when decoding older advisory snapshots", () => {

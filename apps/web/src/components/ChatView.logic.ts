@@ -575,6 +575,14 @@ export function shouldShowBranchMismatchBanner(input: {
   return input.composerHasContent || input.wasShownForCurrentMismatch;
 }
 
+export function supportsConversationRollback(
+  provider: Pick<ServerProvider, "capabilities"> | null | undefined,
+): boolean {
+  // Snapshots predating provider capability descriptors retain rollback;
+  // published descriptors must opt in explicitly.
+  return !provider?.capabilities || provider.capabilities.conversationRollback === true;
+}
+
 export function shouldShowPlanFollowUpPrompt(input: {
   pendingUserInputCount: number;
   interactionMode: ProviderInteractionMode;

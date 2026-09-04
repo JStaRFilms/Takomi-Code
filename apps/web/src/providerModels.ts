@@ -7,6 +7,7 @@ import {
   type ProviderInstanceId,
   type ServerProvider,
   type ServerProviderModel,
+  type RuntimeMode,
 } from "@t3tools/contracts";
 import { createModelCapabilities, resolveSelectableModel } from "@t3tools/shared/model";
 
@@ -32,18 +33,41 @@ export function getProviderModels(
 
 export function getProviderSnapshot(
   providers: ReadonlyArray<ServerProvider>,
-  provider: ProviderDriverKind,
+  provider: ProviderDriverKind | ProviderInstanceId,
 ): ServerProvider | undefined {
-  const defaultInstanceId = defaultInstanceIdForDriver(provider);
+  const byInstance = providers.find((candidate) => candidate.instanceId === provider);
+  if (byInstance) return byInstance;
+  const defaultInstanceId = defaultInstanceIdForDriver(provider as ProviderDriverKind);
   return providers.find((candidate) => candidate.instanceId === defaultInstanceId);
 }
 
 export function getProviderInteractionModeToggle(
   providers: ReadonlyArray<ServerProvider>,
-  provider: ProviderDriverKind,
+  provider: ProviderDriverKind | ProviderInstanceId,
 ): boolean {
-  return getProviderSnapshot(providers, provider)?.showInteractionModeToggle ?? true;
+  const snapshot = getProviderSnapshot(providers, provider);
+  // Missing capabilities are a legacy snapshot: preserve established provider
+  // behavior until the server can make a specific declaration.
+  if (snapshot?.capabilities) {
+    return snapshot.capabilities.interactionModes?.includes("plan") === true;
+  }
+  return snapshot?.showInteractionModeToggle ?? true;
 }
+
+export function getProviderRuntimeModes(
+  providers: ReadonlyArray<ServerProvider>,
+  provider: ProviderDriverKind | ProviderInstanceId,
+): ReadonlyArray<RuntimeMode> {
+  const snapshot = getProviderSnapshot(providers, provider);
+  return snapshot?.capabilities ? (snapshot.capabilities.runtimeModes ?? []) : runtimeModeFallback;
+}
+
+const runtimeModeFallback: ReadonlyArray<RuntimeMode> = [
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+];
 
 // Resolve an instance selection to the correlated live driver. If the
 // instance is absent, fall back to a live enabled provider instead of

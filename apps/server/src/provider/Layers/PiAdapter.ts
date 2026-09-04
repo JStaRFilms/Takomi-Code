@@ -2170,6 +2170,13 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       "sendPiTurn",
     )(function* (input: ProviderSendTurnInput) {
       const context = yield* ensureContext(input.threadId);
+      if (input.interactionMode === "plan") {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: "Pi/Takomi does not currently enforce T3 Plan mode.",
+        });
+      }
       if (!input.input && (!input.attachments || input.attachments.length === 0)) {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
@@ -2399,7 +2406,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
 
     const adapter: ProviderAdapterShape<ProviderAdapterError> = {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: { sessionModelSwitch: "in-session", conversationRollback: false },
       startSession,
       sendTurn,
       interruptTurn,

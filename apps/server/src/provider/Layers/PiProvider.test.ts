@@ -2,7 +2,23 @@ import * as NodeAssert from "node:assert/strict";
 
 import { describe, it } from "vite-plus/test";
 
-import { serverModelsFromPiModels } from "./PiProvider.ts";
+import * as Effect from "effect/Effect";
+
+import { makePendingPiProvider, serverModelsFromPiModels } from "./PiProvider.ts";
+
+describe("Pi provider snapshot", () => {
+  it("advertises only Pi runtime and rollback capabilities it enforces", async () => {
+    const provider = await Effect.runPromise(makePendingPiProvider());
+
+    NodeAssert.deepEqual(provider.capabilities, {
+      runtimeModes: ["full-access"],
+      interactionModes: ["default"],
+      modelSwitching: true,
+      conversationRollback: false,
+    });
+    NodeAssert.equal(provider.showInteractionModeToggle, false);
+  });
+});
 
 describe("serverModelsFromPiModels", () => {
   it("maps discovered Pi models and their thinking levels", () => {

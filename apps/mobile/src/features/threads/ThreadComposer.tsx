@@ -60,7 +60,12 @@ import type {
   DraftComposerAttachment,
   DraftComposerFileAttachment,
 } from "../../lib/composerImages";
-import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import {
+  buildModelOptions,
+  groupByProvider,
+  providerRuntimeModes,
+  providerSupportsPlanMode,
+} from "../../lib/modelOptions";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
@@ -332,7 +337,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const sendLabel =
     props.connectionState !== "connected" || props.queueCount > 0 ? "Queue" : "Send";
   const currentModelSelection = props.selectedThread.modelSelection;
-  const currentRuntimeMode = props.selectedThread.runtimeMode;
+  const runtimeModes = providerRuntimeModes(props.serverConfig, currentModelSelection.instanceId);
+  const requestedRuntimeMode = props.selectedThread.runtimeMode;
+  const currentRuntimeMode = runtimeModes.includes(requestedRuntimeMode)
+    ? requestedRuntimeMode
+    : (runtimeModes[0] ?? requestedRuntimeMode);
   const connectionStatus = composerConnectionStatus({
     connectionError: props.connectionError,
     connectionState: props.connectionState,
@@ -348,6 +357,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     );
   }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
   const composerOwnerKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+  const supportsPlanMode = providerSupportsPlanMode(
+    props.serverConfig,
+    props.selectedThread.modelSelection.instanceId,
+  );
 
   const composerMenu = useComposerCommandMenu({
     draftMessage: props.draftMessage,
@@ -357,7 +370,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     selectedProviderStatus,
     hasThread: true,
     onChangeDraftMessage: props.onChangeDraftMessage,
-    onUpdateInteractionMode: props.onUpdateInteractionMode,
+    onUpdateInteractionMode: supportsPlanMode ? props.onUpdateInteractionMode : undefined,
   });
   const voiceInput = useVoiceInputController({
     ownerKey: composerOwnerKey,
@@ -503,6 +516,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       onUpdateOptionSelections: (options) =>
         props.onUpdateModelSelection({ ...currentModelSelection, options }),
       runtimeMode: currentRuntimeMode,
+      runtimeModes,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
     }),
     [
@@ -511,6 +525,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
       providerOptionDescriptors,
+      runtimeModes,
       settingsOwnerId,
       threadProviderGroups,
     ],

@@ -16,6 +16,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { normalizeProviderDispatchModes } from "../lib/modelOptions";
 import { scopedProjectKey, scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
 import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
@@ -630,7 +631,20 @@ export function useThreadOutboxDrain(): void {
 
   const sendQueuedMessage = useCallback(
     async (queuedMessage: QueuedThreadMessage, thread: EnvironmentThreadShell) => {
-      const settings = resolveQueuedThreadSettings(queuedMessage, thread);
+      const queuedSettings = resolveQueuedThreadSettings(queuedMessage, thread);
+      const dispatchModes = normalizeProviderDispatchModes({
+        config: serverConfigs.get(queuedMessage.environmentId),
+        modelSelection: queuedSettings.modelSelection,
+        runtimeMode: queuedSettings.runtimeMode,
+        interactionMode: queuedSettings.interactionMode,
+      });
+      if (!dispatchModes) {
+        return restoreQueuedMessage(
+          queuedMessage,
+          "The selected provider no longer supports this thread's modes.",
+        );
+      }
+      const settings = { ...queuedSettings, ...dispatchModes };
       const { reportFailure } = makeDeliveryHelpers(queuedMessage);
 
       if (!modelSelectionsEqual(settings.modelSelection, thread.modelSelection)) {
@@ -774,6 +788,18 @@ export function useThreadOutboxDrain(): void {
       if (modelSelection === undefined) {
         return false;
       }
+      const dispatchModes = normalizeProviderDispatchModes({
+        config: serverConfigs.get(queuedMessage.environmentId),
+        modelSelection,
+        runtimeMode: queuedMessage.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+        interactionMode: queuedMessage.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
+      });
+      if (!dispatchModes) {
+        return restoreQueuedMessage(
+          queuedMessage,
+          "The selected provider no longer supports this thread's modes.",
+        );
+      }
       let prepared: PreparedTurnAttachments;
       let persistedMessage: QueuedThreadMessage;
       let deliveryRevision: number;
@@ -822,8 +848,7 @@ export function useThreadOutboxDrain(): void {
           attachments: queuedMessage.attachments,
           uploadedAttachments: prepared.attachments,
           modelSelection,
-          runtimeMode: queuedMessage.runtimeMode ?? DEFAULT_RUNTIME_MODE,
-          interactionMode: queuedMessage.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
+          ...dispatchModes,
           workspaceMode: creation.workspaceMode,
           branch: creation.branch,
           worktreePath: creation.worktreePath,
