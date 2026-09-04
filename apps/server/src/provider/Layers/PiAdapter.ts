@@ -47,6 +47,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
+import { PiJsonlDecoder, type PiJsonlFrame } from "./PiProtocolConformance.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const PI_RESUME_VERSION = 1 as const;
@@ -61,7 +62,6 @@ const TAKOMI_EXTENSION_NAMES = [
 ] as const;
 const encoder = new TextEncoder();
 const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
-const decodeJsonString = Schema.decodeUnknownExit(UnknownFromJsonString);
 const encodeJsonString = Schema.encodeUnknownExit(UnknownFromJsonString);
 
 function jsonString(value: unknown): string | undefined {
@@ -1869,7 +1869,9 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
     ) {
       if (context.stopped) return;
       context.stopped = true;
-      sessions.delete(context.session.threadId);
+      if (sessions.get(context.session.threadId) === context) {
+        sessions.delete(context.session.threadId);
+      }
       if (emitExit && context.activeTurnId) {
         context.abortingTurnId = undefined;
         yield* completeTurn(context, "interrupted");
@@ -2043,47 +2045,38 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         Effect.forkIn(sessionScope),
       );
 
-      const decoder = new TextDecoder();
-      let stdoutBuffer = "";
+      const stdoutDecoder = new PiJsonlDecoder();
+      const stdoutFinished = yield* Deferred.make<void>();
+      const handleStdoutFrames = (frames: ReadonlyArray<PiJsonlFrame>) =>
+        Effect.forEach(
+          frames,
+          (frame) => {
+            if (frame.type === "invalid" || !readString(frame.record.type)) {
+              return emit({
+                eventId: EventId.make(`pi-parse-${process.pid}`),
+                provider: PROVIDER,
+                providerInstanceId: options.instanceId,
+                threadId: input.threadId,
+                createdAt,
+                type: "runtime.warning",
+                payload: {
+                  message: "Pi emitted an invalid RPC record.",
+                  detail: { reason: frame.type === "invalid" ? frame.reason : "missing-type" },
+                },
+              });
+            }
+            return handleMessage(context, frame.record as PiRpcMessage);
+          },
+          { discard: true },
+        );
       yield* process.stdout.pipe(
-        Stream.runForEach((chunk) => {
-          stdoutBuffer += decoder.decode(chunk, { stream: true });
-          const lines: string[] = [];
-          while (true) {
-            const newline = stdoutBuffer.indexOf("\n");
-            if (newline < 0) break;
-            let line = stdoutBuffer.slice(0, newline);
-            stdoutBuffer = stdoutBuffer.slice(newline + 1);
-            if (line.endsWith("\r")) line = line.slice(0, -1);
-            if (line.trim().length > 0) lines.push(line);
-          }
-          return Effect.forEach(
-            lines,
-            (line) => {
-              const decoded = decodeJsonString(line);
-              if (
-                Exit.isFailure(decoded) ||
-                !isRecord(decoded.value) ||
-                !readString(decoded.value.type)
-              ) {
-                return emit({
-                  eventId: EventId.make(`pi-parse-${process.pid}`),
-                  provider: PROVIDER,
-                  providerInstanceId: options.instanceId,
-                  threadId: input.threadId,
-                  createdAt,
-                  type: "runtime.warning",
-                  payload: {
-                    message: "Pi emitted an invalid RPC record.",
-                    detail: { line },
-                  },
-                });
-              }
-              return handleMessage(context, decoded.value as PiRpcMessage);
-            },
-            { discard: true },
-          );
-        }),
+        Stream.runForEach((chunk) => handleStdoutFrames(stdoutDecoder.push(chunk))),
+        Effect.ensuring(
+          Effect.suspend(() => handleStdoutFrames(stdoutDecoder.finish())).pipe(
+            Effect.ignore,
+            Effect.ensuring(Deferred.succeed(stdoutFinished, undefined).pipe(Effect.ignore)),
+          ),
+        ),
         Effect.catchCause((cause) =>
           context.stopped
             ? Effect.void
@@ -2110,8 +2103,11 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           context.stopped
             ? Effect.void
             : Effect.gen(function* () {
+                // Drain and EOF-flush stdout before publishing termination. Closing
+                // the session scope first would race and discard the final frame.
+                yield* Deferred.await(stdoutFinished);
                 context.stopped = true;
-                sessions.delete(input.threadId);
+                if (sessions.get(input.threadId) === context) sessions.delete(input.threadId);
                 if (context.activeTurnId) {
                   context.abortingTurnId = undefined;
                   yield* completeTurn(

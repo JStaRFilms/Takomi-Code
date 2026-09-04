@@ -25,4 +25,4 @@ $host_cli verify "$canonical" "$artifact" "$run/extracted/package" \
 $host_cli probe "$run/isolated/node_modules/takomi" "$run/takomi-runtime-manifest.json"
 ```
 
-The commands only write the disposable `run` directory: `npm pack` is script-free and writes the artifact outside canonical source, and the dependency installation is prefix-scoped with scripts and lockfile writes disabled. They neither install globally nor target `~/.pi`. The final `probe` verifies the manifest and reports `session: "not-opened"`.
+The commands only write the disposable `run` directory: `npm pack` is script-free and writes the artifact outside canonical source, and the dependency installation is prefix-scoped with scripts and lockfile writes disabled. They neither install globally nor target `~/.pi`. The final `probe` verifies the manifest and reports `session: "not-opened"`. Its host-local diagnostics bind the Takomi runtime, Pi, and pi-subagents to each selected resolved path, exact version, and package.json SHA-256; these filesystem paths are never part of a client contract.

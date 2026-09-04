@@ -1,12 +1,108 @@
+// @effect-diagnostics nodeBuiltinImport:off - The integration tests launch only the synthetic Pi peer.
+import * as Path from "node:path";
+
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import {
+  PiSettings,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+  type ProviderRuntimeEvent,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import { foldSubagentActivities } from "../../../../../packages/client-runtime/src/state/subagentRuntime.ts";
 import {
   createTakomiSubagentTaskTracker,
+  makePiAdapter,
   normalizePiToolWorkLog,
   normalizeTakomiPresentation,
   normalizeTakomiSubagentTasks,
 } from "./PiAdapter.ts";
+import { ServerConfig } from "../../config.ts";
+import type { ProviderAdapterError } from "../Errors.ts";
+
+const decodePiSettings = Schema.decodeSync(PiSettings);
+const piMockPeer = Path.join(import.meta.dirname, "../testFixtures/piMockPeer.mjs");
+const piAdapterTestLayer = ServerConfig.layerTest(process.cwd(), {
+  prefix: "t3code-pi-adapter-test-",
+}).pipe(Layer.provideMerge(NodeServices.layer));
+
+type TestPiAdapter = Effect.Success<ReturnType<typeof makePiAdapter>>;
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function runtimeWarningReason(event: ProviderRuntimeEvent): unknown {
+  if (event.type !== "runtime.warning" || !isRecord(event.payload.detail)) return undefined;
+  return event.payload.detail.reason;
+}
+
+function runPiProcessScenario(
+  environment: NodeJS.ProcessEnv,
+  use: (input: {
+    readonly adapter: TestPiAdapter;
+    readonly events: ProviderRuntimeEvent[];
+    readonly threadId: ThreadId;
+    readonly waitFor: (predicate: (event: ProviderRuntimeEvent) => boolean) => Effect.Effect<void>;
+  }) => Effect.Effect<void, ProviderAdapterError>,
+) {
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const adapter = yield* makePiAdapter(
+          decodePiSettings({
+            binaryPath: process.execPath,
+            launchArgs: `"${piMockPeer}"`,
+          }),
+          { instanceId: ProviderInstanceId.make("pi-conformance"), environment },
+        );
+        const events: ProviderRuntimeEvent[] = [];
+        const signals: Array<{
+          readonly predicate: (event: ProviderRuntimeEvent) => boolean;
+          readonly deferred: Deferred.Deferred<void>;
+        }> = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.gen(function* () {
+            events.push(event);
+            for (const signal of signals) {
+              if (signal.predicate(event))
+                yield* Deferred.succeed(signal.deferred, undefined).pipe(Effect.ignore);
+            }
+          }),
+        ).pipe(Effect.forkScoped);
+        const waitFor = (predicate: (event: ProviderRuntimeEvent) => boolean) =>
+          Effect.gen(function* () {
+            if (events.some(predicate)) return;
+            const deferred = yield* Deferred.make<void>();
+            signals.push({ predicate, deferred });
+            yield* Deferred.await(deferred).pipe(
+              Effect.timeout("15 seconds"),
+              Effect.catchTag("TimeoutError", () =>
+                Effect.die(
+                  new Error(
+                    `Timed out with events: ${events.map((event) => event.type).join(", ")}`,
+                  ),
+                ),
+              ),
+            );
+          });
+        yield* use({
+          adapter,
+          events,
+          threadId: ThreadId.make("pi-decoder-process-path"),
+          waitFor,
+        });
+      }),
+    ).pipe(Effect.provide(piAdapterTestLayer)),
+  );
+}
 
 describe("Pi work-log normalization", () => {
   it("normalizes Pi bash calls into canonical command data", () => {
@@ -594,5 +690,88 @@ describe("normalizeTakomiPresentation", () => {
     expect(presentation?.summary?.items?.at(-1)?.label).toBe("Task 24");
     expect(presentation?.detailText).toBeUndefined();
     expect(presentation?.inspectorDetailText).toBeUndefined();
+  });
+});
+
+describe("Pi adapter process-path JSONL decoding", () => {
+  const startInput = (threadId: ThreadId) => ({
+    threadId,
+    provider: ProviderDriverKind.make("pi"),
+    cwd: process.cwd(),
+    runtimeMode: "full-access" as const,
+  });
+
+  it("preserves fragmented UTF-8 and surfaces malformed and oversized records", async () => {
+    await runPiProcessScenario(
+      {
+        ...process.env,
+        T3_PI_CONFORMANCE_MALFORMED: "1",
+        T3_PI_CONFORMANCE_OVERSIZED: "1",
+      },
+      ({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          yield* adapter.sendTurn({ threadId, input: "Synthetic only", attachments: [] });
+          yield* waitFor((event) => event.type === "turn.completed");
+          yield* waitFor(
+            () =>
+              events.filter(
+                (event) =>
+                  event.type === "runtime.warning" &&
+                  event.payload.message === "Pi emitted an invalid RPC record.",
+              ).length >= 2,
+          );
+          expect(
+            events
+              .filter((event) => event.type === "runtime.warning")
+              .map((event) => event.payload.detail),
+          ).toEqual(expect.arrayContaining([{ reason: "invalid-json" }, { reason: "oversized" }]));
+          expect(
+            events.find(
+              (event) =>
+                event.type === "content.delta" && event.payload.delta === "split €\u2028\u2029",
+            ),
+          ).toBeDefined();
+          yield* adapter.stopSession(threadId);
+        }),
+    );
+  });
+
+  it("flushes an unterminated EOF frame before reporting process exit", async () => {
+    await runPiProcessScenario(
+      { ...process.env, T3_PI_CONFORMANCE_UNTERMINATED: "1" },
+      ({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          yield* adapter.sendTurn({ threadId, input: "Synthetic EOF", attachments: [] });
+          yield* waitFor((event) => runtimeWarningReason(event) === "invalid-json");
+          yield* waitFor((event) => event.type === "session.exited");
+          const warningIndex = events.findIndex(
+            (event) => runtimeWarningReason(event) === "invalid-json",
+          );
+          const exitIndex = events.findIndex((event) => event.type === "session.exited");
+          expect(warningIndex).toBeGreaterThanOrEqual(0);
+          expect(exitIndex).toBeGreaterThan(warningIndex);
+        }),
+    );
+  });
+
+  it("keeps a replacement generation registered when the prior process terminates", async () => {
+    await runPiProcessScenario(process.env, ({ adapter, events, threadId, waitFor }) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession(startInput(threadId));
+        yield* adapter.startSession(startInput(threadId));
+        expect(
+          (yield* adapter.listSessions()).filter((session) => session.threadId === threadId),
+        ).toHaveLength(1);
+        yield* adapter.sendTurn({ threadId, input: "Replacement generation", attachments: [] });
+        yield* waitFor((event) => event.type === "turn.completed");
+        expect(events.filter((event) => event.type === "session.started")).toHaveLength(2);
+        expect(
+          (yield* adapter.listSessions()).filter((session) => session.threadId === threadId),
+        ).toHaveLength(1);
+        yield* adapter.stopSession(threadId);
+      }),
+    );
   });
 });

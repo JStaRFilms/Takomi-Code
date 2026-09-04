@@ -28,6 +28,13 @@ import {
 
 const DRIVER_KIND = ProviderDriverKind.make("pi");
 
+/** Declaration-probed RPC operations backing Pi's advertised model-switching capability. */
+export const PI_ADVERTISED_RPC_OPERATIONS = [
+  "get_available_models",
+  "set_model",
+  "set_thinking_level",
+] as const;
+
 const DEFAULT_PI_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
 });

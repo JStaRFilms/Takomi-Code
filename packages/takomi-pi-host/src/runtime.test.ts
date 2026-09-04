@@ -329,6 +329,24 @@ test("verifies canonical, packed, extracted, and isolated provenance then probes
     const probe = await probePiHost({ packageRoot: fixture.installedPackage, manifestPath });
     assert.deepEqual(probe.capabilities, ["capability-probe"]);
     assert.equal(probe.session, "not-opened");
+    assert.equal(probe.package.path, await FileSystem.realpath(fixture.installedPackage));
+    assert.equal(probe.package.packageJsonSha256, manifest.package.packageJsonSha256);
+    assert.equal(probe.dependencies.pi.version, "0.84.4");
+    assert.equal(
+      probe.dependencies.pi.packageJsonSha256,
+      manifest.dependencies.pi.packageJsonSha256,
+    );
+    assert.equal(
+      probe.dependencies.pi.path,
+      await FileSystem.realpath(
+        Path.join(fixture.installedPackage, "node_modules", "@earendil-works", "pi-coding-agent"),
+      ),
+    );
+    assert.equal(probe.dependencies.piSubagents.version, "0.31.0");
+    assert.equal(
+      probe.dependencies.piSubagents.packageJsonSha256,
+      manifest.dependencies.piSubagents.packageJsonSha256,
+    );
     assert.deepEqual(await probeChild(fixture.installedPackage, manifestPath), probe);
   } finally {
     await FileSystem.rm(fixture.root, {

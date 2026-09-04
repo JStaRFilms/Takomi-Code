@@ -1,8 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off - The child boundary resolves only its isolated runtime path before it can load Pi.
+import * as FileSystem from "node:fs/promises";
 import * as Path from "node:path";
 
 import {
-  type PinnedPackage,
+  type ResolvedPackage,
   type RuntimePackageManifest,
   readRuntimePackageManifest,
   verifyRuntimePackageManifest,
@@ -12,10 +13,10 @@ export const HOST_PROTOCOL_VERSION = 1 as const;
 
 export interface PiHostProbe {
   readonly protocolVersion: typeof HOST_PROTOCOL_VERSION;
-  readonly package: RuntimePackageManifest["package"];
+  readonly package: RuntimePackageManifest["package"] & { readonly path: string };
   readonly dependencies: {
-    readonly pi: PinnedPackage;
-    readonly piSubagents: PinnedPackage;
+    readonly pi: ResolvedPackage;
+    readonly piSubagents: ResolvedPackage;
   };
   readonly capabilities: ReadonlyArray<"capability-probe">;
   readonly session: "not-opened";
@@ -31,14 +32,17 @@ export async function probePiHost(input: {
   readonly packageRoot: string;
   readonly manifestPath: string;
 }): Promise<PiHostProbe> {
-  const packageRoot = Path.resolve(input.packageRoot);
+  const packageRoot = await FileSystem.realpath(Path.resolve(input.packageRoot));
   const manifest = await readRuntimePackageManifest(input.manifestPath);
-  await verifyRuntimePackageManifest(packageRoot, manifest);
+  const diagnostics = await verifyRuntimePackageManifest(packageRoot, manifest);
 
   return {
     protocolVersion: HOST_PROTOCOL_VERSION,
-    package: manifest.package,
-    dependencies: manifest.dependencies,
+    package: { ...manifest.package, path: packageRoot },
+    dependencies: {
+      pi: diagnostics.pi.selected,
+      piSubagents: diagnostics.piSubagents.selected,
+    },
     capabilities: ["capability-probe"],
     session: "not-opened",
   };
