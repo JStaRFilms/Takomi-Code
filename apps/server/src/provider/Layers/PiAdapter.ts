@@ -3,11 +3,11 @@ import {
   EventId,
   type PiSettings,
   type ProviderApprovalDecision,
+  ToolPresentationEnvelope,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type RuntimeTaskUsage,
-  type ToolPresentationEnvelope,
   type ToolLifecycleItemType,
   type ProviderSendTurnInput,
   type ProviderSession,
@@ -22,7 +22,6 @@ import {
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
-import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -47,21 +46,36 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
+import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { PiJsonlDecoder, type PiJsonlFrame } from "./PiProtocolConformance.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const PI_RESUME_VERSION = 1 as const;
 const REASONING_DETAIL_LIMIT = 16_000;
 const REASONING_EMIT_INTERVAL = 500;
+const MAX_DYNAMIC_PAYLOAD_BYTES = 1024 * 1024;
+const MAX_DYNAMIC_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
+const MAX_UI_REQUEST_BYTES = 1024 * 1024;
+const MAX_UI_TITLE_CODE_POINTS = 256;
+const MAX_UI_MESSAGE_BYTES = 16 * 1024;
+const MAX_UI_PLACEHOLDER_BYTES = 2 * 1024;
+const MAX_UI_EDITOR_PREFILL_BYTES = 512 * 1024;
+const MAX_UI_OPTIONS = 500;
+const MAX_UI_OPTION_BYTES = 2 * 1024;
+const MAX_UI_OPTIONS_BYTES = 256 * 1024;
+const MAX_UI_REQUEST_ID_CODE_POINTS = 256;
+const MAX_UI_REQUEST_ID_BYTES = 512;
 const TAKOMI_EXTENSION_NAMES = [
   "takomi-runtime",
   "takomi-subagents",
   "oauth-router",
   "takomi-context-manager",
   "notify-sound",
+  "antigravity-provider",
 ] as const;
 const encoder = new TextEncoder();
 const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
+const decodeJsonString = Schema.decodeUnknownExit(UnknownFromJsonString);
 const encodeJsonString = Schema.encodeUnknownExit(UnknownFromJsonString);
 
 function jsonString(value: unknown): string | undefined {
@@ -69,9 +83,80 @@ function jsonString(value: unknown): string | undefined {
   return Exit.isSuccess(encoded) ? encoded.value : undefined;
 }
 
+function utf8Bytes(value: string): number {
+  return encoder.encode(value).byteLength;
+}
+
+function truncateUtf8(value: string, limit: number): string {
+  let retained = "";
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = utf8Bytes(character);
+    if (bytes + characterBytes > limit) break;
+    retained += character;
+    bytes += characterBytes;
+  }
+  return retained;
+}
+
+function boundedDynamicPayload(value: unknown): {
+  readonly value: unknown;
+  readonly truncated: boolean;
+} {
+  if (value === undefined) return { value: undefined, truncated: false };
+  const encoded = jsonString(value);
+  if (encoded === undefined) {
+    return {
+      value: { truncated: true, reason: "not-json-serializable" },
+      truncated: true,
+    };
+  }
+  const bytes = utf8Bytes(encoded);
+  if (bytes <= MAX_DYNAMIC_PAYLOAD_BYTES) return { value, truncated: false };
+  const preview = MAX_DYNAMIC_PAYLOAD_PREVIEW_BYTES / 2;
+  return {
+    value: {
+      truncated: true,
+      strategy: "head-tail",
+      originalBytes: bytes,
+      head: truncateUtf8(encoded, preview),
+      tail: truncateUtf8End(encoded, preview),
+    },
+    truncated: true,
+  };
+}
+
+function truncateUtf8End(value: string, limit: number): string {
+  const characters = Array.from(value);
+  let start = characters.length;
+  let bytes = 0;
+  while (start > 0) {
+    const characterBytes = utf8Bytes(characters[start - 1]!);
+    if (bytes + characterBytes > limit) break;
+    start -= 1;
+    bytes += characterBytes;
+  }
+  return characters.slice(start).join("");
+}
+
+function validUiText(value: unknown, maxBytes: number, required = false): string | undefined {
+  if (typeof value !== "string") return undefined;
+  if (required && value.trim().length === 0) return undefined;
+  return utf8Bytes(value) <= maxBytes ? value : undefined;
+}
+
+function validUiRequestId(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.trim() !== value || value.length === 0) return undefined;
+  if (utf8Bytes(value) > MAX_UI_REQUEST_ID_BYTES) return undefined;
+  return Array.from(value).length <= MAX_UI_REQUEST_ID_CODE_POINTS ? value : undefined;
+}
+
+const decodeToolPresentationEnvelope = Schema.decodeUnknownOption(ToolPresentationEnvelope);
+
 export interface PiAdapterOptions {
   readonly instanceId: ProviderInstanceId;
   readonly environment: NodeJS.ProcessEnv;
+  readonly nativeEventLogger?: EventNdjsonLogger;
 }
 
 type PiRpcMessage = Record<string, unknown> & { readonly type: string };
@@ -80,7 +165,8 @@ type PiUiMethod = "confirm" | "select" | "input" | "editor";
 
 interface PendingUiRequest {
   readonly method: PiUiMethod;
-  readonly requestId: ApprovalRequestId;
+  readonly nativeRequestId: string;
+  readonly generation: number;
 }
 
 interface PiTurnSnapshot {
@@ -91,9 +177,11 @@ interface PiTurnSnapshot {
 interface PiSessionContext {
   session: ProviderSession;
   readonly scope: Scope.Closeable;
+  readonly generation: number;
   readonly process: ChildProcessSpawner.ChildProcessHandle;
   readonly input: Queue.Queue<Uint8Array>;
-  readonly pendingUi: Map<ApprovalRequestId, PendingUiRequest>;
+  readonly pendingUi: Map<RuntimeRequestId, PendingUiRequest>;
+  readonly settledUi: Set<RuntimeRequestId>;
   readonly pendingRpc: Map<string, Deferred.Deferred<PiRpcMessage>>;
   readonly toolActivityByCallId: Map<
     string,
@@ -114,6 +202,7 @@ interface PiSessionContext {
   appliedModelSlug: string | undefined;
   appliedThinkingLevel: string | undefined;
   turnFailure: string | undefined;
+  outputFenced: boolean;
   stopped: boolean;
 }
 
@@ -297,22 +386,34 @@ function classifyTool(toolName: string): ToolLifecycleItemType {
   return "dynamic_tool_call";
 }
 
-function filePathsFromToolArgs(args: unknown): Array<{ readonly path: string }> {
+function filePathsFromToolArgs(args: unknown): {
+  readonly files: Array<{ readonly path: string }>;
+  readonly truncated: boolean;
+} {
   const input = isRecord(args) ? args : undefined;
-  if (!input) return [];
+  if (!input) return { files: [], truncated: false };
   const paths = new Set<string>();
-  for (const value of [input.path, input.filePath, input.filename, input.newPath, input.oldPath]) {
+  let truncated = false;
+  const add = (value: unknown) => {
     const path = readString(value);
-    if (path) paths.add(path);
+    if (!path) return;
+    const boundedPath = truncateUtf8(path, 512);
+    if (boundedPath !== path || paths.size >= 100) {
+      truncated = true;
+      return;
+    }
+    paths.add(boundedPath);
+  };
+  for (const value of [input.path, input.filePath, input.filename, input.newPath, input.oldPath]) {
+    add(value);
   }
   const patch = typeof input.patch === "string" ? input.patch : undefined;
   if (patch) {
     for (const match of patch.matchAll(/^\*\*\* (?:Add|Delete|Update) File: (.+)$/gmu)) {
-      const path = readString(match[1]);
-      if (path) paths.add(path);
+      add(match[1]);
     }
   }
-  return [...paths].map((path) => ({ path }));
+  return { files: [...paths].map((path) => ({ path })), truncated };
 }
 
 export function normalizePiToolWorkLog(input: {
@@ -328,9 +429,13 @@ export function normalizePiToolWorkLog(input: {
   if (!toolCallId) return undefined;
 
   const itemType = classifyTool(input.toolName);
-  const rawOutput = input.partialResult ?? input.result;
+  const argsPayload = boundedDynamicPayload(input.args);
+  const resultPayload = boundedDynamicPayload(input.result);
+  const partialResultPayload = boundedDynamicPayload(input.partialResult);
+  const rawOutputPayload = boundedDynamicPayload(input.partialResult ?? input.result);
   const args = firstRecord(input.args);
   const command = readString(args?.command ?? args?.cmd);
+  const filePaths = itemType === "file_change" ? filePathsFromToolArgs(input.args) : undefined;
   const data = {
     toolCallId,
     ...(suppliedToolCallId
@@ -339,16 +444,24 @@ export function normalizePiToolWorkLog(input: {
           warning: "Pi tool lifecycle event was missing toolCallId; rendered as an isolated item.",
         }),
     toolName: input.toolName,
-    args: input.args,
-    ...(input.result !== undefined ? { result: input.result } : {}),
-    ...(input.partialResult !== undefined ? { partialResult: input.partialResult } : {}),
+    ...(input.args !== undefined ? { args: argsPayload.value } : {}),
+    ...(input.result !== undefined ? { result: resultPayload.value } : {}),
+    ...(input.partialResult !== undefined ? { partialResult: partialResultPayload.value } : {}),
+    ...(argsPayload.truncated ||
+    resultPayload.truncated ||
+    partialResultPayload.truncated ||
+    filePaths?.truncated
+      ? { payloadTruncated: true }
+      : {}),
     ...(itemType === "command_execution"
       ? {
           ...(command ? { command } : {}),
-          ...(rawOutput !== undefined ? { rawOutput } : {}),
+          ...(input.partialResult !== undefined || input.result !== undefined
+            ? { rawOutput: rawOutputPayload.value }
+            : {}),
         }
       : {}),
-    ...(itemType === "file_change" ? { files: filePathsFromToolArgs(input.args) } : {}),
+    ...(filePaths ? { files: filePaths.files } : {}),
   };
   return { itemType, data };
 }
@@ -1058,17 +1171,17 @@ export function normalizeTakomiPresentation(input: {
     input.toolName === "todo" && Array.isArray(source.tasks)
       ? source.tasks.filter((task) => !isRecord(task) || task.status !== "deleted")
       : source.tasks;
-  const rawItems = normalizePresentationItems(
+  const presentationItemsSource =
     sourceTasks ??
-      takomiUx?.tasks ??
-      source.stages ??
-      source.agents ??
-      source.items ??
-      source.results ??
-      (source.task ? [source.task] : undefined),
-    // Todo is a durable task list, not a compact tool summary. Preserve the
-    // entire list so its count and the expanded chat card stay truthful.
-    input.toolName === "todo" ? Number.POSITIVE_INFINITY : PRESENTATION_ITEM_LIMIT,
+    takomiUx?.tasks ??
+    source.stages ??
+    source.agents ??
+    source.items ??
+    source.results ??
+    (source.task ? [source.task] : undefined);
+  const rawItems = normalizePresentationItems(
+    presentationItemsSource,
+    PRESENTATION_ITEM_LIMIT,
     input.toolName === "takomi_subagent" ? resolveTakomiChildIdentity : undefined,
   );
   const items =
@@ -1080,7 +1193,8 @@ export function normalizeTakomiPresentation(input: {
             : { ...item, status: input.lifecycleStatus };
         })
       : rawItems;
-  const artifactRefs = normalizeArtifactRefs(source.artifacts ?? source.files ?? source.assets);
+  const artifactSource = source.artifacts ?? source.files ?? source.assets;
+  const artifactRefs = normalizeArtifactRefs(artifactSource);
   const modeDetail =
     input.toolName === "takomi_mode" && readString(source.mode)
       ? [
@@ -1105,10 +1219,11 @@ export function normalizeTakomiPresentation(input: {
         extractText(input.partialResult));
   const detailText = boundedText(rawDetailText);
   const inspectorDetailText = boundedText(rawDetailText, PRESENTATION_INSPECTOR_DETAIL_LIMIT);
-  const activity =
+  const rawActivity =
     input.toolName === "takomi_subagent"
       ? normalizeSubagentActivity(source, input.lifecycleStatus)
       : [];
+  const activity = rawActivity.slice(-PRESENTATION_ACTIVITY_LIMIT);
   const action = boundedText(source.action ?? source.operation ?? source.phase, 120);
   const todoCompleted = items.filter((item) => item.status === "completed").length;
   const todoInProgress = items.some((item) => item.status === "in_progress");
@@ -1147,7 +1262,28 @@ export function normalizeTakomiPresentation(input: {
       ? todoCompleted
       : readFiniteCount(source.completed ?? source.completedCount);
   const total =
-    input.toolName === "todo" ? items.length : readFiniteCount(source.total ?? source.totalCount);
+    input.toolName === "todo"
+      ? Array.isArray(sourceTasks)
+        ? sourceTasks.length
+        : items.length
+      : readFiniteCount(source.total ?? source.totalCount);
+  const truncation = {
+    ...(Array.isArray(presentationItemsSource) &&
+    presentationItemsSource.length > PRESENTATION_ITEM_LIMIT
+      ? { items: true }
+      : {}),
+    ...(Array.isArray(artifactSource) && artifactSource.length > PRESENTATION_ARTIFACT_LIMIT
+      ? { artifactRefs: true }
+      : {}),
+    ...(typeof rawDetailText === "string" && rawDetailText.length > PRESENTATION_DETAIL_LIMIT
+      ? { detailText: true }
+      : {}),
+    ...(typeof rawDetailText === "string" &&
+    rawDetailText.length > PRESENTATION_INSPECTOR_DETAIL_LIMIT
+      ? { inspectorDetailText: true }
+      : {}),
+    ...(rawActivity.length > activity.length ? { activity: true } : {}),
+  };
   const summary = {
     ...(sessionId ? { sessionId } : {}),
     ...(runId ? { runId } : {}),
@@ -1170,6 +1306,8 @@ export function normalizeTakomiPresentation(input: {
     ...(detailText ? { detailText } : {}),
     ...(inspectorDetailText ? { inspectorDetailText } : {}),
     ...(activity.length > 0 ? { activity } : {}),
+    ...(rawActivity.length > activity.length ? { activityTruncated: true } : {}),
+    ...(Object.keys(truncation).length > 0 ? { truncation } : {}),
     ...(artifactRefs.length > 0 ? { artifactRefs } : {}),
     ...(input.isError
       ? { error: { severity: "error", message: errorMessage ?? "Tool call failed." } }
@@ -1216,6 +1354,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const serverConfig = yield* ServerConfig;
     const sessions = new Map<ThreadId, PiSessionContext>();
+    let nextSessionGeneration = 0;
     const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomId = crypto.randomUUIDv4.pipe(
@@ -1232,28 +1371,75 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
 
     const emit = (event: ProviderRuntimeEvent) =>
       Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
+    const isWritableContext = (context: PiSessionContext, generation: number) =>
+      !context.stopped &&
+      context.generation === generation &&
+      sessions.get(context.session.threadId) === context;
+    const isLiveContext = (context: PiSessionContext, generation: number) =>
+      !context.outputFenced && isWritableContext(context, generation);
     const stamp = () =>
       Effect.all({
         eventId: randomId.pipe(Effect.map(EventId.make)),
         createdAt: nowIso,
       });
+    const logNativePiRecord = Effect.fn("logNativePiRecord")(function* (
+      context: PiSessionContext,
+      record: PiRpcMessage,
+    ) {
+      if (!options.nativeEventLogger) return;
+      const observedAt = yield* nowIso;
+      yield* options.nativeEventLogger
+        .write(
+          {
+            observedAt,
+            event: {
+              kind: "notification",
+              provider: PROVIDER,
+              createdAt: observedAt,
+              method: record.type,
+              threadId: context.session.threadId,
+              generation: context.generation,
+              payload: record,
+            },
+          },
+          context.session.threadId,
+        )
+        .pipe(
+          Effect.catchCause(() =>
+            Effect.gen(function* () {
+              if (!isLiveContext(context, context.generation)) return;
+              yield* emit({
+                ...(yield* eventBase(context)),
+                type: "runtime.warning",
+                payload: {
+                  message: "Pi native event logging failed.",
+                  detail: { reason: "native-log-write-failed" },
+                },
+              });
+            }),
+          ),
+        );
+    });
     const eventBase = (context: PiSessionContext, message?: PiRpcMessage) =>
-      Effect.map(stamp(), (value) => ({
-        ...value,
-        provider: PROVIDER,
-        providerInstanceId: options.instanceId,
-        threadId: context.session.threadId,
-        ...(context.activeTurnId ? { turnId: context.activeTurnId } : {}),
-        ...(message
-          ? {
-              raw: {
-                source: "pi.eventmsg" as const,
-                ...(readString(message.type) ? { method: message.type } : {}),
-                payload: message,
-              },
-            }
-          : {}),
-      }));
+      Effect.map(stamp(), (value) => {
+        const payload = message ? boundedDynamicPayload(message) : undefined;
+        return {
+          ...value,
+          provider: PROVIDER,
+          providerInstanceId: options.instanceId,
+          threadId: context.session.threadId,
+          ...(context.activeTurnId ? { turnId: context.activeTurnId } : {}),
+          ...(message && payload
+            ? {
+                raw: {
+                  source: "pi.eventmsg" as const,
+                  ...(readString(message.type) ? { method: message.type } : {}),
+                  payload: payload.value,
+                },
+              }
+            : {}),
+        };
+      });
 
     const getReasoningBlock = (context: PiSessionContext, contentIndex: number) => {
       const existing = context.reasoningBlocks.get(contentIndex);
@@ -1464,16 +1650,56 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       context.session = nextSession;
     });
 
+    const settlePendingUi = Effect.fn("settlePendingPiUi")(function* (
+      context: PiSessionContext,
+      requestId: RuntimeRequestId,
+      response:
+        | { readonly cancelled: true }
+        | { readonly confirmed: boolean }
+        | { readonly value: string },
+      decision: ProviderApprovalDecision | undefined,
+      answers: ProviderUserInputAnswers | undefined,
+    ) {
+      const pending = context.pendingUi.get(requestId);
+      if (!pending || pending.generation !== context.generation) return false;
+      // Delete before an effect can yield so every terminal path shares one winner.
+      context.pendingUi.delete(requestId);
+      context.settledUi.add(requestId);
+      if (pending.method === "confirm") {
+        yield* emit({
+          ...(yield* eventBase(context)),
+          type: "request.resolved",
+          requestId,
+          payload: { requestType: "dynamic_tool_call", decision: decision ?? "cancel" },
+        });
+      } else {
+        yield* emit({
+          ...(yield* eventBase(context)),
+          type: "user-input.resolved",
+          requestId,
+          payload: { answers: answers ?? {} },
+        });
+      }
+      if (isWritableContext(context, pending.generation)) {
+        yield* sendRpc(context, {
+          type: "extension_ui_response",
+          id: pending.nativeRequestId,
+          ...response,
+        }).pipe(Effect.ignore);
+      }
+      return true;
+    });
+
     const handleUiRequest = Effect.fn("handlePiUiRequest")(function* (
       context: PiSessionContext,
       message: PiRpcMessage,
     ) {
-      const id = readString(message.id);
+      const id = validUiRequestId(message.id);
       const method = readString(message.method);
       if (!id || !method) return;
 
       if (method === "notify") {
-        const notification = readString(message.message);
+        const notification = validUiText(message.message, MAX_UI_MESSAGE_BYTES, true);
         if (notification) {
           yield* emit({
             ...(yield* eventBase(context, message)),
@@ -1488,54 +1714,110 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         return;
       }
 
-      const requestId = ApprovalRequestId.make(id);
       const uiMethod = method as PiUiMethod;
-      context.pendingUi.set(requestId, { method: uiMethod, requestId });
+      const requestId = RuntimeRequestId.make(
+        `pi-ui-${context.generation}-${uiMethod}-${encodeURIComponent(id)}`,
+      );
+      if (context.pendingUi.has(requestId) || context.settledUi.has(requestId)) return;
+      context.pendingUi.set(requestId, {
+        method: uiMethod,
+        nativeRequestId: id,
+        generation: context.generation,
+      });
+      const encoded = jsonString(message);
+      const title = validUiText(message.title, MAX_UI_TITLE_CODE_POINTS * 4, true);
+      const timeoutMs =
+        typeof message.timeout === "number" &&
+        Number.isFinite(message.timeout) &&
+        message.timeout >= 0
+          ? Math.floor(message.timeout)
+          : undefined;
+      const rawOptions = Array.isArray(message.options) ? message.options : undefined;
+      const optionsAreValid =
+        rawOptions !== undefined &&
+        rawOptions.length <= MAX_UI_OPTIONS &&
+        rawOptions.every(
+          (option) => validUiText(option, MAX_UI_OPTION_BYTES, true) !== undefined,
+        ) &&
+        rawOptions.reduce((total, option) => total + utf8Bytes(option as string), 0) <=
+          MAX_UI_OPTIONS_BYTES;
+      const valid =
+        encoded !== undefined &&
+        utf8Bytes(encoded) <= MAX_UI_REQUEST_BYTES &&
+        title !== undefined &&
+        Array.from(title).length <= MAX_UI_TITLE_CODE_POINTS &&
+        (uiMethod !== "confirm" ||
+          validUiText(message.message, MAX_UI_MESSAGE_BYTES, true) !== undefined) &&
+        (uiMethod !== "select" || optionsAreValid) &&
+        (uiMethod !== "input" ||
+          message.placeholder === undefined ||
+          validUiText(message.placeholder, MAX_UI_PLACEHOLDER_BYTES) !== undefined) &&
+        (uiMethod !== "editor" ||
+          message.prefill === undefined ||
+          validUiText(message.prefill, MAX_UI_EDITOR_PREFILL_BYTES) !== undefined);
+      if (!valid) {
+        yield* settlePendingUi(context, requestId, { cancelled: true }, "cancel", undefined);
+        return;
+      }
+      const armUiTimeout = () =>
+        timeoutMs === undefined || uiMethod === "editor"
+          ? Effect.void
+          : Effect.sleep(`${timeoutMs} millis`).pipe(
+              Effect.andThen(
+                settlePendingUi(context, requestId, { cancelled: true }, "cancel", undefined),
+              ),
+              Effect.forkIn(context.scope),
+              Effect.asVoid,
+            );
       if (uiMethod === "confirm") {
         yield* emit({
           ...(yield* eventBase(context, message)),
           type: "request.opened",
-          requestId: RuntimeRequestId.make(id),
+          requestId,
           payload: {
             requestType: "dynamic_tool_call",
-            detail:
-              [readString(message.title), readString(message.message)].filter(Boolean).join("\n") ||
-              "Pi requested confirmation.",
-            args: message,
+            detail: `${title}\n${validUiText(message.message, MAX_UI_MESSAGE_BYTES, true)!}`,
+            args: {
+              title,
+              message: validUiText(message.message, MAX_UI_MESSAGE_BYTES, true)!,
+              ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+            },
           },
         });
+        yield* armUiTimeout();
         return;
       }
 
-      const options = Array.isArray(message.options)
-        ? message.options
-            .filter((option): option is string => typeof option === "string" && option.length > 0)
-            .map((option) => ({ label: option, description: option }))
-        : [];
+      const options = (rawOptions ?? []).map((option) => ({
+        label: option as string,
+        description: option as string,
+      }));
       yield* emit({
         ...(yield* eventBase(context, message)),
         type: "user-input.requested",
-        requestId: RuntimeRequestId.make(id),
+        requestId,
         payload: {
           questions: [
             {
-              id,
-              header: readString(message.title) ?? "Pi input",
+              id: requestId,
+              header: title,
               question:
-                readString(message.message) ??
-                readString(message.placeholder) ??
+                validUiText(message.placeholder, MAX_UI_PLACEHOLDER_BYTES) ??
+                validUiText(message.prefill, MAX_UI_EDITOR_PREFILL_BYTES) ??
                 "Provide a response to continue.",
               options,
             },
           ],
         },
       });
+      yield* armUiTimeout();
     });
 
     const handleMessage = Effect.fn("handlePiRpcMessage")(function* (
       context: PiSessionContext,
       message: PiRpcMessage,
     ) {
+      if (!isLiveContext(context, context.generation)) return;
       if (message.type === "extension_ui_request") {
         yield* handleUiRequest(context, message);
         return;
@@ -1691,24 +1973,30 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
               },
             });
           }
+          const argsPayload = boundedDynamicPayload(message.args);
+          const resultPayload = boundedDynamicPayload(message.result);
+          const partialResultPayload = boundedDynamicPayload(message.partialResult);
           const rawDetail =
-            extractText(message.partialResult) ??
-            extractText(message.result) ??
-            (message.args === undefined ? undefined : jsonString(message.args));
+            extractText(partialResultPayload.value) ??
+            extractText(resultPayload.value) ??
+            (message.args === undefined ? undefined : jsonString(argsPayload.value));
           const isEnd = message.type === "tool_execution_end";
           const lifecycleStatus = isEnd
             ? message.isError === true
               ? ("failed" as const)
               : ("completed" as const)
             : ("inProgress" as const);
-          let presentation = normalizeTakomiPresentation({
+          const presentationCandidate = normalizeTakomiPresentation({
             toolName,
-            args: message.args,
-            result: message.result,
-            partialResult: message.partialResult,
+            args: argsPayload.value,
+            result: resultPayload.value,
+            partialResult: partialResultPayload.value,
             isError: message.isError === true,
             lifecycleStatus,
           });
+          let presentation = presentationCandidate
+            ? Option.getOrUndefined(decodeToolPresentationEnvelope(presentationCandidate))
+            : undefined;
           if (presentation && toolName.toLowerCase() === "takomi_subagent") {
             const mergedActivity = new Map<string, ToolPresentationActivity>();
             for (const activity of context.toolActivityByCallId.get(toolCallId) ?? []) {
@@ -1728,7 +2016,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 ...presentation,
                 activity,
                 ...(context.truncatedToolActivityCallIds.has(toolCallId)
-                  ? { activityTruncated: true }
+                  ? {
+                      activityTruncated: true,
+                      truncation: { ...presentation.truncation, activity: true },
+                    }
                   : {}),
               };
             }
@@ -1746,6 +2037,9 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             : normalizedDetail;
           const item = {
             ...normalizedWorkLog.data,
+            ...(argsPayload.truncated || resultPayload.truncated || partialResultPayload.truncated
+              ? { payloadTruncated: true }
+              : {}),
             ...(presentation ? { presentation } : {}),
           };
           if (toolName.toLowerCase() === "takomi_subagent") {
@@ -1843,24 +2137,9 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
     const resolvePendingUiAsCancelled = Effect.fn("resolvePendingPiUiAsCancelled")(function* (
       context: PiSessionContext,
     ) {
-      for (const [requestId, pending] of context.pendingUi) {
-        if (pending.method === "confirm") {
-          yield* emit({
-            ...(yield* eventBase(context)),
-            type: "request.resolved",
-            requestId: RuntimeRequestId.make(requestId),
-            payload: { requestType: "dynamic_tool_call", decision: "cancel" },
-          }).pipe(Effect.ignore);
-        } else {
-          yield* emit({
-            ...(yield* eventBase(context)),
-            type: "user-input.resolved",
-            requestId: RuntimeRequestId.make(requestId),
-            payload: { answers: {} },
-          }).pipe(Effect.ignore);
-        }
+      for (const requestId of context.pendingUi.keys()) {
+        yield* settlePendingUi(context, requestId, { cancelled: true }, "cancel", undefined);
       }
-      context.pendingUi.clear();
     });
 
     const stopContext = Effect.fn("stopPiContext")(function* (
@@ -1868,6 +2147,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       emitExit: boolean,
     ) {
       if (context.stopped) return;
+      yield* resolvePendingUiAsCancelled(context);
       context.stopped = true;
       if (sessions.get(context.session.threadId) === context) {
         sessions.delete(context.session.threadId);
@@ -1885,7 +2165,6 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         }).pipe(Effect.ignore);
       }
       context.pendingRpc.clear();
-      yield* resolvePendingUiAsCancelled(context);
       if (emitExit) {
         yield* emit({
           ...(yield* eventBase(context)),
@@ -1921,15 +2200,37 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       const cwd = input.cwd ?? serverConfig.cwd;
       const sessionScope = yield* Scope.make();
       const resumeFile = readPiResumeCursor(input.resumeCursor);
-      const takomiExtensionPaths = settings.suiteRoot
+      let suiteRoot = settings.suiteRoot;
+      if (!suiteRoot) {
+        const manifestRaw = yield* fileSystem
+          .readFileString(path.join(cwd, "package.json"))
+          .pipe(Effect.orElseSucceed(() => ""));
+        const manifest = decodeJsonString(manifestRaw);
+        const isTakomiSourceCheckout =
+          Exit.isSuccess(manifest) && isRecord(manifest.value) && manifest.value.name === "takomi";
+        if (isTakomiSourceCheckout) {
+          const inferredPaths = [
+            ...TAKOMI_EXTENSION_NAMES.map((name) =>
+              path.join(cwd, ".pi", "extensions", name, "index.ts"),
+            ),
+            path.join(cwd, ".pi", "prompts"),
+          ];
+          const missingPaths = yield* Effect.filter(inferredPaths, (candidate) =>
+            fileSystem.exists(candidate).pipe(
+              Effect.orElseSucceed(() => false),
+              Effect.map((exists) => !exists),
+            ),
+          );
+          if (missingPaths.length === 0) suiteRoot = cwd;
+        }
+      }
+      const takomiExtensionPaths = suiteRoot
         ? TAKOMI_EXTENSION_NAMES.map((name) =>
-            path.join(settings.suiteRoot, ".pi", "extensions", name, "index.ts"),
+            path.join(suiteRoot, ".pi", "extensions", name, "index.ts"),
           )
         : [];
-      const takomiPromptPath = settings.suiteRoot
-        ? path.join(settings.suiteRoot, ".pi", "prompts")
-        : undefined;
-      if (settings.suiteRoot) {
+      const takomiPromptPath = suiteRoot ? path.join(suiteRoot, ".pi", "prompts") : undefined;
+      if (suiteRoot) {
         const requiredPaths = [...takomiExtensionPaths, takomiPromptPath].filter(
           (candidate): candidate is string => candidate !== undefined,
         );
@@ -1948,7 +2249,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           });
         }
       }
-      const companionExtensionPaths = settings.suiteRoot
+      const companionExtensionPaths = suiteRoot
         ? yield* discoverPiCompanionExtensions({
             fileSystem,
             path,
@@ -1956,7 +2257,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             homePath: settings.homePath,
           })
         : [];
-      const takomiArgs = settings.suiteRoot
+      const takomiArgs = suiteRoot
         ? [
             "--no-extensions",
             ...[...companionExtensionPaths, ...takomiExtensionPaths].flatMap((extensionPath) => [
@@ -2019,9 +2320,11 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       const context: PiSessionContext = {
         session,
         scope: sessionScope,
+        generation: ++nextSessionGeneration,
         process,
         input: rpcInput,
         pendingUi: new Map(),
+        settledUi: new Set(),
         pendingRpc: new Map(),
         toolActivityByCallId: new Map(),
         truncatedToolActivityCallIds: new Set(),
@@ -2036,6 +2339,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         appliedModelSlug: undefined,
         appliedThinkingLevel: undefined,
         turnFailure: undefined,
+        outputFenced: false,
         stopped: false,
       };
       sessions.set(input.threadId, context);
@@ -2047,25 +2351,45 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
 
       const stdoutDecoder = new PiJsonlDecoder();
       const stdoutFinished = yield* Deferred.make<void>();
+      const sessionGeneration = context.generation;
       const handleStdoutFrames = (frames: ReadonlyArray<PiJsonlFrame>) =>
         Effect.forEach(
           frames,
           (frame) => {
-            if (frame.type === "invalid" || !readString(frame.record.type)) {
-              return emit({
-                eventId: EventId.make(`pi-parse-${process.pid}`),
-                provider: PROVIDER,
-                providerInstanceId: options.instanceId,
-                threadId: input.threadId,
-                createdAt,
+            if (frame.type === "record") {
+              return logNativePiRecord(context, frame.record as PiRpcMessage).pipe(
+                Effect.andThen(
+                  Effect.gen(function* () {
+                    // A replaced or stopped owner can still have buffered stdout.
+                    // Never normalize it into this thread's canonical event stream.
+                    if (!isLiveContext(context, sessionGeneration)) return;
+                    if (!readString(frame.record.type)) {
+                      yield* emit({
+                        ...(yield* eventBase(context)),
+                        type: "runtime.warning",
+                        payload: {
+                          message: "Pi emitted an invalid RPC record.",
+                          detail: { reason: "missing-type" },
+                        },
+                      });
+                      return;
+                    }
+                    yield* handleMessage(context, frame.record as PiRpcMessage);
+                  }),
+                ),
+              );
+            }
+            return Effect.gen(function* () {
+              if (!isLiveContext(context, sessionGeneration)) return;
+              yield* emit({
+                ...(yield* eventBase(context)),
                 type: "runtime.warning",
                 payload: {
                   message: "Pi emitted an invalid RPC record.",
-                  detail: { reason: frame.type === "invalid" ? frame.reason : "missing-type" },
+                  detail: { reason: frame.reason },
                 },
               });
-            }
-            return handleMessage(context, frame.record as PiRpcMessage);
+            });
           },
           { discard: true },
         );
@@ -2077,7 +2401,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             Effect.ensuring(Deferred.succeed(stdoutFinished, undefined).pipe(Effect.ignore)),
           ),
         ),
-        Effect.catchCause((cause) =>
+        Effect.catchCause(() =>
           context.stopped
             ? Effect.void
             : emit({
@@ -2090,7 +2414,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 payload: {
                   message: "Pi RPC output stream failed.",
                   class: "transport_error",
-                  detail: Cause.pretty(cause),
+                  detail: { reason: "stdout-stream-failed" },
                 },
               }),
         ),
@@ -2305,6 +2629,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       const activeTurnId = context.activeTurnId;
       if (!activeTurnId || (turnId && turnId !== activeTurnId)) return;
       context.abortingTurnId = activeTurnId;
+      // Fence buffered stdout before asking Pi to abort: the acknowledgement may
+      // be followed by lifecycle records from a tool that was already stopping.
+      context.outputFenced = true;
+      yield* resolvePendingUiAsCancelled(context);
       yield* emit({
         ...(yield* eventBase(context)),
         type: "turn.aborted",
@@ -2337,7 +2665,8 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         decision: ProviderApprovalDecision,
       ) {
         const context = yield* ensureContext(threadId);
-        const pending = context.pendingUi.get(requestId);
+        const runtimeRequestId = RuntimeRequestId.make(requestId);
+        const pending = context.pendingUi.get(runtimeRequestId);
         if (!pending || pending.method !== "confirm") {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
@@ -2345,19 +2674,14 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             issue: `Unknown Pi confirmation request '${requestId}'.`,
           });
         }
-        context.pendingUi.delete(requestId);
         const confirmed = decision === "accept" || decision === "acceptForSession";
-        yield* sendRpc(context, {
-          type: "extension_ui_response",
-          id: requestId,
-          ...(decision === "cancel" ? { cancelled: true } : { confirmed }),
-        });
-        yield* emit({
-          ...(yield* eventBase(context)),
-          type: "request.resolved",
-          requestId: RuntimeRequestId.make(requestId),
-          payload: { requestType: "dynamic_tool_call", decision },
-        });
+        yield* settlePendingUi(
+          context,
+          runtimeRequestId,
+          decision === "cancel" ? { cancelled: true } : { confirmed },
+          decision,
+          undefined,
+        );
       });
 
     const respondToUserInput: ProviderAdapterShape<ProviderAdapterError>["respondToUserInput"] =
@@ -2367,7 +2691,8 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         answers: ProviderUserInputAnswers,
       ) {
         const context = yield* ensureContext(threadId);
-        const pending = context.pendingUi.get(requestId);
+        const runtimeRequestId = RuntimeRequestId.make(requestId);
+        const pending = context.pendingUi.get(runtimeRequestId);
         if (!pending || pending.method === "confirm") {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
@@ -2375,19 +2700,17 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             issue: `Unknown Pi input request '${requestId}'.`,
           });
         }
-        context.pendingUi.delete(requestId);
         const answer = firstAnswer(answers, requestId);
-        yield* sendRpc(context, {
-          type: "extension_ui_response",
-          id: requestId,
-          value: Array.isArray(answer) ? answer.join(", ") : String(answer ?? ""),
-        });
-        yield* emit({
-          ...(yield* eventBase(context)),
-          type: "user-input.resolved",
-          requestId: RuntimeRequestId.make(requestId),
-          payload: { answers },
-        });
+        const value = Array.isArray(answer) ? answer.join(", ") : String(answer ?? "");
+        const responseLimit = pending.method === "editor" ? MAX_UI_EDITOR_PREFILL_BYTES : 64 * 1024;
+        if (utf8Bytes(value) > responseLimit) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "respondToUserInput",
+            issue: `Pi ${pending.method} response exceeds its ${responseLimit}-byte limit.`,
+          });
+        }
+        yield* settlePendingUi(context, runtimeRequestId, { value }, undefined, answers);
       });
 
     const readThread = (

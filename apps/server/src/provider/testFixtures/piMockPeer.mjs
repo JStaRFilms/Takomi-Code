@@ -31,7 +31,28 @@ function recordInput(line) {
   if (transcriptPath) appendFileSync(transcriptPath, `${line}\n`, "utf8");
 }
 
+function emitTimeoutRequest() {
+  emit({
+    type: "extension_ui_request",
+    id: "timeout-confirm",
+    method: "confirm",
+    title: "Immediate timeout",
+    message: "This must open before cancellation.",
+    timeout: 0,
+  });
+}
+
 function emitFixtureEvents() {
+  if (process.env.T3_PI_CONFORMANCE_UI_TIMEOUT === "1") emitTimeoutRequest();
+  if (process.env.T3_PI_CONFORMANCE_INVALID_UI_ID === "1") {
+    emit({
+      type: "extension_ui_request",
+      id: "x".repeat(513),
+      method: "confirm",
+      title: "Invalid request ID",
+      message: "This must not be persisted.",
+    });
+  }
   if (process.env.T3_PI_CONFORMANCE_MALFORMED === "1") process.stdout.write("{invalid\n");
   if (process.env.T3_PI_CONFORMANCE_OVERSIZED === "1") {
     process.stdout.write(`${"x".repeat(1024 * 1024 + 1)}\n`);
@@ -114,9 +135,11 @@ function handle(record) {
       emit({ type: "response", id: record.id, command: "prompt", success: true });
       if (process.env.T3_PI_CONFORMANCE_UNTERMINATED === "1") {
         process.stdout.end(
-          `${JSON.stringify({ type: "extension_ui_request", id: "eof-notice", method: "notify", message: "EOF pending" })}\n{\"type\":\"partial\"`,
+          `${JSON.stringify({ type: "extension_ui_request", id: "eof-confirm", method: "confirm", title: "EOF pending", message: "Cancel on EOF" })}\n{\"type\":\"partial\"`,
           () => process.exit(18),
         );
+      } else if (process.env.T3_PI_CONFORMANCE_UI_TIMEOUT_ONLY === "1") {
+        emitTimeoutRequest();
       } else {
         emitFixtureEvents();
       }
@@ -138,6 +161,23 @@ function handle(record) {
         success: true,
         data: { tree: sessionTree, leafId: "active-label" },
       });
+      break;
+    case "extension_ui_response":
+      if (process.env.T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE === "1") {
+        emit({
+          type: "extension_ui_response_received",
+          id: record.id,
+          ...(record.cancelled === true ? { cancelled: true } : {}),
+          ...(typeof record.confirmed === "boolean" ? { confirmed: record.confirmed } : {}),
+          ...(typeof record.value === "string" ? { value: record.value } : {}),
+        });
+        emit({
+          type: "extension_ui_request",
+          id: `response-captured-${record.id}`,
+          method: "notify",
+          message: "Synthetic UI response captured.",
+        });
+      }
       break;
     case "abort":
       emit({ type: "response", id: record.id, command: "abort", success: true });

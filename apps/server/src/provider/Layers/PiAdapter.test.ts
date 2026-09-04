@@ -3,6 +3,7 @@ import * as Path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  ApprovalRequestId,
   PiSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -12,6 +13,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -49,6 +51,7 @@ function runPiProcessScenario(
   use: (input: {
     readonly adapter: TestPiAdapter;
     readonly events: ProviderRuntimeEvent[];
+    readonly nativeRecords: unknown[];
     readonly threadId: ThreadId;
     readonly waitFor: (predicate: (event: ProviderRuntimeEvent) => boolean) => Effect.Effect<void>;
   }) => Effect.Effect<void, ProviderAdapterError>,
@@ -56,12 +59,24 @@ function runPiProcessScenario(
   return Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
+        const nativeRecords: unknown[] = [];
         const adapter = yield* makePiAdapter(
           decodePiSettings({
             binaryPath: process.execPath,
             launchArgs: `"${piMockPeer}"`,
           }),
-          { instanceId: ProviderInstanceId.make("pi-conformance"), environment },
+          {
+            instanceId: ProviderInstanceId.make("pi-conformance"),
+            environment,
+            nativeEventLogger: {
+              filePath: "synthetic-native.log",
+              write: (event) =>
+                environment.T3_PI_CONFORMANCE_NATIVE_LOG_FAIL === "1"
+                  ? Effect.die(new Error("sensitive native logger failure"))
+                  : Effect.sync(() => nativeRecords.push(event)),
+              close: () => Effect.void,
+            },
+          },
         );
         const events: ProviderRuntimeEvent[] = [];
         const signals: Array<{
@@ -96,6 +111,7 @@ function runPiProcessScenario(
         yield* use({
           adapter,
           events,
+          nativeRecords,
           threadId: ThreadId.make("pi-decoder-process-path"),
           waitFor,
         });
@@ -194,6 +210,18 @@ describe("Pi work-log normalization", () => {
         warning: expect.stringContaining("missing toolCallId"),
       },
     });
+  });
+
+  it("bounds oversized dynamic tool payloads before they enter canonical data", () => {
+    const workLog = normalizePiToolWorkLog({
+      toolCallId: "oversized-tool",
+      toolName: "bash",
+      args: { command: "echo", extensionPayload: "x".repeat(1024 * 1024) },
+      result: { content: [{ type: "text", text: "y".repeat(1024 * 1024) }] },
+      partialResult: undefined,
+    });
+    expect(workLog?.data).toMatchObject({ payloadTruncated: true });
+    expect(JSON.stringify(workLog?.data).length).toBeLessThan(200_000);
   });
 
   it("preserves all Takomi presentation families and takomi_flow namespace", () => {
@@ -568,6 +596,30 @@ describe("Takomi subagent task synthesis", () => {
 });
 
 describe("normalizeTakomiPresentation", () => {
+  it("discloses independently truncated presentation dimensions", () => {
+    const presentation = normalizeTakomiPresentation({
+      toolName: "takomi_board",
+      args: {},
+      result: {
+        stages: Array.from({ length: 13 }, (_, index) => ({ id: index, title: `Stage ${index}` })),
+        artifacts: Array.from({ length: 9 }, (_, index) => ({ path: `artifact-${index}` })),
+        output: "x".repeat(20_000),
+      },
+      partialResult: undefined,
+      isError: false,
+      lifecycleStatus: "completed",
+    });
+
+    expect(presentation?.summary?.items).toHaveLength(12);
+    expect(presentation?.artifactRefs).toHaveLength(8);
+    expect(presentation?.truncation).toMatchObject({
+      items: true,
+      artifactRefs: true,
+      detailText: true,
+      inspectorDetailText: true,
+    });
+  });
+
   it("uses the same ID-priority for subagent summaries and activities", () => {
     const presentation = normalizeTakomiPresentation({
       toolName: "takomi_subagent",
@@ -686,8 +738,9 @@ describe("normalizeTakomiPresentation", () => {
     });
 
     expect(presentation?.summary?.total).toBe(24);
-    expect(presentation?.summary?.items).toHaveLength(24);
-    expect(presentation?.summary?.items?.at(-1)?.label).toBe("Task 24");
+    expect(presentation?.summary?.items).toHaveLength(12);
+    expect(presentation?.summary?.items?.at(-1)?.label).toBe("Task 12");
+    expect(presentation?.truncation?.items).toBe(true);
     expect(presentation?.detailText).toBeUndefined();
     expect(presentation?.inspectorDetailText).toBeUndefined();
   });
@@ -721,17 +774,52 @@ describe("Pi adapter process-path JSONL decoding", () => {
                   event.payload.message === "Pi emitted an invalid RPC record.",
               ).length >= 2,
           );
-          expect(
-            events
-              .filter((event) => event.type === "runtime.warning")
-              .map((event) => event.payload.detail),
-          ).toEqual(expect.arrayContaining([{ reason: "invalid-json" }, { reason: "oversized" }]));
+          const malformedWarnings = events.filter(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Pi emitted an invalid RPC record.",
+          );
+          expect(malformedWarnings.map(runtimeWarningReason)).toEqual(
+            expect.arrayContaining(["invalid-json", "oversized"]),
+          );
+          expect(new Set(malformedWarnings.map((event) => event.eventId)).size).toBe(
+            malformedWarnings.length,
+          );
           expect(
             events.find(
               (event) =>
                 event.type === "content.delta" && event.payload.delta === "split €\u2028\u2029",
             ),
           ).toBeDefined();
+          yield* adapter.stopSession(threadId);
+        }),
+    );
+  });
+
+  it("rejects oversized native UI IDs before canonical request persistence", async () => {
+    await runPiProcessScenario(
+      { ...process.env, T3_PI_CONFORMANCE_INVALID_UI_ID: "1" },
+      ({ adapter, events, nativeRecords, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          yield* adapter.sendTurn({ threadId, input: "Invalid UI ID", attachments: [] });
+          yield* waitFor((event) => event.type === "turn.completed");
+          expect(
+            nativeRecords.some(
+              (record) =>
+                isRecord(record) &&
+                isRecord(record.event) &&
+                isRecord(record.event.payload) &&
+                record.event.payload.id === "x".repeat(513),
+            ),
+          ).toBe(true);
+          expect(
+            events.some(
+              (event) =>
+                (event.type === "request.opened" || event.type === "user-input.requested") &&
+                String(event.requestId).includes("x".repeat(513)),
+            ),
+          ).toBe(false);
           yield* adapter.stopSession(threadId);
         }),
     );
@@ -750,8 +838,29 @@ describe("Pi adapter process-path JSONL decoding", () => {
             (event) => runtimeWarningReason(event) === "invalid-json",
           );
           const exitIndex = events.findIndex((event) => event.type === "session.exited");
+          const opened = events.find((event) => event.type === "request.opened");
           expect(warningIndex).toBeGreaterThanOrEqual(0);
           expect(exitIndex).toBeGreaterThan(warningIndex);
+          expect(opened).toBeDefined();
+          expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+          expect(events.filter((event) => event.type === "session.exited")).toHaveLength(1);
+          expect(
+            events.filter(
+              (event) => event.type === "request.resolved" && event.requestId === opened?.requestId,
+            ),
+          ).toHaveLength(1);
+        }),
+    );
+  });
+
+  it("cleans the failed start generation after an abrupt process exit", async () => {
+    await runPiProcessScenario(
+      { ...process.env, T3_PI_CONFORMANCE_EARLY_EXIT: "1" },
+      ({ adapter, threadId }) =>
+        Effect.gen(function* () {
+          const result = yield* Effect.exit(adapter.startSession(startInput(threadId)));
+          expect(Exit.isFailure(result)).toBe(true);
+          expect(yield* adapter.hasSession(threadId)).toBe(false);
         }),
     );
   });
@@ -771,6 +880,238 @@ describe("Pi adapter process-path JSONL decoding", () => {
           (yield* adapter.listSessions()).filter((session) => session.threadId === threadId),
         ).toHaveLength(1);
         yield* adapter.stopSession(threadId);
+      }),
+    );
+  });
+
+  it("scopes reused native UI IDs by generation", async () => {
+    await runPiProcessScenario(
+      { ...process.env, T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE: "1" },
+      ({ adapter, events, nativeRecords, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          yield* adapter.sendTurn({ threadId, input: "First generation", attachments: [] });
+          yield* waitFor((event) => event.type === "request.opened");
+          const firstRequestId = events.find(
+            (event) => event.type === "request.opened",
+          )!.requestId!;
+          const supersededRequestIds = events
+            .filter(
+              (event) => event.type === "request.opened" || event.type === "user-input.requested",
+            )
+            .map((event) => event.requestId!);
+
+          yield* adapter.startSession(startInput(threadId));
+          const supersededTerminalIds = events
+            .filter(
+              (event) => event.type === "request.resolved" || event.type === "user-input.resolved",
+            )
+            .map((event) => event.requestId);
+          for (const requestId of supersededRequestIds) {
+            expect(
+              supersededTerminalIds.filter((terminalId) => terminalId === requestId),
+            ).toHaveLength(1);
+          }
+          yield* adapter.sendTurn({ threadId, input: "Replacement generation", attachments: [] });
+          yield* waitFor(
+            () => events.filter((event) => event.type === "request.opened").length >= 2,
+          );
+          const requestIds = events
+            .filter((event) => event.type === "request.opened")
+            .map((event) => event.requestId);
+          const replacementRequestId = requestIds.at(-1)!;
+          expect(replacementRequestId).not.toBe(firstRequestId);
+
+          const stale = yield* Effect.exit(
+            adapter.respondToRequest(threadId, ApprovalRequestId.make(firstRequestId), "accept"),
+          );
+          expect(Exit.isFailure(stale)).toBe(true);
+          yield* adapter.respondToRequest(
+            threadId,
+            ApprovalRequestId.make(replacementRequestId),
+            "accept",
+          );
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Synthetic UI response captured.",
+          );
+          expect(
+            nativeRecords.some(
+              (record) =>
+                isRecord(record) &&
+                isRecord(record.event) &&
+                isRecord(record.event.payload) &&
+                record.event.payload.type === "extension_ui_response_received" &&
+                record.event.payload.id === "confirm-1" &&
+                record.event.payload.confirmed === true,
+            ),
+          ).toBe(true);
+          const terminalIds = events
+            .filter((event) => event.type === "request.resolved")
+            .map((event) => event.requestId);
+          expect(terminalIds.filter((id) => id === replacementRequestId)).toHaveLength(1);
+          yield* adapter.stopSession(threadId);
+          const openedRequestIds = events
+            .filter(
+              (event) => event.type === "request.opened" || event.type === "user-input.requested",
+            )
+            .map((event) => event.requestId!);
+          const terminalRequestIds = events
+            .filter(
+              (event) => event.type === "request.resolved" || event.type === "user-input.resolved",
+            )
+            .map((event) => event.requestId);
+          for (const requestId of openedRequestIds) {
+            expect(
+              terminalRequestIds.filter((terminalId) => terminalId === requestId),
+            ).toHaveLength(1);
+          }
+        }),
+    );
+  });
+
+  it("writes each native Pi record and settles open UI waiters once on stop", async () => {
+    await runPiProcessScenario(
+      process.env,
+      ({ adapter, events, nativeRecords, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          yield* adapter.sendTurn({ threadId, input: "Native logging", attachments: [] });
+          yield* waitFor((event) => event.type === "turn.completed");
+          yield* adapter.stopSession(threadId);
+          // get_state + prompt responses plus every one of the 32 synthetic native events.
+          expect(nativeRecords).toHaveLength(34);
+          const openedIds = events
+            .filter(
+              (event) => event.type === "request.opened" || event.type === "user-input.requested",
+            )
+            .map((event) => event.requestId!);
+          const resolvedIds = events
+            .filter(
+              (event) => event.type === "request.resolved" || event.type === "user-input.resolved",
+            )
+            .map((event) => event.requestId);
+          expect(openedIds.length).toBeGreaterThan(0);
+          for (const requestId of openedIds) {
+            expect(resolvedIds.filter((resolvedId) => resolvedId === requestId)).toHaveLength(1);
+          }
+        }),
+    );
+  });
+
+  it("keeps Pi normalization alive when native logging fails without exposing the logger error", async () => {
+    await runPiProcessScenario(
+      { ...process.env, T3_PI_CONFORMANCE_NATIVE_LOG_FAIL: "1" },
+      ({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          yield* adapter.sendTurn({ threadId, input: "Logger failure", attachments: [] });
+          yield* waitFor((event) => event.type === "turn.completed");
+          const diagnostics = events.filter(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Pi native event logging failed.",
+          );
+          expect(diagnostics.length).toBeGreaterThan(0);
+          expect(diagnostics.map(runtimeWarningReason)).not.toContain(
+            "sensitive native logger failure",
+          );
+          yield* adapter.stopSession(threadId);
+        }),
+    );
+  });
+
+  it("writes one Pi-compatible cancellation for an expired request", async () => {
+    await runPiProcessScenario(
+      {
+        ...process.env,
+        T3_PI_CONFORMANCE_UI_TIMEOUT_ONLY: "1",
+        T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE: "1",
+      },
+      ({ adapter, events, nativeRecords, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          yield* adapter.sendTurn({ threadId, input: "Timeout cancellation", attachments: [] });
+          yield* waitFor((event) => event.type === "request.opened");
+          const opened = events.find((event) => event.type === "request.opened")!;
+          yield* waitFor(
+            (event) => event.type === "request.resolved" && event.requestId === opened.requestId,
+          );
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Synthetic UI response captured.",
+          );
+          expect(
+            nativeRecords.filter(
+              (record) =>
+                isRecord(record) &&
+                isRecord(record.event) &&
+                isRecord(record.event.payload) &&
+                record.event.payload.type === "extension_ui_response_received" &&
+                record.event.payload.id === "timeout-confirm" &&
+                record.event.payload.cancelled === true,
+            ),
+          ).toHaveLength(1);
+          yield* adapter.stopSession(threadId);
+        }),
+    );
+  });
+
+  it("publishes a timeout request before its one terminal settlement when abort races it", async () => {
+    await runPiProcessScenario(
+      {
+        ...process.env,
+        T3_PI_CONFORMANCE_UI_TIMEOUT_ONLY: "1",
+        T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE: "1",
+      },
+      ({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          const turn = yield* adapter.sendTurn({
+            threadId,
+            input: "Timeout and abort race",
+            attachments: [],
+          });
+          yield* waitFor((event) => event.type === "request.opened");
+          const opened = events.find((event) => event.type === "request.opened")!;
+          yield* adapter.interruptTurn(threadId, turn.turnId);
+          yield* waitFor(
+            (event) => event.type === "request.resolved" && event.requestId === opened.requestId,
+          );
+          const openedIndex = events.findIndex(
+            (event) => event.type === "request.opened" && event.requestId === opened.requestId,
+          );
+          const terminal = events.filter(
+            (event) => event.type === "request.resolved" && event.requestId === opened.requestId,
+          );
+          expect(openedIndex).toBeGreaterThanOrEqual(0);
+          expect(events.indexOf(terminal[0]!)).toBeGreaterThan(openedIndex);
+          expect(terminal).toHaveLength(1);
+          yield* waitFor((event) => event.type === "session.exited");
+        }),
+    );
+  });
+
+  it("fences buffered lifecycle output immediately after interruption", async () => {
+    await runPiProcessScenario(process.env, ({ adapter, events, threadId, waitFor }) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession(startInput(threadId));
+        const turn = yield* adapter.sendTurn({
+          threadId,
+          input: "Interrupt before output is normalized",
+          attachments: [],
+        });
+        yield* adapter.interruptTurn(threadId, turn.turnId);
+        yield* waitFor((event) => event.type === "session.exited");
+        expect(
+          events.some(
+            (event) =>
+              (event.type === "item.updated" || event.type === "item.completed") &&
+              event.itemId === "tool-late",
+          ),
+        ).toBe(false);
       }),
     );
   });

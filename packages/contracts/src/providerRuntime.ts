@@ -461,6 +461,16 @@ export const ToolPresentationEnvelope = Schema.Struct({
   inspectorDetailText: Schema.optional(TrimmedNonEmptyStringSchema),
   activity: Schema.optional(Schema.Array(ToolPresentationActivity)),
   activityTruncated: Schema.optional(Schema.Boolean),
+  /** Which bounded projection dimensions omitted source data. */
+  truncation: Schema.optional(
+    Schema.Struct({
+      items: Schema.optional(Schema.Boolean),
+      artifactRefs: Schema.optional(Schema.Boolean),
+      detailText: Schema.optional(Schema.Boolean),
+      inspectorDetailText: Schema.optional(Schema.Boolean),
+      activity: Schema.optional(Schema.Boolean),
+    }),
+  ),
   artifactRefs: Schema.optional(Schema.Array(ToolPresentationArtifact)),
   error: Schema.optional(
     Schema.Struct({
