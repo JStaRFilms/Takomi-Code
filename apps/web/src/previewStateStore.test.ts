@@ -14,6 +14,7 @@ import {
   applyPreviewServerSnapshot,
   beginPreviewSessionClose,
   cancelPreviewSessionClose,
+  previewEventRequiresResnapshot,
   previewStateAtom,
   readThreadPreviewState,
   reconcilePreviewServerSessions,
@@ -62,6 +63,20 @@ beforeEach(() => {
 });
 
 describe("previewStateStore (single-tab)", () => {
+  it("detects revision gaps that require an authoritative preview resnapshot", () => {
+    expect(
+      previewEventRequiresResnapshot(
+        { serverEpoch: "server-a", serverRevision: 4 },
+        { serverEpoch: "server-a", revision: 6 },
+      ),
+    ).toBe(true);
+    expect(
+      previewEventRequiresResnapshot(
+        { serverEpoch: "server-a", serverRevision: 4 },
+        { serverEpoch: "server-a", revision: 5 },
+      ),
+    ).toBe(false);
+  });
   it("keeps independent state atoms for each thread", () => {
     expect(previewStateAtom(scopedThreadKey(ref))).toBe(previewStateAtom(scopedThreadKey(ref)));
     expect(previewStateAtom(scopedThreadKey(ref))).not.toBe(

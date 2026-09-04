@@ -24,6 +24,7 @@ import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import { makeWsRpcProtocolClient, type WsRpcProtocolClient } from "./protocol.ts";
+import * as ConnectionWakeups from "../connection/wakeups.ts";
 import type {
   ConnectionAttemptError,
   ConnectionTransientError,
@@ -47,6 +48,8 @@ export interface RpcSession {
   readonly subscribeServerConfig: (
     input: ServerConfigSubscriptionInput,
   ) => ServerConfigSubscription;
+  /** Resolves once the WebSocket open event arrives, before initial sync. */
+  readonly opened?: Effect.Effect<void, ConnectionAttemptError>;
   readonly ready: Effect.Effect<void, ConnectionAttemptError>;
   readonly probe: Effect.Effect<void, ConnectionAttemptError>;
   readonly closed: Effect.Effect<never, ConnectionAttemptError>;
@@ -134,6 +137,7 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
   options: RpcSessionOptions = {},
 ) {
   const webSocketConstructor = yield* Socket.WebSocketConstructor;
+  const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const serverConfigInput: ServerConfigSubscriptionInput =
     options.environmentThemes === true ? { environmentThemes: true } : {};
 
@@ -143,8 +147,20 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
     });
 
     const connected = yield* Deferred.make<void>();
+    let closeMetadata: { readonly code: number; readonly reason: string } | undefined;
+    const trackedWebSocketConstructor: typeof webSocketConstructor = (url, protocols) => {
+      const socket = webSocketConstructor(url, protocols);
+      socket.addEventListener("close", (event) => {
+        closeMetadata = { code: event.code, reason: event.reason };
+      });
+      return socket;
+    };
     const disconnected = yield* Deferred.make<never, ConnectionTransientError>();
     const hooks = RpcClient.ConnectionHooks.of({
+      onPing: Option.match(wakeups, {
+        onNone: () => Effect.void,
+        onSome: (service) => service.beforeHeartbeat ?? Effect.void,
+      }),
       onConnect: Deferred.succeed(connected, undefined).pipe(Effect.asVoid),
       onDisconnect: Deferred.isDone(connected).pipe(
         Effect.flatMap((wasConnected) =>
@@ -155,6 +171,9 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
               detail: wasConnected
                 ? `${connection.label} disconnected.`
                 : `${connection.label} could not establish a WebSocket connection.`,
+              ...(closeMetadata === undefined
+                ? {}
+                : { closeCode: closeMetadata.code, closeReason: closeMetadata.reason }),
             }),
           ),
         ),
@@ -163,7 +182,7 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
     });
     const socketLayer = Socket.layerWebSocket(connection.socketUrl, {
       openTimeout: SOCKET_OPEN_TIMEOUT,
-    }).pipe(Layer.provide(Layer.succeed(Socket.WebSocketConstructor, webSocketConstructor)));
+    }).pipe(Layer.provide(Layer.succeed(Socket.WebSocketConstructor, trackedWebSocketConstructor)));
     const protocolLayer = Layer.effect(
       RpcClient.Protocol,
       RpcClient.makeProtocolSocket({
@@ -321,6 +340,7 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
       client: protocolClient,
       initialConfig,
       subscribeServerConfig,
+      opened: Deferred.await(connected).pipe(Effect.raceFirst(Deferred.await(disconnected))),
       ready: Deferred.await(connected).pipe(
         Effect.andThen(initialConfig),
         Effect.asVoid,

@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -8,6 +9,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
@@ -31,6 +33,7 @@ import {
   type GitManagerServiceError,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  type OrchestrationShellSnapshot,
   type OrchestrationShellStreamEvent,
   type OrchestrationShellStreamItem,
   OrchestrationGetFullThreadDiffError,
@@ -51,6 +54,8 @@ import {
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   ServerSelfUpdateError,
+  type ServerConfig as ServerConfigType,
+  type ServerConfigStreamEvent,
   type ServerSelfUpdateProgressEvent,
   type FilesystemBrowseFailure,
   FilesystemBrowseError,
@@ -63,12 +68,14 @@ import {
   type TerminalError,
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
+  TerminalSubscriptionOverflowError,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
+import * as Socket from "effect/unstable/socket/Socket";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
@@ -79,11 +86,11 @@ import {
   projectActivityEvent,
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
-import { makeThreadLiveEventCoalescer } from "./orchestration/ThreadLiveEventCoalescer.ts";
 import {
   cleanupFailedUploadedAttachments,
   normalizeDispatchCommand,
 } from "./orchestration/Normalizer.ts";
+import { makeThreadLiveEventCoalescer } from "./orchestration/ThreadLiveEventCoalescer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
@@ -140,6 +147,12 @@ import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
+import { boundedJsonBytes } from "./utils/boundedJsonBytes.ts";
+import {
+  WS_BACKPRESSURE_CLOSE_CODE,
+  WS_BACKPRESSURE_CLOSE_REASON,
+  withRequestWebSocketBackpressure,
+} from "./wsTransportBackpressure.ts";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -338,6 +351,317 @@ const THREAD_RESUME_MAX_GAP = 1_000;
 // payload bytes of the range in SQL and reset with a snapshot past this budget.
 const ORCHESTRATION_REPLAY_PAYLOAD_BUDGET_BYTES = 8 * 1024 * 1024;
 
+// These limits are per RPC subscription, never per environment. Dropping a
+// lagging durable tail is safe only because the replacement is an authoritative
+// snapshot; fast subscribers keep their own independent buffer.
+export const DURABLE_SUBSCRIPTION_QUEUE_ITEMS = 256;
+export const DURABLE_SUBSCRIPTION_QUEUE_BYTES = 2 * 1024 * 1024;
+
+function serializedBytes(value: unknown): number {
+  return boundedJsonBytes(value, DURABLE_SUBSCRIPTION_QUEUE_BYTES);
+}
+
+export function makeBoundedDurableLiveStream<T, E, R>(input: {
+  readonly name: string;
+  readonly source: Stream.Stream<T, never, never>;
+  readonly authoritativeSnapshot: Effect.Effect<T, E, R>;
+  readonly overflowCompletion?: T;
+}): Effect.Effect<
+  {
+    readonly offer: (value: T) => Effect.Effect<void>;
+    readonly takeAll: Effect.Effect<ReadonlyArray<T>, E, R>;
+    readonly stream: Stream.Stream<T, E, R>;
+  },
+  never,
+  Scope.Scope | R
+> {
+  return Effect.gen(function* () {
+    const queue = yield* Queue.dropping<
+      | { readonly kind: "value"; readonly value: T; readonly bytes: number }
+      | { readonly kind: "overflow" }
+    >(DURABLE_SUBSCRIPTION_QUEUE_ITEMS);
+    const queuedBytes = yield* Ref.make(0);
+    const overflowed = yield* Ref.make(false);
+
+    const offer = (value: T): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (yield* Ref.get(overflowed)) {
+          // Keep draining this subscriber's source so its upstream PubSub queue
+          // cannot grow while the authoritative replacement is being prepared.
+          return;
+        }
+        const bytes = serializedBytes(value);
+        const reserved = yield* Ref.modify(queuedBytes, (current) =>
+          current + bytes <= DURABLE_SUBSCRIPTION_QUEUE_BYTES
+            ? [true, current + bytes]
+            : [false, current],
+        );
+        const accepted = reserved && (yield* Queue.offer(queue, { kind: "value", value, bytes }));
+        if (accepted) return;
+        const queueBytesHighWater = yield* Ref.get(queuedBytes);
+        if (reserved) {
+          yield* Ref.update(queuedBytes, (current) => Math.max(0, current - bytes));
+        }
+        const currentBytes = yield* Ref.get(queuedBytes);
+        yield* Ref.set(overflowed, true);
+        const queueItems = yield* Queue.size(queue);
+        if (queueItems > 0) yield* Queue.takeAll(queue);
+        // An explicit marker wakes a stalled downstream pull even when the
+        // oversized first item could not enter the queue. It contains no event
+        // payload; takeAll discards it before emitting the replacement snapshot.
+        yield* Queue.offer(queue, { kind: "overflow" });
+        yield* Ref.set(queuedBytes, 0);
+        yield* Effect.logWarning("durable subscription queue overflow; forcing snapshot", {
+          subscription: input.name,
+          queueItemLimit: DURABLE_SUBSCRIPTION_QUEUE_ITEMS,
+          queueByteLimit: DURABLE_SUBSCRIPTION_QUEUE_BYTES,
+          attemptedBytes: bytes,
+          queueItems,
+          queueBytes: currentBytes,
+          queueBytesHighWater,
+        });
+      });
+
+    yield* input.source.pipe(
+      Stream.runForEach(offer),
+      Effect.forkScoped({ startImmediately: true }),
+    );
+
+    const takeAll = Effect.gen(function* () {
+      if (yield* Ref.getAndSet(overflowed, false)) {
+        yield* Queue.takeAll(queue);
+        yield* Ref.set(queuedBytes, 0);
+        // The snapshot is intentionally emitted after any item already being
+        // written. Reducers replace state at its authoritative sequence, so
+        // no dropped incremental cursor can survive the overflow.
+        const startedAt = yield* Clock.currentTimeMillis;
+        const snapshot = yield* input.authoritativeSnapshot;
+        const convergenceMs = (yield* Clock.currentTimeMillis) - startedAt;
+        yield* Effect.logDebug("durable subscription converged by snapshot", {
+          subscription: input.name,
+          forcedResnapshotReason: "queue-overflow",
+          convergenceMs,
+        });
+        return input.overflowCompletion === undefined
+          ? [snapshot]
+          : [snapshot, input.overflowCompletion];
+      }
+      const values = yield* Queue.takeAll(queue);
+      yield* Ref.set(queuedBytes, 0);
+      return values.flatMap((next) => (next.kind === "value" ? [next.value] : []));
+    });
+    const stream = Stream.fromQueue(queue).pipe(
+      Stream.mapEffect((next) =>
+        Ref.get(overflowed).pipe(
+          Effect.flatMap((isOverflowed) =>
+            isOverflowed
+              ? takeAll
+              : next.kind === "overflow"
+                ? takeAll
+                : Ref.update(queuedBytes, (current) => Math.max(0, current - next.bytes)).pipe(
+                    Effect.as([next.value]),
+                  ),
+          ),
+        ),
+      ),
+      Stream.flatMap((values) => Stream.fromIterable(values)),
+    );
+
+    return { offer, takeAll, stream };
+  });
+}
+
+export function makeBoundedCallbackStream<A, E, R>(input: {
+  readonly name: string;
+  readonly register: (
+    offer: (value: A) => Effect.Effect<void>,
+    queue: Queue.Queue<{ readonly value: A; readonly bytes: number }, E | Cause.Done>,
+  ) => Effect.Effect<unknown, E, R | Scope.Scope>;
+}): Stream.Stream<A, E, Exclude<R, Scope.Scope>> {
+  return Stream.unwrap(
+    Effect.gen(function* () {
+      const webSocket = Option.getOrUndefined(yield* Effect.serviceOption(Socket.WebSocket));
+      const queuedBytes = yield* Ref.make(0);
+      let overflowLogged = false;
+      const stream = Stream.callback<{ readonly value: A; readonly bytes: number }, E, R>(
+        (queue) =>
+          input.register(
+            (value) =>
+              Effect.gen(function* () {
+                const bytes = boundedJsonBytes(value, DURABLE_SUBSCRIPTION_QUEUE_BYTES);
+                const reserved = yield* Ref.modify(queuedBytes, (current) =>
+                  current + bytes <= DURABLE_SUBSCRIPTION_QUEUE_BYTES
+                    ? [true, current + bytes]
+                    : [false, current],
+                );
+                const accepted = reserved && (yield* Queue.offer(queue, { value, bytes }));
+                if (accepted) return;
+                const queueBytesHighWater = yield* Ref.get(queuedBytes);
+                if (reserved) {
+                  yield* Ref.update(queuedBytes, (current) => Math.max(0, current - bytes));
+                }
+                const close =
+                  webSocket === undefined
+                    ? Queue.end(queue).pipe(Effect.asVoid)
+                    : Effect.sync(() =>
+                        webSocket.close(WS_BACKPRESSURE_CLOSE_CODE, WS_BACKPRESSURE_CLOSE_REASON),
+                      );
+                if (overflowLogged) return yield* close;
+                overflowLogged = true;
+                yield* Effect.logWarning("callback subscription queue overflow; closing client", {
+                  subscription: input.name,
+                  queueItemLimit: DURABLE_SUBSCRIPTION_QUEUE_ITEMS,
+                  queueByteLimit: DURABLE_SUBSCRIPTION_QUEUE_BYTES,
+                  queueBytesHighWater,
+                  attemptedBytes: bytes,
+                  closeCode: WS_BACKPRESSURE_CLOSE_CODE,
+                  closeReason: WS_BACKPRESSURE_CLOSE_REASON,
+                });
+                yield* close;
+              }),
+            queue,
+          ),
+        {
+          bufferSize: DURABLE_SUBSCRIPTION_QUEUE_ITEMS,
+          strategy: "dropping",
+        },
+      );
+      return stream.pipe(
+        Stream.tap((entry) =>
+          Ref.update(queuedBytes, (current) => Math.max(0, current - entry.bytes)),
+        ),
+        Stream.map((entry) => entry.value),
+      );
+    }),
+  );
+}
+
+export function makeBoundedClosingStream<A, E, R>(input: {
+  readonly name: string;
+  readonly source: Stream.Stream<A, E, R>;
+}): Stream.Stream<A, E, R> {
+  return Stream.unwrap(
+    Effect.gen(function* () {
+      const webSocket = Option.getOrUndefined(yield* Effect.serviceOption(Socket.WebSocket));
+      const queue = yield* Queue.dropping<
+        { readonly value: A; readonly bytes: number },
+        E | Cause.Done
+      >(DURABLE_SUBSCRIPTION_QUEUE_ITEMS);
+      const queuedBytes = yield* Ref.make(0);
+      let overflowLogged = false;
+      yield* input.source.pipe(
+        Stream.runForEach((value) =>
+          Effect.gen(function* () {
+            const bytes = boundedJsonBytes(value, DURABLE_SUBSCRIPTION_QUEUE_BYTES);
+            const reserved = yield* Ref.modify(queuedBytes, (current) =>
+              current + bytes <= DURABLE_SUBSCRIPTION_QUEUE_BYTES
+                ? [true, current + bytes]
+                : [false, current],
+            );
+            const accepted = reserved && (yield* Queue.offer(queue, { value, bytes }));
+            if (accepted) return;
+            const queueBytesHighWater = yield* Ref.get(queuedBytes);
+            if (reserved) {
+              yield* Ref.update(queuedBytes, (current) => Math.max(0, current - bytes));
+            }
+            const close =
+              webSocket === undefined
+                ? Queue.end(queue).pipe(Effect.asVoid)
+                : Effect.sync(() =>
+                    webSocket.close(WS_BACKPRESSURE_CLOSE_CODE, WS_BACKPRESSURE_CLOSE_REASON),
+                  );
+            if (overflowLogged) return yield* close;
+            overflowLogged = true;
+            yield* Effect.logWarning("subscription queue overflow; closing client", {
+              subscription: input.name,
+              queueItemLimit: DURABLE_SUBSCRIPTION_QUEUE_ITEMS,
+              queueByteLimit: DURABLE_SUBSCRIPTION_QUEUE_BYTES,
+              queueBytesHighWater,
+              attemptedBytes: bytes,
+              closeCode: WS_BACKPRESSURE_CLOSE_CODE,
+              closeReason: WS_BACKPRESSURE_CLOSE_REASON,
+            });
+            yield* close;
+          }),
+        ),
+        Effect.matchCauseEffect({
+          onFailure: (cause) => Queue.failCause(queue, cause),
+          onSuccess: () => Queue.end(queue),
+        }),
+        Effect.forkScoped,
+      );
+      return Stream.fromQueue(queue).pipe(
+        Stream.tap((next) =>
+          Ref.update(queuedBytes, (current) => Math.max(0, current - next.bytes)),
+        ),
+        Stream.map((next) => next.value),
+      );
+    }),
+  );
+}
+
+export function makeBoundedEphemeralStream<T>(input: {
+  readonly name: string;
+  readonly source: Stream.Stream<T, never, never>;
+  readonly isPriority?: (value: T) => boolean;
+}): Effect.Effect<Stream.Stream<T>, never, Scope.Scope> {
+  return Effect.gen(function* () {
+    const queue = yield* Queue.dropping<{ readonly value: T; readonly bytes: number }>(
+      DURABLE_SUBSCRIPTION_QUEUE_ITEMS,
+    );
+    const queuedBytes = yield* Ref.make(0);
+    const overflowLogged = yield* Ref.make(false);
+    yield* input.source.pipe(
+      Stream.runForEach((value) =>
+        Effect.gen(function* () {
+          const bytes = serializedBytes(value);
+          const reserved = yield* Ref.modify(queuedBytes, (current) =>
+            current + bytes <= DURABLE_SUBSCRIPTION_QUEUE_BYTES
+              ? [true, current + bytes]
+              : [false, current],
+          );
+          const accepted = reserved && (yield* Queue.offer(queue, { value, bytes }));
+          if (accepted) return;
+          const queueBytesHighWater = yield* Ref.get(queuedBytes);
+          if (reserved) {
+            yield* Ref.update(queuedBytes, (current) => Math.max(0, current - bytes));
+          }
+          const currentBytes = yield* Ref.get(queuedBytes);
+          const priority = input.isPriority?.(value) === true;
+          const queueItems = yield* Queue.size(queue);
+          if (priority) {
+            if ((yield* Queue.size(queue)) > 0) yield* Queue.takeAll(queue);
+            yield* Ref.set(queuedBytes, 0);
+            if (
+              bytes <= DURABLE_SUBSCRIPTION_QUEUE_BYTES &&
+              (yield* Queue.offer(queue, { value, bytes }))
+            ) {
+              yield* Ref.set(queuedBytes, bytes);
+            }
+          }
+          if (!(yield* Ref.getAndSet(overflowLogged, true))) {
+            yield* Effect.logWarning("ephemeral subscription queue overflow; dropping updates", {
+              subscription: input.name,
+              queueItemLimit: DURABLE_SUBSCRIPTION_QUEUE_ITEMS,
+              queueByteLimit: DURABLE_SUBSCRIPTION_QUEUE_BYTES,
+              attemptedBytes: bytes,
+              queueItems,
+              queueBytes: currentBytes,
+              queueBytesHighWater,
+              priorityPreserved: priority,
+            });
+          }
+        }),
+      ),
+      Effect.forkScoped({ startImmediately: true }),
+    );
+    return Stream.fromQueue(queue).pipe(
+      Stream.tap((next) => Ref.update(queuedBytes, (current) => Math.max(0, current - next.bytes))),
+      Stream.map((next) => next.value),
+    );
+  });
+}
+
 function toAuthAccessStreamEvent(
   change: PairingGrantStore.BootstrapCredentialChange | SessionStore.SessionCredentialChange,
   revision: number,
@@ -523,6 +847,13 @@ const makeWsRpcLayer = (
       ) {
         const replayGap = headSequence - afterSequence;
         if (replayGap < 0 || replayGap > maxGap) {
+          yield* Effect.logDebug("orchestration replay replaced by snapshot", {
+            reason: replayGap < 0 ? "cursor-ahead" : "event-gap",
+            afterSequence,
+            headSequence,
+            replayGap,
+            replayGapLimit: maxGap,
+          });
           return false;
         }
         const stats = yield* projectionSnapshotQuery
@@ -541,6 +872,7 @@ const makeWsRpcLayer = (
           );
         if (stats.payloadBytes > ORCHESTRATION_REPLAY_PAYLOAD_BUDGET_BYTES) {
           yield* Effect.logDebug("orchestration replay replaced by snapshot", {
+            reason: "payload-bytes",
             afterSequence,
             headSequence,
             replayGap,
@@ -550,6 +882,13 @@ const makeWsRpcLayer = (
           });
           return false;
         }
+        yield* Effect.logDebug("orchestration subscription resumed by replay", {
+          afterSequence,
+          headSequence,
+          replayGap,
+          eventCount: stats.eventCount,
+          payloadBytes: stats.payloadBytes,
+        });
         return true;
       });
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
@@ -891,6 +1230,7 @@ const makeWsRpcLayer = (
 
       type ShellLiveInput =
         | { readonly kind: "event"; readonly event: OrchestrationEvent }
+        | { readonly kind: "snapshot"; readonly snapshot: OrchestrationShellSnapshot }
         | { readonly kind: "synchronized" };
 
       // A completion marker is queued alongside raw live events so it cannot
@@ -911,7 +1251,11 @@ const makeWsRpcLayer = (
 
             output.push(...(yield* coalesceShellEvents(pendingEvents)));
             pendingEvents = [];
-            output.push({ kind: "synchronized" });
+            output.push(
+              input.kind === "snapshot"
+                ? { kind: "snapshot", snapshot: input.snapshot }
+                : { kind: "synchronized" },
+            );
           }
 
           output.push(...(yield* coalesceShellEvents(pendingEvents)));
@@ -1396,28 +1740,6 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,
             Effect.gen(function* () {
-              // Coalesce the live shell stream per aggregate over a small window
-              // so bursts of high-frequency events (streaming message deltas,
-              // activity appends) collapse into a single shell refetch and never
-              // serialize a brand-new thread's `thread.created` behind hundreds
-              // of per-event DB reads. See coalesceShellStream.
-              // Attach live delivery into a scope-bound buffer BEFORE loading any
-              // snapshot or draining catch-up, otherwise an event published while
-              // the snapshot query is in flight is lost (it is past the snapshot's
-              // sequence but the live subscription is not attached yet). Every
-              // path below emits from this same buffered live tail. Overlapping
-              // events are deduped by sequence on the client.
-              const liveBuffer = yield* Queue.unbounded<ShellLiveInput>();
-              yield* Effect.forkScoped(
-                orchestrationEngine.streamDomainEvents.pipe(
-                  Stream.runForEach((event) =>
-                    Queue.offer(liveBuffer, { kind: "event" as const, event }),
-                  ),
-                ),
-                { startImmediately: true },
-              );
-              const bufferedLiveStream = coalesceShellLiveStream(Stream.fromQueue(liveBuffer));
-
               const loadSnapshot = projectionSnapshotQuery.getShellSnapshot().pipe(
                 Effect.tapError((cause) =>
                   Effect.logError("orchestration shell snapshot load failed", { cause }),
@@ -1430,18 +1752,37 @@ const makeWsRpcLayer = (
                     }),
                 ),
               );
+              // Attach live delivery before reading replay or a snapshot. This
+              // per-subscriber queue is bounded by both item count and bytes;
+              // an overflow drains its source and replaces the incomplete tail
+              // with a fresh authoritative snapshot rather than silently
+              // continuing an invalid cursor.
+              const liveBuffer = yield* makeBoundedDurableLiveStream({
+                name: "orchestration.shell",
+                source: orchestrationEngine.streamDomainEvents.pipe(
+                  Stream.map((event): ShellLiveInput => ({ kind: "event", event })),
+                ),
+                authoritativeSnapshot: loadSnapshot.pipe(
+                  Effect.map((snapshot): ShellLiveInput => ({ kind: "snapshot", snapshot })),
+                ),
+                ...(input.requestCompletionMarker === true
+                  ? { overflowCompletion: { kind: "synchronized" as const } }
+                  : {}),
+              });
+              const bufferedLiveStream = coalesceShellLiveStream(liveBuffer.stream);
 
-              // Offer the completion marker into the same queue as live events.
-              // Anything buffered while snapshot/replay work was in flight is
-              // therefore delivered before the client is told it is synchronized.
+              // The marker and buffered events use the same bounded queue, so
+              // no live item can overtake synchronization.
               const synchronizedThenLive =
                 input.requestCompletionMarker === true
                   ? Stream.concat(
                       Stream.fromEffect(
-                        Queue.offer(liveBuffer, { kind: "synchronized" as const }).pipe(
-                          Effect.andThen(Queue.takeAll(liveBuffer)),
-                          Effect.flatMap(coalesceShellLiveInputs),
-                        ),
+                        liveBuffer
+                          .offer({ kind: "synchronized" as const })
+                          .pipe(
+                            Effect.andThen(liveBuffer.takeAll),
+                            Effect.flatMap(coalesceShellLiveInputs),
+                          ),
                       ).pipe(Stream.flatMap((items) => Stream.fromIterable(items))),
                       bufferedLiveStream,
                     )
@@ -1539,9 +1880,41 @@ const makeWsRpcLayer = (
                 })),
               );
 
-              // Attach live delivery before reading either replay or snapshot state.
-              // Otherwise an event published while the snapshot is loading is lost.
-              const liveBuffer = yield* makeThreadLiveEventCoalescer();
+              // Thread coalescing is itself scope-bound and limits pending tool
+              // updates. Its snapshot/replay fallback below remains authoritative
+              // when a reconnect gap exceeds the durable cursor budget.
+              const liveBuffer = yield* makeThreadLiveEventCoalescer({
+                overflowSnapshot: projectionSnapshotQuery
+                  .getThreadDetailSnapshot(
+                    input.threadId,
+                    input.turnLimit === undefined ? undefined : { turnLimit: input.turnLimit },
+                  )
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: `Failed to load overflow snapshot for thread ${input.threadId}`,
+                          cause,
+                        }),
+                    ),
+                    Effect.flatMap(
+                      Option.match({
+                        onNone: () =>
+                          Effect.fail(
+                            new OrchestrationGetSnapshotError({
+                              message: `Thread ${input.threadId} was deleted during overflow recovery`,
+                              cause: input.threadId,
+                            }),
+                          ),
+                        onSome: (snapshot) =>
+                          Effect.succeed({
+                            kind: "snapshot" as const,
+                            snapshot: projectThreadDetailSnapshot(snapshot),
+                          }),
+                      }),
+                    ),
+                  ),
+              });
               yield* Effect.forkScoped(liveStream.pipe(Stream.runForEach(liveBuffer.offer)));
               const bufferedLiveStream = liveBuffer.stream;
 
@@ -1706,28 +2079,20 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverUpdateServerWithProgress]: (input) =>
           observeRpcStream(
             WS_METHODS.serverUpdateServerWithProgress,
-            Stream.callback<ServerSelfUpdateProgressEvent, ServerSelfUpdateError>((queue) =>
-              serverUpdate
-                .update(input, (stage) =>
-                  Queue.offer(queue, {
-                    type: "progress",
-                    stage,
-                  }).pipe(Effect.asVoid),
-                )
-                .pipe(
-                  Effect.flatMap((result) =>
-                    Queue.offer(queue, {
-                      type: "complete",
-                      result,
+            makeBoundedCallbackStream<ServerSelfUpdateProgressEvent, ServerSelfUpdateError, never>({
+              name: "server.update-progress",
+              register: (offer, queue) =>
+                serverUpdate
+                  .update(input, (stage) => offer({ type: "progress", stage }))
+                  .pipe(
+                    Effect.flatMap((result) => offer({ type: "complete", result })),
+                    Effect.catchTags({
+                      ServerSelfUpdateError: (error) => Queue.fail(queue, error),
                     }),
+                    Effect.andThen(Queue.end(queue)),
+                    Effect.forkScoped,
                   ),
-                  Effect.catchTags({
-                    ServerSelfUpdateError: (error) => Queue.fail(queue, error),
-                  }),
-                  Effect.andThen(Queue.end(queue)),
-                  Effect.forkScoped,
-                ),
-            ),
+            }),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverCommitDesktopUpdate]: (input) =>
@@ -1860,30 +2225,28 @@ const makeWsRpcLayer = (
         [WS_METHODS.cloudInstallRelayClient]: (_input) =>
           observeRpcStream(
             WS_METHODS.cloudInstallRelayClient,
-            Stream.callback<RelayClientInstallProgressEvent, RelayClientInstallFailedError>(
-              (queue) =>
-                relayClient
-                  .installWithProgress((event) => Queue.offer(queue, event).pipe(Effect.asVoid))
-                  .pipe(
-                    Effect.flatMap((status) =>
-                      Queue.offer(queue, {
-                        type: "complete",
-                        status,
+            makeBoundedCallbackStream<
+              RelayClientInstallProgressEvent,
+              RelayClientInstallFailedError,
+              never
+            >({
+              name: "cloud.relay-install",
+              register: (offer, queue) =>
+                relayClient.installWithProgress(offer).pipe(
+                  Effect.flatMap((status) => offer({ type: "complete", status })),
+                  Effect.catchTag("RelayClientInstallError", (error) =>
+                    Queue.fail(
+                      queue,
+                      new RelayClientInstallFailedError({
+                        reason: error.reason,
+                        message: error.message,
                       }),
                     ),
-                    Effect.catchTag("RelayClientInstallError", (error) =>
-                      Queue.fail(
-                        queue,
-                        new RelayClientInstallFailedError({
-                          reason: error.reason,
-                          message: error.message,
-                        }),
-                      ),
-                    ),
-                    Effect.andThen(Queue.end(queue)),
-                    Effect.forkScoped,
                   ),
-            ),
+                  Effect.andThen(Queue.end(queue)),
+                  Effect.forkScoped,
+                ),
+            }),
             { "rpc.aggregate": "cloud" },
           ),
         [WS_METHODS.pullRequestsList]: (input) =>
@@ -2184,8 +2547,11 @@ const makeWsRpcLayer = (
         [WS_METHODS.subscribeVcsStatus]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeVcsStatus,
-            vcsStatusBroadcaster.streamStatus(input, {
-              automaticRemoteRefreshInterval: automaticGitFetchInterval,
+            makeBoundedClosingStream({
+              name: "vcs.status",
+              source: vcsStatusBroadcaster.streamStatus(input, {
+                automaticRemoteRefreshInterval: automaticGitFetchInterval,
+              }),
             }),
             {
               "rpc.aggregate": "vcs",
@@ -2214,24 +2580,24 @@ const makeWsRpcLayer = (
         [WS_METHODS.gitRunStackedAction]: (input) =>
           observeRpcStream(
             WS_METHODS.gitRunStackedAction,
-            Stream.callback<GitActionProgressEvent, GitManagerServiceError>((queue) =>
-              gitWorkflow
-                .runStackedAction(input, {
-                  actionId: input.actionId,
-                  progressReporter: {
-                    publish: (event) => Queue.offer(queue, event).pipe(Effect.asVoid),
-                  },
-                })
-                .pipe(
-                  Effect.matchCauseEffect({
-                    onFailure: (cause) => Queue.failCause(queue, cause),
-                    onSuccess: () =>
-                      refreshGitStatus(input.cwd).pipe(
-                        Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
-                      ),
-                  }),
-                ),
-            ),
+            makeBoundedCallbackStream<GitActionProgressEvent, GitManagerServiceError, never>({
+              name: "git.stacked-action",
+              register: (offer, queue) =>
+                gitWorkflow
+                  .runStackedAction(input, {
+                    actionId: input.actionId,
+                    progressReporter: { publish: offer },
+                  })
+                  .pipe(
+                    Effect.matchCauseEffect({
+                      onFailure: (cause) => Queue.failCause(queue, cause),
+                      onSuccess: () =>
+                        refreshGitStatus(input.cwd).pipe(
+                          Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
+                        ),
+                    }),
+                  ),
+            }),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.gitResolvePullRequest]: (input) =>
@@ -2303,12 +2669,13 @@ const makeWsRpcLayer = (
         [WS_METHODS.terminalAttach]: (input) =>
           observeRpcStream(
             WS_METHODS.terminalAttach,
-            Stream.callback<TerminalAttachStreamEvent, TerminalError>((queue) =>
-              Effect.acquireRelease(
-                terminalManager.attachStream(input, (event) => Queue.offer(queue, event)),
-                (unsubscribe) => Effect.sync(unsubscribe),
-              ),
-            ),
+            makeBoundedCallbackStream<TerminalAttachStreamEvent, TerminalError, never>({
+              name: "terminal.attach",
+              register: (offer) =>
+                Effect.acquireRelease(terminalManager.attachStream(input, offer), (unsubscribe) =>
+                  Effect.sync(unsubscribe),
+                ),
+            }),
             { "rpc.aggregate": "terminal" },
           ),
         [WS_METHODS.terminalWrite]: (input) =>
@@ -2334,23 +2701,29 @@ const makeWsRpcLayer = (
         [WS_METHODS.subscribeTerminalEvents]: (_input) =>
           observeRpcStream(
             WS_METHODS.subscribeTerminalEvents,
-            Stream.callback<TerminalEvent>((queue) =>
-              Effect.acquireRelease(
-                terminalManager.subscribe((event) => Queue.offer(queue, event)),
-                (unsubscribe) => Effect.sync(unsubscribe),
-              ),
-            ),
+            makeBoundedCallbackStream<TerminalEvent, never, never>({
+              name: "terminal.events",
+              register: (offer) =>
+                Effect.acquireRelease(terminalManager.subscribe(offer), (unsubscribe) =>
+                  Effect.sync(unsubscribe),
+                ),
+            }),
             { "rpc.aggregate": "terminal" },
           ),
         [WS_METHODS.subscribeTerminalMetadata]: (_input) =>
           observeRpcStream(
             WS_METHODS.subscribeTerminalMetadata,
-            Stream.callback<TerminalMetadataStreamEvent>((queue) =>
-              Effect.acquireRelease(
-                terminalManager.subscribeMetadata((event) => Queue.offer(queue, event)),
-                (unsubscribe) => Effect.sync(unsubscribe),
-              ),
-            ),
+            makeBoundedCallbackStream<
+              TerminalMetadataStreamEvent,
+              TerminalSubscriptionOverflowError,
+              never
+            >({
+              name: "terminal.metadata",
+              register: (offer) =>
+                Effect.acquireRelease(terminalManager.subscribeMetadata(offer), (unsubscribe) =>
+                  Effect.sync(unsubscribe),
+                ),
+            }),
             { "rpc.aggregate": "terminal" },
           ),
         [WS_METHODS.previewOpen]: (input) =>
@@ -2384,7 +2757,13 @@ const makeWsRpcLayer = (
         [WS_METHODS.previewAutomationConnect]: (input) =>
           observeRpcStreamEffect(
             WS_METHODS.previewAutomationConnect,
-            previewAutomationBroker.connect(input),
+            previewAutomationBroker
+              .connect(input)
+              .pipe(
+                Effect.map((source) =>
+                  makeBoundedClosingStream({ name: "preview.automation", source }),
+                ),
+              ),
             { "rpc.aggregate": "preview-automation" },
           ),
         [WS_METHODS.previewAutomationRespond]: (input) =>
@@ -2400,37 +2779,47 @@ const makeWsRpcLayer = (
             { "rpc.aggregate": "preview-automation" },
           ),
         [WS_METHODS.subscribePreviewEvents]: (_input) =>
-          observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {
-            "rpc.aggregate": "preview",
-          }),
+          observeRpcStream(
+            WS_METHODS.subscribePreviewEvents,
+            Stream.unwrap(
+              makeBoundedEphemeralStream({
+                name: "preview.events",
+                source: previewManager.events,
+                isPriority: (event) => event.type === "closed" || event.type === "failed",
+              }),
+            ),
+            { "rpc.aggregate": "preview" },
+          ),
         [WS_METHODS.subscribeDiscoveredLocalServers]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeDiscoveredLocalServers,
-            Stream.callback<DiscoveredLocalServerList>((queue) =>
-              Effect.gen(function* () {
-                const configuredUrls = input.configuredUrls ?? [];
-                yield* portDiscovery.retain;
-                const initial = yield* portDiscovery.scan(configuredUrls);
-                const initialScannedAt = DateTime.formatIso(yield* DateTime.now);
-                yield* Queue.offer(queue, {
-                  servers: initial,
-                  scannedAt: initialScannedAt,
-                  configuredUrlProbing: true,
-                });
-                yield* portDiscovery.subscribe(
-                  { configuredUrls, initialSnapshot: initial },
-                  (servers) =>
-                    Effect.gen(function* () {
-                      const scannedAt = DateTime.formatIso(yield* DateTime.now);
-                      yield* Queue.offer(queue, {
-                        servers,
-                        scannedAt,
-                        configuredUrlProbing: true,
-                      });
-                    }),
-                );
-              }),
-            ),
+            makeBoundedCallbackStream<DiscoveredLocalServerList, never, never>({
+              name: "preview.discovery",
+              register: (offer) =>
+                Effect.gen(function* () {
+                  const configuredUrls = input.configuredUrls ?? [];
+                  yield* portDiscovery.retain;
+                  const initial = yield* portDiscovery.scan(configuredUrls);
+                  const initialScannedAt = DateTime.formatIso(yield* DateTime.now);
+                  yield* offer({
+                    servers: initial,
+                    scannedAt: initialScannedAt,
+                    configuredUrlProbing: true,
+                  });
+                  yield* portDiscovery.subscribe(
+                    { configuredUrls, initialSnapshot: initial },
+                    (servers) =>
+                      Effect.gen(function* () {
+                        const scannedAt = DateTime.formatIso(yield* DateTime.now);
+                        yield* offer({
+                          servers,
+                          scannedAt,
+                          configuredUrlProbing: true,
+                        });
+                      }),
+                  );
+                }),
+            }),
             { "rpc.aggregate": "preview" },
           ),
         [WS_METHODS.subscribeServerConfig]: (input) =>
@@ -2485,7 +2874,7 @@ const makeWsRpcLayer = (
                 .refresh()
                 .pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
 
-              const liveUpdates = Stream.merge(
+              const liveUpdates: Stream.Stream<ServerConfigStreamEvent> = Stream.merge(
                 keybindingsUpdates,
                 Stream.merge(
                   providerStatuses,
@@ -2493,14 +2882,21 @@ const makeWsRpcLayer = (
                 ),
               );
 
-              return Stream.concat(
-                Stream.make({
-                  version: 1 as const,
-                  type: "snapshot" as const,
-                  config: yield* loadServerConfig,
-                }),
-                liveUpdates,
-              );
+              const toSnapshot = (config: ServerConfigType): ServerConfigStreamEvent => ({
+                version: 1,
+                type: "snapshot",
+                config,
+              });
+              // Attach the bounded live tail before loading the initial config;
+              // otherwise a configuration update during that read has no replay
+              // cursor and would be silently lost.
+              const liveBuffer = yield* makeBoundedDurableLiveStream({
+                name: "server.config",
+                source: liveUpdates,
+                authoritativeSnapshot: loadServerConfig.pipe(Effect.map(toSnapshot)),
+              });
+              const snapshot = toSnapshot(yield* loadServerConfig);
+              return Stream.concat(Stream.make(snapshot), liveBuffer.stream);
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -2515,7 +2911,10 @@ const makeWsRpcLayer = (
               const liveEvents = lifecycleEvents.stream.pipe(
                 Stream.filter((event) => event.sequence > snapshot.sequence),
               );
-              return Stream.concat(Stream.fromIterable(snapshotEvents), liveEvents);
+              return makeBoundedClosingStream({
+                name: "server.lifecycle",
+                source: Stream.concat(Stream.fromIterable(snapshotEvents), liveEvents),
+              });
             }),
             { "rpc.aggregate": "server" },
           ),
@@ -2539,15 +2938,18 @@ const makeWsRpcLayer = (
                 ),
               );
 
-              return Stream.concat(
-                Stream.make({
-                  version: 1 as const,
-                  revision: 1,
-                  type: "snapshot" as const,
-                  payload: initialSnapshot,
-                }),
-                liveEvents,
-              );
+              return makeBoundedClosingStream({
+                name: "auth.access",
+                source: Stream.concat(
+                  Stream.make({
+                    version: 1 as const,
+                    revision: 1,
+                    type: "snapshot" as const,
+                    payload: initialSnapshot,
+                  }),
+                  liveEvents,
+                ),
+              });
             }),
             { "rpc.aggregate": "auth" },
           ),
@@ -2556,7 +2958,10 @@ const makeWsRpcLayer = (
             WS_METHODS.subscribeBackgroundPolicy,
             Stream.unwrap(
               Effect.map(backgroundPolicy.subscribe, ({ latest, changes }) =>
-                Stream.concat(Stream.make(latest), changes),
+                makeBoundedClosingStream({
+                  name: "server.background-policy",
+                  source: Stream.concat(Stream.make(latest), changes),
+                }),
               ),
             ),
             { "rpc.aggregate": "server" },
@@ -2566,7 +2971,10 @@ const makeWsRpcLayer = (
             WS_METHODS.subscribeResourceTelemetry,
             Stream.unwrap(
               Effect.map(resourceTelemetry.subscribe, ({ latest, changes }) =>
-                Stream.concat(Stream.make(latest), changes),
+                makeBoundedClosingStream({
+                  name: "server.resource-telemetry",
+                  source: Stream.concat(Stream.make(latest), changes),
+                }),
               ),
             ),
             { "rpc.aggregate": "server" },
@@ -2667,9 +3075,13 @@ export const websocketRpcRouteLayer = Layer.unwrap(
             ),
           ),
         );
+        const boundedRequest = withRequestWebSocketBackpressure(request);
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
-          () => rpcWebSocketHttpEffect,
+          () =>
+            rpcWebSocketHttpEffect.pipe(
+              Effect.provideService(HttpServerRequest.HttpServerRequest, boundedRequest),
+            ),
           () => sessions.markDisconnected(session.sessionId),
         );
       }).pipe(

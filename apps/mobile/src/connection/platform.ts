@@ -86,7 +86,25 @@ const connectivityLayer = Connectivity.layer({
   ),
 });
 
+const beforeHeartbeat = Effect.suspend(() =>
+  AppState.currentState === "active"
+    ? Effect.void
+    : Stream.callback<void>((queue) =>
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            const subscription = AppState.addEventListener("change", (state) => {
+              if (state === "active") Queue.offerUnsafe(queue, undefined);
+            });
+            if (AppState.currentState === "active") Queue.offerUnsafe(queue, undefined);
+            return subscription;
+          }),
+          (subscription) => Effect.sync(() => subscription.remove()),
+        ).pipe(Effect.asVoid),
+      ).pipe(Stream.runHead, Effect.asVoid),
+);
+
 const wakeupsLayer = Wakeups.layer({
+  beforeHeartbeat,
   changes: Stream.merge(
     Stream.callback<"application-active-probe" | "application-active-reconnect">((queue) =>
       Effect.acquireRelease(

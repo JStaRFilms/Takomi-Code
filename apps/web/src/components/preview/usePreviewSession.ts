@@ -10,6 +10,7 @@ import {
   applyPreviewServerEvent,
   readThreadPreviewState,
   reconcilePreviewServerSessions,
+  previewEventRequiresResnapshot,
 } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
 
@@ -48,8 +49,8 @@ const previewSessionSyncAtom = Atom.family((threadKey: string) => {
 
     const applyLatestEvent = (result: Atom.Type<typeof eventsAtom>) => {
       if (!AsyncResult.isSuccess(result) || result.value.threadId !== threadRef.threadId) return;
-      const currentEpoch = readThreadPreviewState(threadRef).serverEpoch;
-      if (currentEpoch !== null && currentEpoch !== result.value.serverEpoch) {
+      const current = readThreadPreviewState(threadRef);
+      if (previewEventRequiresResnapshot(current, result.value)) {
         get.refresh(sessionsAtom);
         return;
       }

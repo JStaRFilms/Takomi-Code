@@ -1,6 +1,7 @@
 import {
   EventId,
   MessageId,
+  OrchestrationGetSnapshotError,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
@@ -8,7 +9,10 @@ import {
 } from "@t3tools/contracts";
 import { it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect } from "vite-plus/test";
 
@@ -167,5 +171,130 @@ describe("ThreadLiveEventCoalescer", () => {
         ).toEqual([3, "synchronized"]);
       }),
     ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("replaces an overflowed subscriber tail instead of silently dropping it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const snapshots = yield* Effect.sync(() => ({ count: 0 }));
+        const coalescer = yield* makeThreadLiveEventCoalescer({
+          overflowSnapshot: Effect.sync(() => {
+            snapshots.count += 1;
+            return { kind: "event" as const, event: makeMessage(9_999) };
+          }),
+        });
+        for (let sequence = 1; sequence <= 257; sequence += 1) {
+          yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(sequence) });
+        }
+
+        const items = Array.from(yield* coalescer.takeAll);
+        expect(snapshots.count).toBe(1);
+        expect(items).toHaveLength(1);
+        expect(items[0]).toMatchObject({ kind: "event", event: { sequence: 9_999 } });
+      }),
+    ),
+  );
+
+  it.effect(
+    "emits snapshot then exactly one marker when synchronization overflows full output",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const replacement = { kind: "event" as const, event: makeMessage(9_999) };
+          const coalescer = yield* makeThreadLiveEventCoalescer({
+            overflowSnapshot: Effect.succeed(replacement),
+          });
+          for (let sequence = 1; sequence <= 256; sequence += 1) {
+            yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(sequence) });
+          }
+          yield* coalescer.offerAndWait({ kind: "synchronized" });
+
+          expect(Array.from(yield* coalescer.takeAll)).toEqual([
+            replacement,
+            { kind: "synchronized" },
+          ]);
+        }),
+      ),
+  );
+
+  it.effect("bounds ingress while output snapshot recovery is stalled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const snapshotStarted = yield* Deferred.make<void>();
+        const releaseSnapshot = yield* Deferred.make<void>();
+        const snapshotCount = yield* Ref.make(0);
+        const coalescer = yield* makeThreadLiveEventCoalescer({
+          overflowSnapshot: Deferred.succeed(snapshotStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseSnapshot)),
+            Effect.andThen(Ref.update(snapshotCount, (count) => count + 1)),
+            Effect.as({ kind: "event" as const, event: makeMessage(9_999) }),
+          ),
+        });
+        for (let sequence = 1; sequence <= 256; sequence += 1) {
+          yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(sequence) });
+        }
+        const outputOverflow = yield* coalescer
+          .offerAndWait({ kind: "event", event: makeMessage(257) })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(snapshotStarted);
+        for (let sequence = 258; sequence < 770; sequence += 1) {
+          yield* coalescer.offer({ kind: "event", event: makeMessage(sequence) });
+        }
+        const ingressOverflow = yield* coalescer
+          .offer({ kind: "event", event: makeMessage(770) })
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.succeed(releaseSnapshot, undefined);
+        yield* Fiber.join(outputOverflow);
+        yield* Fiber.join(ingressOverflow);
+
+        expect(yield* Ref.get(snapshotCount)).toBe(2);
+        expect(Array.from(yield* coalescer.takeAll)).toEqual([
+          { kind: "event", event: makeMessage(9_999) },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("terminates with a typed failure when overflow recovery cannot load a snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const expected = new OrchestrationGetSnapshotError({
+          message: "thread deleted during recovery",
+          cause: threadId,
+        });
+        const coalescer = yield* makeThreadLiveEventCoalescer({
+          overflowSnapshot: Effect.fail(expected),
+        });
+        for (let sequence = 1; sequence <= 257; sequence += 1) {
+          yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(sequence) });
+        }
+        // Once terminal recovery fails, later synchronization markers settle
+        // immediately instead of waiting on a detached input worker.
+        yield* coalescer.offerAndWait({ kind: "synchronized" });
+        expect(yield* Effect.flip(coalescer.takeAll)).toBe(expected);
+      }),
+    ),
+  );
+
+  it.effect("fails once when the authoritative overflow snapshot exceeds the byte budget", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const huge = makeMessage(9_999);
+        if (huge.type !== "thread.message-sent") return;
+        const oversized = {
+          ...huge,
+          payload: { ...huge.payload, text: "x".repeat(2 * 1024 * 1024) },
+        } satisfies OrchestrationEvent;
+        const coalescer = yield* makeThreadLiveEventCoalescer({
+          overflowSnapshot: Effect.succeed({ kind: "event", event: oversized }),
+        });
+        for (let sequence = 1; sequence <= 257; sequence += 1) {
+          yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(sequence) });
+        }
+        const error = yield* Effect.flip(coalescer.takeAll);
+        expect(error).toBeInstanceOf(OrchestrationGetSnapshotError);
+        expect(error.message).toContain("exceeds the live transport budget");
+      }),
+    ),
   );
 });

@@ -90,7 +90,27 @@ const connectivityLayer = Connectivity.layer({
   ),
 });
 
+const beforeHeartbeat = Effect.suspend(() =>
+  typeof document === "undefined" || document.visibilityState === "visible"
+    ? Effect.void
+    : Stream.callback<void>((queue) =>
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            const listener = () => {
+              if (document.visibilityState === "visible") Queue.offerUnsafe(queue, undefined);
+            };
+            document.addEventListener("visibilitychange", listener);
+            listener();
+            return listener;
+          }),
+          (listener) =>
+            Effect.sync(() => document.removeEventListener("visibilitychange", listener)),
+        ).pipe(Effect.asVoid),
+      ).pipe(Stream.runHead, Effect.asVoid),
+);
+
 const wakeupsLayer = Wakeups.layer({
+  beforeHeartbeat,
   changes: Stream.merge(
     Stream.callback<"application-active">((queue) =>
       Effect.acquireRelease(

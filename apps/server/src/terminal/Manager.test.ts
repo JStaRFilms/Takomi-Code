@@ -1812,6 +1812,66 @@ it.layer(
     }),
   );
 
+  it.effect("fails attach snapshot recovery on one oversized buffered output", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ptyAdapter: new FakePtyAdapter("async"),
+      });
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      const error = yield* manager
+        .attachStream(openInput(), (event) =>
+          event.type === "snapshot"
+            ? Effect.sync(() =>
+                process.emitData("x".repeat(TerminalManager.TERMINAL_SNAPSHOT_RACE_BYTE_LIMIT)),
+              ).pipe(Effect.andThen(Effect.yieldNow))
+            : Effect.void,
+        )
+        .pipe(Effect.flip);
+
+      expect(error).toMatchObject({
+        _tag: "TerminalSubscriptionOverflowError",
+        stream: "attach",
+      });
+    }),
+  );
+
+  it.effect("fails metadata snapshot recovery on a bounded event burst", () =>
+    Effect.gen(function* () {
+      const { manager, ptyAdapter } = yield* createManager(5, {
+        ptyAdapter: new FakePtyAdapter("async"),
+      });
+      yield* manager.open(openInput());
+      const process = ptyAdapter.processes[0];
+      expect(process).toBeDefined();
+      if (!process) return;
+
+      const error = yield* manager
+        .subscribeMetadata((event) =>
+          event.type === "snapshot"
+            ? Effect.sync(() => {
+                for (
+                  let index = 0;
+                  index <= TerminalManager.TERMINAL_SNAPSHOT_RACE_ITEM_LIMIT;
+                  index += 1
+                ) {
+                  process.emitData(`${index}\n`);
+                }
+              }).pipe(Effect.andThen(Effect.yieldNow))
+            : Effect.void,
+        )
+        .pipe(Effect.flip);
+
+      expect(error).toMatchObject({
+        _tag: "TerminalSubscriptionOverflowError",
+        stream: "metadata",
+      });
+    }),
+  );
+
   it.effect("preserves queued PTY output ordering through exit callbacks", () =>
     Effect.gen(function* () {
       const { manager, ptyAdapter, getEvents } = yield* createManager(5, {

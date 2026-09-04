@@ -264,10 +264,13 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   };
 });
 
-const snapshot = (thread: OrchestrationThread): OrchestrationThreadStreamItem => ({
+const snapshot = (
+  thread: OrchestrationThread,
+  snapshotSequence = 1,
+): OrchestrationThreadStreamItem => ({
   kind: "snapshot",
   snapshot: {
-    snapshotSequence: 1,
+    snapshotSequence,
     thread,
   },
 });
@@ -628,6 +631,24 @@ describe("EnvironmentThreads", () => {
         (value) => value.status === "live" && Option.isSome(value.data),
       );
       expect(Option.getOrThrow(live.data).title).toBe("Caught-up title");
+    }),
+  );
+
+  it.effect("converges to an overflow replacement snapshot before becoming live", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: BASE_THREAD, completionMarker: true });
+      yield* Queue.offer(harness.inputs, titleUpdated("Invalid incremental tail", 8));
+      yield* Queue.offer(
+        harness.inputs,
+        snapshot({ ...ACTIVE_THREAD, title: "Authoritative title" }, 9),
+      );
+      yield* Queue.offer(harness.inputs, synchronized());
+
+      const live = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live" && Option.isSome(value.data),
+      );
+      expect(Option.getOrThrow(live.data).title).toBe("Authoritative title");
     }),
   );
 

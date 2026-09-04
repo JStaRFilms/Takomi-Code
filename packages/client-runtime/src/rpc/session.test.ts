@@ -32,6 +32,7 @@ import {
   type PreparedConnection,
 } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
+import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as RpcSession from "./session.ts";
 import { makeEnvironmentServerConfigState } from "../state/server.ts";
@@ -186,6 +187,7 @@ const LEGACY_SERVER_CONFIG = {
 
 const makeFactory = Effect.fn("TestRpcSessionFactory.make")(function* (
   options: RpcSession.RpcSessionOptions = {},
+  beforeHeartbeat?: Effect.Effect<void>,
 ) {
   const sockets: TestWebSocket[] = [];
   const constructorLayer = Layer.succeed(Socket.WebSocketConstructor, (url) => {
@@ -193,7 +195,14 @@ const makeFactory = Effect.fn("TestRpcSessionFactory.make")(function* (
     sockets.push(socket);
     return socket as unknown as globalThis.WebSocket;
   });
-  const layer = RpcSession.layerWithOptions(options).pipe(Layer.provide(constructorLayer));
+  const dependencies =
+    beforeHeartbeat === undefined
+      ? constructorLayer
+      : Layer.merge(
+          constructorLayer,
+          ConnectionWakeups.layer({ changes: Stream.never, beforeHeartbeat }),
+        );
+  const layer = RpcSession.layerWithOptions(options).pipe(Layer.provide(dependencies));
   const factory = yield* RpcSession.RpcSessionFactory.pipe(Effect.provide(layer));
   return { factory, sockets };
 });
@@ -315,11 +324,55 @@ describe("RpcSessionFactory", () => {
       expect(error).toMatchObject({
         reason: "transport",
         message: "Test environment disconnected.",
+        closeCode: 1012,
+        closeReason: "service restart",
       });
       expect(configStreamError).toMatchObject({ _tag: "RpcClientError" });
       yield* Effect.yieldNow;
       expect(sockets).toHaveLength(1);
     }),
+  );
+
+  it.effect("detects a visible half-open connection within twenty seconds", () =>
+    Effect.gen(function* () {
+      const { factory, sockets } = yield* makeFactory();
+      const session = yield* factory.connect(PREPARED);
+      const socket = yield* awaitSocket(sockets);
+      socket.open();
+      yield* completeInitialConfig(socket);
+      yield* session.ready;
+      const closed = yield* session.closed.pipe(Effect.flip, Effect.forkChild);
+
+      yield* TestClock.adjust("19 seconds");
+      expect(closed.pollUnsafe()).toBeUndefined();
+      yield* TestClock.adjust("1 second");
+      expect(yield* Fiber.join(closed)).toMatchObject({
+        _tag: "ConnectionTransientError",
+        reason: "transport",
+      });
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("suspends heartbeat timeout while backgrounded and resumes on activity", () =>
+    Effect.gen(function* () {
+      const active = yield* Deferred.make<void>();
+      const { factory, sockets } = yield* makeFactory({}, Deferred.await(active));
+      const session = yield* factory.connect(PREPARED);
+      const socket = yield* awaitSocket(sockets);
+      socket.open();
+      yield* completeInitialConfig(socket);
+      yield* session.ready;
+      const closed = yield* session.closed.pipe(Effect.flip, Effect.forkChild);
+
+      yield* TestClock.adjust("30 seconds");
+      expect(closed.pollUnsafe()).toBeUndefined();
+      expect(socket.sent.some((message) => message.includes('"_tag":"Ping"'))).toBe(false);
+
+      yield* Deferred.succeed(active, undefined);
+      yield* Effect.yieldNow;
+      expect(socket.sent.some((message) => message.includes('"_tag":"Ping"'))).toBe(true);
+      yield* Fiber.interrupt(closed);
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
   it.effect("closes the websocket when the session scope is released", () =>

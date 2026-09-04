@@ -3,8 +3,10 @@ import { RelayClientTracer } from "@t3tools/shared/relayTracing";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -122,6 +124,7 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
   );
   const prepareCount = yield* Ref.make(0);
   const sessionCount = yield* Ref.make(0);
+  const probeCount = yield* Ref.make(0);
   const releaseCount = yield* Ref.make(0);
   const wakeups = yield* SubscriptionRef.make<{
     readonly sequence: number;
@@ -166,7 +169,9 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
         initialConfig: Effect.die(new Error("Initial config is not used by supervisor tests.")),
         subscribeServerConfig: (input) => TEST_RPC_CLIENT.subscribeServerConfig(input),
         ready: options?.ready?.(attempt) ?? Effect.void,
-        probe: options?.probe?.(attempt) ?? Effect.void,
+        probe: Ref.update(probeCount, (count) => count + 1).pipe(
+          Effect.andThen(options?.probe?.(attempt) ?? Effect.void),
+        ),
         closed: Deferred.await(closed),
       } satisfies RpcSession.RpcSession),
       () => Ref.update(releaseCount, (count) => count + 1),
@@ -198,6 +203,7 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
     dependencies,
     prepareCount,
     sessionCount,
+    probeCount,
     releaseCount,
     setNetworkStatus: (status: NetworkStatus) => SubscriptionRef.set(networkStatus, status),
     wake: (reason: ConnectionWakeups.ConnectionWakeup) =>
@@ -419,7 +425,7 @@ describe("EnvironmentSupervisor", () => {
         supervisor.state,
         (state) => state.phase === "connecting" && state.stage === "synchronizing",
       );
-      yield* TestClock.adjust("14 seconds");
+      yield* TestClock.adjust("49 seconds");
       expect((yield* SubscriptionRef.get(supervisor.state)).stage).toBe("synchronizing");
 
       yield* TestClock.adjust("1 second");
@@ -430,7 +436,7 @@ describe("EnvironmentSupervisor", () => {
         lastFailure: {
           _tag: "ConnectionTransientError",
           reason: "timeout",
-          message: "Test environment did not respond during connection setup.",
+          message: "Test environment exceeded the 50 second connection safety ceiling.",
         },
       });
       expect(yield* Ref.get(harness.releaseCount)).toBe(1);
@@ -451,7 +457,7 @@ describe("EnvironmentSupervisor", () => {
         supervisor.state,
         (state) => state.phase === "connecting" && state.stage === "preparing",
       );
-      yield* TestClock.adjust("15 seconds");
+      yield* TestClock.adjust("50 seconds");
       const retrying = yield* eventuallyState(
         supervisor.state,
         (state) => state.phase === "backoff" && state.attempt === 1,
@@ -461,7 +467,7 @@ describe("EnvironmentSupervisor", () => {
         lastFailure: {
           _tag: "ConnectionTransientError",
           reason: "timeout",
-          message: "Test environment did not respond during connection setup.",
+          message: "Test environment exceeded the 50 second connection safety ceiling.",
         },
       });
     }).pipe(Effect.provide(TestClock.layer())),
@@ -672,7 +678,7 @@ describe("EnvironmentSupervisor", () => {
 
       expect(yield* Ref.get(harness.prepareCount)).toBe(1);
 
-      yield* TestClock.adjust("15 seconds");
+      yield* TestClock.adjust("50 seconds");
       const retrying = yield* eventuallyState(
         supervisor.state,
         (state) => state.phase === "backoff" && state.attempt === 1,
@@ -682,7 +688,7 @@ describe("EnvironmentSupervisor", () => {
         lastFailure: {
           _tag: "ConnectionTransientError",
           reason: "timeout",
-          message: "Test environment did not respond during connection setup.",
+          message: "Test environment exceeded the 50 second connection safety ceiling.",
         },
       });
       expect(yield* Ref.get(harness.prepareCount)).toBe(1);
@@ -924,6 +930,71 @@ describe("EnvironmentSupervisor", () => {
 
       expect(yield* Ref.get(harness.sessionCount)).toBe(2);
       expect(yield* Ref.get(harness.releaseCount)).toBe(1);
+    }),
+  );
+
+  it.effect("deduplicates concurrent foreground wakes into one probe generation", () =>
+    Effect.gen(function* () {
+      const releaseProbe = yield* Deferred.make<void>();
+      const probeStarted = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        probe: () =>
+          Deferred.succeed(probeStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseProbe)),
+          ),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("application-active");
+      yield* harness.wake("application-active");
+      yield* Deferred.await(probeStarted);
+      expect(yield* Ref.get(harness.probeCount)).toBe(1);
+      const wakeGeneration = supervisor.wakeGeneration;
+      if (wakeGeneration === undefined) {
+        return yield* Effect.die(new Error("Expected wake generation support."));
+      }
+      const generationAdvanced = yield* SubscriptionRef.changes(wakeGeneration).pipe(
+        Stream.filter((generation) => generation === 1),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* Deferred.succeed(releaseProbe, undefined);
+      yield* Fiber.join(generationAdvanced);
+      expect(yield* Ref.get(harness.probeCount)).toBe(1);
+      expect(yield* SubscriptionRef.get(wakeGeneration)).toBe(1);
+    }),
+  );
+
+  it.effect("limits foreground subscription restoration setup to eight workers", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+      const semaphore = supervisor.restorationSemaphore;
+      if (semaphore === undefined) {
+        return yield* Effect.die(new Error("Expected a restoration semaphore."));
+      }
+      const started = yield* Queue.unbounded<number>();
+      const release = yield* Deferred.make<void>();
+      yield* Effect.forEach(
+        Array.from({ length: 9 }, (_, index) => index),
+        (index) =>
+          semaphore
+            .withPermits(1)(
+              Queue.offer(started, index).pipe(Effect.andThen(Deferred.await(release))),
+            )
+            .pipe(Effect.forkChild),
+        { discard: true },
+      );
+
+      expect(yield* Queue.takeN(started, 8)).toHaveLength(8);
+      expect(yield* Queue.size(started)).toBe(0);
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Queue.take(started)).toBeGreaterThanOrEqual(0);
     }),
   );
 

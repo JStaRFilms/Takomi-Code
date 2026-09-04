@@ -188,7 +188,9 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
     Effect.gen(function* () {
       const supervisor = yield* EnvironmentSupervisor;
       const observer = yield* EnvironmentRpcSubscriptionObserver;
-      const sessionChanges = SubscriptionRef.changes(supervisor.session);
+      const sessionChanges = SubscriptionRef.changes(supervisor.session).pipe(
+        Stream.map((session) => ({ session, restoring: false })),
+      );
       const sessions =
         options?.resubscribe === undefined
           ? sessionChanges
@@ -196,11 +198,12 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
               sessionChanges,
               options.resubscribe.pipe(
                 Stream.mapEffect(() => SubscriptionRef.get(supervisor.session)),
+                Stream.map((session) => ({ session, restoring: true })),
               ),
             );
       return sessions.pipe(
-        Stream.switchMap(
-          Option.match({
+        Stream.switchMap(({ session: sessionOption, restoring }) =>
+          Option.match(sessionOption, {
             onNone: () => Stream.empty,
             onSome: (session) => {
               const method = (
@@ -213,11 +216,15 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
                 EnvironmentRpcStreamValue<TTag>,
                 EnvironmentRpcStreamFailure<TTag>
               >;
-              const subscribeToSession = (): Stream.Stream<
+              const subscribeToSession = (
+                isRestoration = restoring,
+                onEstablished: Effect.Effect<void> = Effect.void,
+                onUnestablished: Effect.Effect<void> = Effect.void,
+              ): Stream.Stream<
                 EnvironmentRpcStreamValue<TTag>,
                 EnvironmentRpcStreamFailure<TTag>
-              > =>
-                Stream.suspend(() =>
+              > => {
+                const establish = Stream.suspend(() =>
                   Stream.unwrap(
                     Effect.gen(function* () {
                       const input = yield* makeInput(session);
@@ -226,8 +233,15 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
                         method: tag,
                         input,
                       });
-                      return method(input).pipe(
+                      const attempt = method(input).pipe(
+                        Stream.onFirst(() => onUnestablished.pipe(Effect.andThen(onEstablished))),
                         Stream.ensuring(completeObservation),
+                        // This finalizer belongs to a single request attempt.
+                        // In particular, it runs before an expected failure
+                        // enters its same-session retry path below.
+                        Stream.ensuring(onUnestablished),
+                      );
+                      return attempt.pipe(
                         Stream.catchCause((cause) => {
                           const hasOnlyExpectedFailures =
                             cause.reasons.length > 0 &&
@@ -262,7 +276,9 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
                                   Effect.sleep(options.retryExpectedFailureAfter),
                                 ).pipe(Stream.drain),
                               ),
-                              Stream.concat(subscribeToSession()),
+                              Stream.concat(
+                                subscribeToSession(false, onEstablished, onUnestablished),
+                              ),
                             );
                           }
                           return Stream.failCause(cause);
@@ -271,6 +287,34 @@ export function subscribeDynamic<TTag extends EnvironmentSubscriptionRpcTag>(
                     }),
                   ),
                 );
+
+                const semaphore = supervisor.restorationSemaphore;
+                if (!isRestoration || semaphore === undefined) return establish;
+                return Stream.fromEffect(
+                  Effect.acquireRelease(
+                    semaphore.take(1).pipe(
+                      Effect.map(() => {
+                        let held = true;
+                        return Effect.suspend(() => {
+                          if (!held) return Effect.void;
+                          held = false;
+                          return semaphore.release(1).pipe(Effect.asVoid);
+                        });
+                      }),
+                    ),
+                    (release) => release,
+                  ),
+                ).pipe(
+                  Stream.flatMap((release) =>
+                    subscribeToSession(
+                      false,
+                      supervisor.reportSubscriptionRestored?.(tag) ?? Effect.void,
+                      release,
+                    ),
+                  ),
+                  Stream.scoped,
+                );
+              };
               return subscribeToSession();
             },
           }),

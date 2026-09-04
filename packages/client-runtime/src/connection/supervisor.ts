@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Tracer from "effect/Tracer";
@@ -31,10 +32,14 @@ import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
 
 const RETRY_DELAYS_MS = [3_000, 4_000, 8_000, 16_000] as const;
-const CONNECTION_ESTABLISHMENT_TIMEOUT = "15 seconds";
+// Individual driver stages have independent 15 second budgets. The extra five
+// seconds avoid racing a stage timeout at the exact sum while still bounding a
+// defective custom driver.
+const CONNECTION_ESTABLISHMENT_TIMEOUT = "50 seconds";
 const CONNECTION_PROBE_TIMEOUT = "15 seconds";
 const MOBILE_CONNECTION_PROBE_TIMEOUT = "3 seconds";
 const BACKOFF_RESET_AFTER_MS = 30_000;
+export const SUBSCRIPTION_RESTORATION_CONCURRENCY = 8;
 
 interface SupervisorIntent {
   readonly desired: boolean;
@@ -203,6 +208,11 @@ export class EnvironmentSupervisor extends Context.Service<
     readonly state: SubscriptionRef.SubscriptionRef<SupervisorConnectionState>;
     readonly session: SubscriptionRef.SubscriptionRef<Option.Option<RpcSession.RpcSession>>;
     readonly prepared: SubscriptionRef.SubscriptionRef<Option.Option<PreparedConnection>>;
+    /** Increments after one successful foreground probe for this environment. */
+    readonly wakeGeneration?: SubscriptionRef.SubscriptionRef<number>;
+    /** Bounds simultaneous snapshot/resubscription preparation after wakes. */
+    readonly restorationSemaphore?: Semaphore.Semaphore;
+    readonly reportSubscriptionRestored?: (method: string) => Effect.Effect<void>;
     readonly connect: Effect.Effect<void>;
     readonly disconnect: Effect.Effect<void>;
     readonly retryNow: Effect.Effect<void>;
@@ -231,7 +241,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     network: yield* connectivity.status,
   };
   const intent = yield* Ref.make(initialIntent);
-  const signals = yield* Queue.unbounded<SupervisorSignal>();
+  // Control signals are lossless but bounded. Producers suspend independently
+  // rather than allocating an unbounded wake/network backlog.
+  const signals = yield* Queue.bounded<SupervisorSignal>(64);
   const resetRetryState = yield* Ref.make(false);
   // Set when a foreground wake probe fails or times out: the user is actively
   // returning to the app on a dead transport, so the follow-up reconnect skips
@@ -246,6 +258,21 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   );
   const session = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(Option.none());
   const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(Option.none());
+  const wakeGeneration = yield* SubscriptionRef.make(0);
+  const restorationSemaphore = yield* Semaphore.make(SUBSCRIPTION_RESTORATION_CONCURRENCY);
+  const restoredSubscriptionCount = yield* Ref.make(0);
+  const reportSubscriptionRestored = Effect.fn("EnvironmentSupervisor.reportSubscriptionRestored")(
+    function* (method: string) {
+      const count = yield* Ref.updateAndGet(restoredSubscriptionCount, (current) => current + 1);
+      const generation = yield* SubscriptionRef.get(wakeGeneration);
+      yield* Effect.logDebug("foreground subscription restored", {
+        environmentId: target.environmentId,
+        wakeGeneration: generation,
+        restoredSubscriptionCount: count,
+        method,
+      });
+    },
+  );
 
   const clearLease = Effect.all(
     [SubscriptionRef.set(session, Option.none()), SubscriptionRef.set(prepared, Option.none())],
@@ -448,6 +475,19 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
               if (probeEvent._tag === "ProbeCompleted") {
                 if (Exit.isFailure(probeEvent.exit)) {
                   yield* Ref.set(wakeProbeFailed, true);
+                } else {
+                  // Shell and thread subscriptions consume this single
+                  // environment generation instead of each attaching their own
+                  // platform wake listener. A failed probe reconnects instead.
+                  const generation = yield* SubscriptionRef.updateAndGet(
+                    wakeGeneration,
+                    (current) => current + 1,
+                  );
+                  yield* Ref.set(restoredSubscriptionCount, 0);
+                  yield* Effect.logDebug("foreground connection probe succeeded", {
+                    environmentId: target.environmentId,
+                    wakeGeneration: generation,
+                  });
                 }
                 yield* probeEvent.exit;
                 break;
@@ -550,7 +590,8 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         failure: {
           error: new ConnectionTransientError({
             reason: "timeout",
-            detail: `${target.label} did not respond during connection setup.`,
+            detail: `${target.label} exceeded the 50 second connection safety ceiling.`,
+            elapsedMs: 50_000,
           }),
           attemptSpan: Option.none(),
         },
@@ -818,6 +859,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     state,
     session,
     prepared,
+    wakeGeneration,
+    restorationSemaphore,
+    reportSubscriptionRestored,
     connect,
     disconnect,
     retryNow,

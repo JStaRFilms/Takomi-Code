@@ -545,11 +545,16 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Effect.forkScoped,
   );
 
-  const foregroundResubscriptions = Option.match(wakeups, {
-    onNone: () => Stream.never,
-    onSome: (service) =>
-      service.changes.pipe(Stream.filter(ConnectionWakeups.shouldResubscribeAfterWakeup)),
-  });
+  // One successful supervisor probe advances one generation for every mounted
+  // thread. This avoids independent platform listeners and reconnect storms.
+  const foregroundResubscriptions =
+    supervisor.wakeGeneration === undefined
+      ? Option.match(wakeups, {
+          onNone: () => Stream.never,
+          onSome: (service) =>
+            service.changes.pipe(Stream.filter(ConnectionWakeups.shouldResubscribeAfterWakeup)),
+        })
+      : SubscriptionRef.changes(supervisor.wakeGeneration).pipe(Stream.drop(1));
 
   yield* setSynchronizing;
   yield* Effect.forkScoped(

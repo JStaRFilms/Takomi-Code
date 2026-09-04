@@ -47,7 +47,14 @@ The supervisor is the only retry owner.
 2. If the device is offline, the supervisor releases the active session and
    waits for a signal without consuming retry attempts or running a timer.
 3. When online, it asks the driver for one prepared connection and one RPC
-   session.
+   session. Preparation, RPC/WebSocket construction through socket-open
+   acknowledgement, and initial synchronization each have their own 15-second
+   deadline; the supervisor retains a 50-second safety ceiling with five seconds
+   of slack beyond the stage sum. Timeout diagnostics carry the stage and
+   elapsed duration, so preparation cannot consume the synchronization budget.
+   Each stage has its own `connection.stage.<stage>` span and unique duration
+   and outcome attributes; finalization records success, timeout, and other
+   failures without endpoint or payload data.
 4. Transient failures retry forever with exponential backoff capped at 16
    seconds (`RETRY_DELAYS_MS`). A connection stable for 30 seconds resets
    accumulated backoff.
@@ -79,7 +86,18 @@ Wakeup handling differs by phase, in [supervisor.ts][supervisor]:
   the existing session (`lease.session.probe`, with a shorter timeout for
   mobile's `application-active-probe`) rather than reconnecting; a healthy
   session survives foregrounding. `application-active-reconnect` skips the probe
-  and replaces the lease outright.
+  and replaces the lease outright. Socket-level ping/pong detects a visible
+  half-open transport in at most 20 seconds (three 5-second pings followed by
+  two missed windows); no application heartbeat runs while backgrounded.
+- A successful foreground probe increments one environment wake generation.
+  Shell and mounted thread subscriptions consume that generation, so one wake
+  performs one probe and one replacement at most per logical subscription.
+  Replacement setup is limited to eight concurrent subscriptions per
+  environment. A permit covers input preparation and actual stream
+  establishment, and is released on the first server item or by the stream
+  finalizer on failure/cancellation. Debug telemetry reports the generation,
+  method, and cumulative restored count only after establishment, without
+  request payloads.
 
 The UI derives `available`, `offline`, `connecting`, `reconnecting`,
 `connected`, and `error` from supervisor state plus explicit data-sync state.
@@ -110,6 +128,36 @@ Finite requests, durable subscriptions, and commands are separate APIs:
   no `failed` status. Thread status adds `deleted`.
 - Cached shell and thread projections are never allowed to overwrite newer live
   data during a fast reconnect.
+- Shell, thread, and server-config durable subscriptions have private
+  256-item / 2 MiB live-tail budgets. On overflow the server drops the
+  incomplete incremental tail and emits an authoritative snapshot. Shell also
+  emits its requested synchronization completion after that snapshot. If the
+  thread synchronization marker itself fills the tail, recovery emits the
+  authoritative snapshot followed by exactly one marker; the marker's bytes are
+  reserved as part of the replacement budget. Thread ingress is independently
+  limited to 512 items; deletion, snapshot failure, or an oversized replacement
+  snapshot terminates with the declared typed snapshot error rather than leaving
+  a detached worker waiting forever. Snapshot
+  sequence replacement makes clients converge at server head without affecting
+  fast subscribers.
+- Preview events are ephemeral rather than cursor-resumable. They use the same
+  per-subscriber item and byte limits. Excess intermediate updates may be
+  dropped, but `closed` and `failed` lifecycle events replace a full queue. A
+  revision gap causes the web consumer to request an authoritative list
+  snapshot. Overflow emits one bounded diagnostic without payload contents.
+- Every RPC response also passes through a per-WebSocket 4 MiB native output
+  budget at the writer boundary. Callback adapters (terminal, discovery, and
+  finite progress streams) additionally have 256-item / 2 MiB queues measured
+  with a capped UTF-8 JSON estimator and close only their owning client if that
+  earlier boundary overflows. Terminal attach and metadata snapshot-race tails
+  use the same limits and terminate with `TerminalSubscriptionOverflowError`
+  before output strings can accumulate. A slow client closes
+  with code 1013 before native or callback output can grow without bound. This
+  is the final bound for lifecycle, auth, VCS, resource, and automation streams
+  whose service-specific queues are not durable snapshot tails. Close
+  diagnostics contain only sizes, limits, code, reason, high-water bytes, and
+  last successful frame time; clients preserve close code/reason on their typed
+  transient error.
 - Domain atom factories route effects through the environment registry and
   resolve the current scoped service at execution time. Project and thread
   commands are Atom factories under `src/state`

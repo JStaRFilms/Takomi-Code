@@ -138,6 +138,7 @@ import {
   TerminalError,
   TerminalEvent,
   TerminalMetadataStreamEvent,
+  TerminalSubscriptionOverflowError,
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalRestartInput,
@@ -996,7 +997,7 @@ export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTermina
 export const WsSubscribeTerminalMetadataRpc = Rpc.make(WS_METHODS.subscribeTerminalMetadata, {
   payload: Schema.Struct({}),
   success: TerminalMetadataStreamEvent,
-  error: EnvironmentAuthorizationError,
+  error: Schema.Union([TerminalSubscriptionOverflowError, EnvironmentAuthorizationError]),
   stream: true,
 });
 

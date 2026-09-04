@@ -186,6 +186,16 @@ export function subscribeThreadPreviewState(
   });
 }
 
+export function previewEventRequiresResnapshot(
+  current: Pick<ThreadPreviewState, "serverEpoch" | "serverRevision">,
+  event: Pick<PreviewEvent, "serverEpoch" | "revision">,
+): boolean {
+  return (
+    (current.serverEpoch !== null && current.serverEpoch !== event.serverEpoch) ||
+    (current.serverEpoch === event.serverEpoch && event.revision > current.serverRevision + 1)
+  );
+}
+
 export function applyPreviewServerEvent(ref: ScopedThreadRef, event: PreviewEvent): void {
   updateThreadPreviewState(ref, (current) => {
     if (current.serverEpoch !== null && event.serverEpoch !== current.serverEpoch) return current;

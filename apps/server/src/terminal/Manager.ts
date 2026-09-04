@@ -17,6 +17,7 @@ import {
   TerminalNotRunningError,
   TerminalResizeError,
   TerminalSessionLookupError,
+  TerminalSubscriptionOverflowError,
   TerminalWriteError,
   type TerminalAttachInput,
   type TerminalAttachStreamEvent,
@@ -52,6 +53,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as ServerConfig from "../config.ts";
+import { boundedJsonBytes } from "../utils/boundedJsonBytes.ts";
 import {
   increment,
   terminalRestartsTotal,
@@ -71,6 +73,7 @@ export {
   TerminalNotRunningError,
   TerminalResizeError,
   TerminalSessionLookupError,
+  TerminalSubscriptionOverflowError,
   TerminalWriteError,
 };
 
@@ -81,6 +84,8 @@ const DEFAULT_PROCESS_KILL_GRACE_MS = 1_000;
 const DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS = 128;
 const DEFAULT_OPEN_COLS = 120;
 const DEFAULT_OPEN_ROWS = 30;
+export const TERMINAL_SNAPSHOT_RACE_ITEM_LIMIT = 256;
+export const TERMINAL_SNAPSHOT_RACE_BYTE_LIMIT = 2 * 1024 * 1024;
 const TERMINAL_ENV_BLOCKLIST = new Set(["PORT", "ELECTRON_RENDERER_PORT", "ELECTRON_RUN_AS_NODE"]);
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const MAX_TERMINAL_LABEL_LENGTH = 128;
@@ -193,7 +198,7 @@ export class TerminalManager extends Context.Service<
      */
     readonly subscribeMetadata: (
       listener: (event: TerminalMetadataStreamEvent) => Effect.Effect<void>,
-    ) => Effect.Effect<() => void>;
+    ) => Effect.Effect<() => void, TerminalSubscriptionOverflowError>;
   }
 >()("t3/terminal/Manager/TerminalManager") {}
 
@@ -2353,6 +2358,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
     return Effect.gen(function* () {
       const bufferedEvents: TerminalEvent[] = [];
+      let bufferedBytes = 0;
+      let bufferOverflowed = false;
       let deliverLive = false;
 
       unsubscribe = yield* subscribe((event) => {
@@ -2361,7 +2368,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         }
 
         if (!deliverLive) {
-          bufferedEvents.push(event);
+          const bytes = boundedJsonBytes(event, TERMINAL_SNAPSHOT_RACE_BYTE_LIMIT);
+          if (
+            bufferOverflowed ||
+            bufferedEvents.length >= TERMINAL_SNAPSHOT_RACE_ITEM_LIMIT ||
+            bufferedBytes + bytes > TERMINAL_SNAPSHOT_RACE_BYTE_LIMIT
+          ) {
+            bufferOverflowed = true;
+          } else {
+            bufferedEvents.push(event);
+            bufferedBytes += bytes;
+          }
           return Effect.void;
         }
 
@@ -2370,6 +2387,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       });
 
       const initialSnapshot = yield* openOrAttachForStream(input);
+      if (bufferOverflowed) {
+        return yield* new TerminalSubscriptionOverflowError({
+          stream: "attach",
+          itemLimit: TERMINAL_SNAPSHOT_RACE_ITEM_LIMIT,
+          byteLimit: TERMINAL_SNAPSHOT_RACE_BYTE_LIMIT,
+        });
+      }
 
       yield* listener({
         type: "snapshot",
@@ -2387,6 +2411,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         }
       }
 
+      if (bufferOverflowed) {
+        return yield* new TerminalSubscriptionOverflowError({
+          stream: "attach",
+          itemLimit: TERMINAL_SNAPSHOT_RACE_ITEM_LIMIT,
+          byteLimit: TERMINAL_SNAPSHOT_RACE_BYTE_LIMIT,
+        });
+      }
       deliverLive = true;
       return () => {
         unsubscribe?.();
@@ -2448,11 +2479,23 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
     return Effect.gen(function* () {
       const bufferedEvents: TerminalEvent[] = [];
+      let bufferedBytes = 0;
+      let bufferOverflowed = false;
       let deliverLive = false;
 
       unsubscribe = yield* subscribe((event) => {
         if (!deliverLive) {
-          bufferedEvents.push(event);
+          const bytes = boundedJsonBytes(event, TERMINAL_SNAPSHOT_RACE_BYTE_LIMIT);
+          if (
+            bufferOverflowed ||
+            bufferedEvents.length >= TERMINAL_SNAPSHOT_RACE_ITEM_LIMIT ||
+            bufferedBytes + bytes > TERMINAL_SNAPSHOT_RACE_BYTE_LIMIT
+          ) {
+            bufferOverflowed = true;
+          } else {
+            bufferedEvents.push(event);
+            bufferedBytes += bytes;
+          }
           return Effect.void;
         }
 
@@ -2460,6 +2503,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       });
 
       const terminals = yield* readAllTerminalMetadata();
+      if (bufferOverflowed) {
+        return yield* new TerminalSubscriptionOverflowError({
+          stream: "metadata",
+          itemLimit: TERMINAL_SNAPSHOT_RACE_ITEM_LIMIT,
+          byteLimit: TERMINAL_SNAPSHOT_RACE_BYTE_LIMIT,
+        });
+      }
       yield* listener({
         type: "snapshot",
         terminals,
@@ -2469,6 +2519,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         yield* offerMetadataEvent(listener, event);
       }
 
+      if (bufferOverflowed) {
+        return yield* new TerminalSubscriptionOverflowError({
+          stream: "metadata",
+          itemLimit: TERMINAL_SNAPSHOT_RACE_ITEM_LIMIT,
+          byteLimit: TERMINAL_SNAPSHOT_RACE_BYTE_LIMIT,
+        });
+      }
       deliverLive = true;
       return () => {
         unsubscribe?.();

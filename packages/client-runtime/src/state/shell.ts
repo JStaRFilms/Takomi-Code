@@ -178,11 +178,16 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     yield* Queue.offer(persistence, nextSnapshot);
   });
 
-  const foregroundResubscriptions = Option.match(wakeups, {
-    onNone: () => Stream.never,
-    onSome: (service) =>
-      service.changes.pipe(Stream.filter(ConnectionWakeups.shouldResubscribeAfterWakeup)),
-  });
+  // The supervisor emits this only after its one foreground probe succeeds.
+  // Falling back keeps lightweight test/migration supervisors compatible.
+  const foregroundResubscriptions =
+    supervisor.wakeGeneration === undefined
+      ? Option.match(wakeups, {
+          onNone: () => Stream.never,
+          onSome: (service) =>
+            service.changes.pipe(Stream.filter(ConnectionWakeups.shouldResubscribeAfterWakeup)),
+        })
+      : SubscriptionRef.changes(supervisor.wakeGeneration).pipe(Stream.drop(1));
 
   yield* setSynchronizing;
   yield* Effect.forkScoped(

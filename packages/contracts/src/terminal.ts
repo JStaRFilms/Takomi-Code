@@ -287,6 +287,19 @@ export class TerminalHistoryError extends Schema.TaggedErrorClass<TerminalHistor
   }
 }
 
+export class TerminalSubscriptionOverflowError extends Schema.TaggedErrorClass<TerminalSubscriptionOverflowError>()(
+  "TerminalSubscriptionOverflowError",
+  {
+    stream: Schema.Literals(["attach", "metadata"]),
+    itemLimit: Schema.Int,
+    byteLimit: Schema.Int,
+  },
+) {
+  override get message() {
+    return `Terminal ${this.stream} snapshot race exceeded its transport buffer`;
+  }
+}
+
 export class TerminalSessionLookupError extends Schema.TaggedErrorClass<TerminalSessionLookupError>()(
   "TerminalSessionLookupError",
   {
@@ -344,6 +357,7 @@ export class TerminalResizeError extends Schema.TaggedErrorClass<TerminalResizeE
 export const TerminalError = Schema.Union([
   TerminalCwdError,
   TerminalHistoryError,
+  TerminalSubscriptionOverflowError,
   TerminalSessionLookupError,
   TerminalNotRunningError,
   TerminalWriteError,

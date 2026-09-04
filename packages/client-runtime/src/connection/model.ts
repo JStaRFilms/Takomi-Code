@@ -57,6 +57,8 @@ export type ConnectionTargetKind = ConnectionTarget["_tag"];
 
 export type NetworkStatus = "unknown" | "offline" | "online";
 
+export type ConnectionAttemptStage = "preparing" | "opening" | "synchronizing";
+
 export const ConnectionTransientReason = Schema.Literals([
   "network",
   "timeout",
@@ -80,6 +82,10 @@ export class ConnectionTransientError extends Schema.TaggedErrorClass<Connection
   {
     reason: ConnectionTransientReason,
     detail: Schema.String,
+    stage: Schema.optionalKey(Schema.Literals(["preparing", "opening", "synchronizing"] as const)),
+    elapsedMs: Schema.optionalKey(Schema.Number),
+    closeCode: Schema.optionalKey(Schema.Number),
+    closeReason: Schema.optionalKey(Schema.String),
     traceId: Schema.optionalKey(Schema.String),
   },
 ) {
@@ -132,8 +138,6 @@ export type SupervisorConnectionPhase =
   | "backoff"
   | "connected"
   | "blocked";
-
-export type ConnectionAttemptStage = "preparing" | "opening" | "synchronizing";
 
 export interface SupervisorConnectionState {
   readonly desired: boolean;

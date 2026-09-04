@@ -13,6 +13,7 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
@@ -27,7 +28,13 @@ import {
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
-import { EnvironmentRpcRequestObserver, request, runStream, subscribe } from "./client.ts";
+import {
+  EnvironmentRpcRequestObserver,
+  request,
+  runStream,
+  subscribe,
+  subscribeDynamic,
+} from "./client.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -219,6 +226,196 @@ describe("environment RPC", () => {
       expect(subscriptions).toEqual(["first", "second"]);
       expect(yield* Ref.get(retryCount)).toBe(0);
     }),
+  );
+
+  it.effect("bounds dynamic wake restoration through first-item establishment", () =>
+    Effect.gen(function* () {
+      const subscriptionCount = 24;
+      const methodStarted = yield* Queue.unbounded<number>();
+      const restorationStarted = yield* Queue.unbounded<number>();
+      const restorationRelease = yield* Queue.unbounded<void>();
+      const restored = yield* Queue.unbounded<string>();
+      const active = yield* Ref.make(0);
+      const maxActive = yield* Ref.make(0);
+      let invocation = 0;
+      const client = {
+        [WS_METHODS.subscribeTerminalEvents]: () =>
+          Stream.suspend(() => {
+            invocation += 1;
+            const current = invocation;
+            const restorationOrdinal = current - subscriptionCount;
+            const source =
+              restorationOrdinal > 0 && (restorationOrdinal - 1) % 5 === 0
+                ? Stream.fail(
+                    new RpcClientError.RpcClientError({
+                      reason: new RpcClientError.RpcClientDefect({
+                        message: "request failed before its first item",
+                        cause: new Error("request failed"),
+                      }),
+                    }),
+                  )
+                : Stream.succeed({
+                    type: "closed" as const,
+                    threadId: "thread-1",
+                    terminalId: "default",
+                  });
+            return source.pipe(Stream.onStart(Queue.offer(methodStarted, current)));
+          }),
+      } as unknown as WsRpcProtocolClient;
+      const { activeSession, supervisor: baseSupervisor } = yield* makeHarness();
+      const wakeGeneration = yield* SubscriptionRef.make(0);
+      const restorationSemaphore = yield* Semaphore.make(
+        EnvironmentSupervisor.SUBSCRIPTION_RESTORATION_CONCURRENCY,
+      );
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        ...baseSupervisor,
+        restorationSemaphore,
+        reportSubscriptionRestored: (method) => Queue.offer(restored, method).pipe(Effect.asVoid),
+      });
+      const streams = Array.from({ length: subscriptionCount }, (_, id) => {
+        let initial = true;
+        return subscribeDynamic(
+          WS_METHODS.subscribeTerminalEvents,
+          () => {
+            if (initial) {
+              initial = false;
+              return Effect.succeed({});
+            }
+            return Ref.updateAndGet(active, (count) => count + 1).pipe(
+              Effect.tap((count) => Ref.update(maxActive, (maximum) => Math.max(maximum, count))),
+              Effect.andThen(Queue.offer(restorationStarted, id)),
+              Effect.andThen(Queue.take(restorationRelease)),
+              Effect.as({}),
+              Effect.ensuring(Ref.update(active, (count) => count - 1)),
+            );
+          },
+          { resubscribe: SubscriptionRef.changes(wakeGeneration).pipe(Stream.drop(1)) },
+        );
+      });
+      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+      const subscriptions = yield* Effect.forEach(streams, (stream) =>
+        stream.pipe(
+          Stream.runDrain,
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.forkChild,
+        ),
+      );
+
+      yield* Queue.takeN(methodStarted, subscriptionCount);
+      yield* SubscriptionRef.set(wakeGeneration, 1);
+      yield* Queue.takeN(
+        restorationStarted,
+        EnvironmentSupervisor.SUBSCRIPTION_RESTORATION_CONCURRENCY,
+      );
+      expect(yield* Ref.get(maxActive)).toBe(
+        EnvironmentSupervisor.SUBSCRIPTION_RESTORATION_CONCURRENCY,
+      );
+      yield* Queue.offerAll(
+        restorationRelease,
+        Array.from({ length: subscriptionCount }, () => undefined),
+      );
+      yield* Queue.takeN(
+        restorationStarted,
+        subscriptionCount - EnvironmentSupervisor.SUBSCRIPTION_RESTORATION_CONCURRENCY,
+      );
+      yield* Queue.takeN(methodStarted, subscriptionCount);
+      expect(yield* Queue.takeN(restored, 19)).toHaveLength(19);
+      expect(yield* Queue.size(restored)).toBe(0);
+      expect(yield* Ref.get(active)).toBe(0);
+      const availableAfterErrors = yield* restorationSemaphore.takeIfAvailable(
+        EnvironmentSupervisor.SUBSCRIPTION_RESTORATION_CONCURRENCY,
+      );
+      expect(availableAfterErrors).toBe(true);
+      if (availableAfterErrors) {
+        yield* restorationSemaphore.release(
+          EnvironmentSupervisor.SUBSCRIPTION_RESTORATION_CONCURRENCY,
+        );
+      }
+
+      yield* SubscriptionRef.set(wakeGeneration, 2);
+      yield* Queue.takeN(
+        restorationStarted,
+        EnvironmentSupervisor.SUBSCRIPTION_RESTORATION_CONCURRENCY,
+      );
+      yield* Effect.forEach(subscriptions, Fiber.interrupt, { discard: true });
+      expect(yield* Ref.get(active)).toBe(0);
+      const allPermitsAvailable = yield* restorationSemaphore.takeIfAvailable(
+        EnvironmentSupervisor.SUBSCRIPTION_RESTORATION_CONCURRENCY,
+      );
+      expect(allPermitsAvailable).toBe(true);
+      if (allPermitsAvailable) {
+        yield* restorationSemaphore.release(
+          EnvironmentSupervisor.SUBSCRIPTION_RESTORATION_CONCURRENCY,
+        );
+      }
+    }),
+  );
+
+  it.effect(
+    "releases a failed restoration attempt before retrying and reports only its successful retry",
+    () =>
+      Effect.gen(function* () {
+        const methodStarted = yield* Queue.unbounded<number>();
+        const expectedFailures = yield* Queue.unbounded<void>();
+        const restored = yield* Queue.unbounded<string>();
+        let invocation = 0;
+        const event = {
+          type: "closed" as const,
+          threadId: "thread-1",
+          terminalId: "default",
+        };
+        const client = {
+          [WS_METHODS.subscribeTerminalEvents]: () =>
+            Stream.suspend(() => {
+              invocation += 1;
+              const source =
+                invocation === 2
+                  ? Stream.fail(new Error("expected establishment failure"))
+                  : invocation === 3
+                    ? Stream.concat(Stream.succeed(event), Stream.never)
+                    : Stream.never;
+              return source.pipe(Stream.onStart(Queue.offer(methodStarted, invocation)));
+            }),
+        } as unknown as WsRpcProtocolClient;
+        const { activeSession, supervisor: baseSupervisor } = yield* makeHarness();
+        const wakeGeneration = yield* SubscriptionRef.make(0);
+        const restorationSemaphore = yield* Semaphore.make(1);
+        const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+          ...baseSupervisor,
+          restorationSemaphore,
+          reportSubscriptionRestored: (method) => Queue.offer(restored, method).pipe(Effect.asVoid),
+        });
+        const subscription = yield* subscribeDynamic(
+          WS_METHODS.subscribeTerminalEvents,
+          () => Effect.succeed({}),
+          {
+            onExpectedFailure: () => Queue.offer(expectedFailures, undefined).pipe(Effect.asVoid),
+            retryExpectedFailureAfter: "1 second",
+            resubscribe: SubscriptionRef.changes(wakeGeneration).pipe(Stream.drop(1)),
+          },
+        ).pipe(
+          Stream.runDrain,
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.forkChild,
+        );
+        yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+        expect(yield* Queue.take(methodStarted)).toBe(1);
+
+        yield* SubscriptionRef.set(wakeGeneration, 1);
+        expect(yield* Queue.take(methodStarted)).toBe(2);
+        yield* Queue.take(expectedFailures);
+        expect(yield* Queue.size(restored)).toBe(0);
+        expect(yield* restorationSemaphore.takeIfAvailable(1)).toBe(true);
+        yield* restorationSemaphore.release(1);
+
+        yield* TestClock.adjust("1 second");
+        expect(yield* Queue.take(methodStarted)).toBe(3);
+        expect(yield* Queue.take(restored)).toBe(WS_METHODS.subscribeTerminalEvents);
+        expect(yield* Queue.size(restored)).toBe(0);
+        expect(yield* restorationSemaphore.takeIfAvailable(1)).toBe(true);
+        yield* restorationSemaphore.release(1);
+        yield* Fiber.interrupt(subscription);
+      }).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("keeps durable subscriptions alive across a transport failure and new session", () =>
