@@ -1,0 +1,12 @@
+{
+  "name": "@t3tools/takomi-pi-host",
+  "private": true,
+  "bin": {
+    "takomi-pi-host": "./bin.mjs"
+  },
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "node --experimental-strip-types --test src/*.test.ts"
+  }
+}
