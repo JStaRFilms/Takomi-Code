@@ -13,7 +13,9 @@ import {
   dedupeProviderSkillsByName,
   getProviderSkillsForSlashMenu,
   isProviderSkillUserInvocable,
+  providerWorkspaceSnapshotRefreshDelay,
   resolveProviderSkillsForCwd,
+  resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -28,6 +30,13 @@ const WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS = 10_000;
 
 export function composerSelectionAtEnd(draftMessage: string): ComposerEditorSelection {
   return { start: draftMessage.length, end: draftMessage.length };
+}
+
+export function resolveComposerSlashCommands(
+  provider: ServerProvider | null,
+  cwd: string | null,
+): ServerProvider["slashCommands"] {
+  return provider ? resolveProviderSlashCommandsForCwd(provider, cwd) : [];
 }
 
 /** Shared autocomplete for thread composers and unsent new-task drafts. */
@@ -79,36 +88,47 @@ export function useComposerCommandMenu({
       selectedProviderStatus ? resolveProviderSkillsForCwd(selectedProviderStatus, projectCwd) : [],
     [projectCwd, selectedProviderStatus],
   );
-  const slashCommands = selectedProviderStatus?.slashCommands ?? [];
+  const slashCommands = resolveComposerSlashCommands(selectedProviderStatus, projectCwd);
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
   const selectedProviderInstanceId = selectedProviderStatus?.instanceId;
-  const hasWorkspaceSnapshot = Boolean(
-    projectCwd &&
-    selectedProviderStatus?.workspaceSnapshots?.some((snapshot) => snapshot.cwd === projectCwd),
-  );
   const workspaceRefreshKeyRef = useRef<string | null>(null);
   const workspaceRefreshRetryRef = useRef<{ key: string; notBefore: number } | null>(null);
-  const hadWorkspaceSnapshotRef = useRef(false);
+  const [workspaceRefreshGeneration, setWorkspaceRefreshGeneration] = useState(0);
   useEffect(() => {
-    if (hadWorkspaceSnapshotRef.current && !hasWorkspaceSnapshot) {
-      workspaceRefreshKeyRef.current = null;
-      workspaceRefreshRetryRef.current = null;
+    if (!environmentId || !projectCwd || !selectedProviderInstanceId || !selectedProviderStatus) {
+      return;
     }
-    hadWorkspaceSnapshotRef.current = hasWorkspaceSnapshot;
-  }, [hasWorkspaceSnapshot]);
-  useEffect(() => {
-    if (!environmentId || !projectCwd || !selectedProviderInstanceId) return;
     const key = `${environmentId}:${selectedProviderInstanceId}:${projectCwd}`;
-    if (workspaceRefreshKeyRef.current === key) return;
-    if (hasWorkspaceSnapshot) {
+    const refreshDelay = providerWorkspaceSnapshotRefreshDelay(
+      selectedProviderStatus,
+      projectCwd,
+      Date.now(),
+    );
+    if (refreshDelay === null) {
       workspaceRefreshKeyRef.current = key;
       workspaceRefreshRetryRef.current = null;
       return;
     }
+    if (refreshDelay > 0) {
+      workspaceRefreshKeyRef.current = key;
+      workspaceRefreshRetryRef.current = null;
+      const timer = setTimeout(() => {
+        if (workspaceRefreshKeyRef.current === key) workspaceRefreshKeyRef.current = null;
+        setWorkspaceRefreshGeneration((generation) => generation + 1);
+      }, refreshDelay);
+      return () => clearTimeout(timer);
+    }
+    if (workspaceRefreshKeyRef.current === key) return;
     const retry = workspaceRefreshRetryRef.current;
-    if (retry?.key === key && Date.now() < retry.notBefore) return;
+    if (retry?.key === key && Date.now() < retry.notBefore) {
+      const timer = setTimeout(() => {
+        workspaceRefreshKeyRef.current = null;
+        setWorkspaceRefreshGeneration((generation) => generation + 1);
+      }, retry.notBefore - Date.now());
+      return () => clearTimeout(timer);
+    }
     workspaceRefreshKeyRef.current = key;
     const retryLater = () => {
       if (workspaceRefreshKeyRef.current !== key) return;
@@ -117,27 +137,32 @@ export function useComposerCommandMenu({
         key,
         notBefore: Date.now() + WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS,
       };
+      setWorkspaceRefreshGeneration((generation) => generation + 1);
     };
     void refreshProviders({
       environmentId,
       input: { instanceId: selectedProviderInstanceId, cwd: projectCwd },
     }).then((result) => {
-      const refreshed =
-        result._tag === "Success" &&
-        result.value.providers
-          .find((provider) => provider.instanceId === selectedProviderInstanceId)
-          ?.workspaceSnapshots?.some((snapshot) => snapshot.cwd === projectCwd);
-      if (!refreshed && workspaceRefreshKeyRef.current === key) {
+      const refreshedProvider =
+        result._tag === "Success"
+          ? result.value.providers.find(
+              (provider) => provider.instanceId === selectedProviderInstanceId,
+            )
+          : undefined;
+      const refreshedDelay = refreshedProvider
+        ? providerWorkspaceSnapshotRefreshDelay(refreshedProvider, projectCwd, Date.now())
+        : 0;
+      if (refreshedDelay !== null && refreshedDelay === 0) {
         retryLater();
       }
     }, retryLater);
   }, [
-    draftMessage,
     environmentId,
-    hasWorkspaceSnapshot,
     projectCwd,
     refreshProviders,
     selectedProviderInstanceId,
+    selectedProviderStatus,
+    workspaceRefreshGeneration,
   ]);
 
   const trigger = useMemo(() => {

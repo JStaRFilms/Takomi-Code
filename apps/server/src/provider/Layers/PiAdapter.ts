@@ -24,6 +24,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -48,6 +49,7 @@ import {
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { PiJsonlDecoder, type PiJsonlFrame } from "./PiProtocolConformance.ts";
+import { expandPiSkillReferences, parsePiDiscoveredResources } from "./PiResources.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const PI_RESUME_VERSION = 1 as const;
@@ -183,6 +185,8 @@ interface PiSessionContext {
   readonly pendingUi: Map<RuntimeRequestId, PendingUiRequest>;
   readonly settledUi: Set<RuntimeRequestId>;
   readonly pendingRpc: Map<string, Deferred.Deferred<PiRpcMessage>>;
+  /** Skills accepted by this exact Pi process, for native `/skill:name` dispatch. */
+  skillNames: ReadonlySet<string> | undefined;
   readonly toolActivityByCallId: Map<
     string,
     ReadonlyArray<NonNullable<ToolPresentationEnvelope["activity"]>[number]>
@@ -2326,6 +2330,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         pendingUi: new Map(),
         settledUi: new Set(),
         pendingRpc: new Map(),
+        skillNames: undefined,
         toolActivityByCallId: new Map(),
         truncatedToolActivityCallIds: new Set(),
         takomiSubagentTaskTracker: createTakomiSubagentTaskTracker(),
@@ -2483,6 +2488,16 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             "Pi started but did not provide a persistent session file for resumption.",
         });
       }
+      const commandsResponse = yield* requestRpc(context, { type: "get_commands" }).pipe(
+        Effect.timeoutOption(Duration.seconds(15)),
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
+      );
+      if (commandsResponse?.success === true && isRecord(commandsResponse.data)) {
+        context.skillNames = new Set(
+          parsePiDiscoveredResources(commandsResponse.data).skills.map((skill) => skill.name),
+        );
+      }
       return context.session;
     });
 
@@ -2608,10 +2623,14 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         });
       }
 
+      const message =
+        context.skillNames === undefined || input.input === undefined
+          ? (input.input ?? "")
+          : expandPiSkillReferences(input.input, context.skillNames);
       yield* sendRpc(context, {
         id: `prompt-${yield* randomId}`,
         type: "prompt",
-        message: input.input ?? "",
+        message,
         ...(images.length > 0 ? { images } : {}),
         ...(existingTurn ? { streamingBehavior: "steer" } : {}),
       });

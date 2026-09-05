@@ -130,6 +130,14 @@ Suite mode also discovers globally installed Pi companion packages from Pi setti
 
 `Pi agent directory` sets `PI_CODING_AGENT_DIR`. Do not point it at the whole Takomi suite unless that directory is intentionally structured as a Pi agent home.
 
+## Commands, prompts, and skills
+
+The web and mobile command menus use Pi's `get_commands` response for the selected project. Extension commands, prompt templates, and skills are shown in Pi's first-wins order. Pi terminal-only built-ins are not shown because they cannot be invoked through RPC.
+
+Project resources follow Pi's project-trust decision. Explicit `--approve` and `--no-approve` launch arguments take precedence. In non-interactive RPC mode, the default `ask` behavior cannot display Pi's own trust prompt, so protected resources may remain unavailable until Pi has a saved decision or another supported trust policy applies. Extensions can also decide trust; when that effective result is not observable, Takomi Code reports the trust information as partial rather than claiming an approval or rejection.
+
+Resource snapshots are isolated by environment, provider instance, and exact project path. Pi advertises and refreshes them after five minutes and after provider settings change. Failed Pi discovery removes stale project resources and retries instead of falling back to resources discovered for the server or another project.
+
 ## Runtime constraints
 
 Only T3's `full-access` runtime mode is accepted. `approval-required` and `auto-accept-edits` are rejected because T3 does not yet enforce permissions around every Pi tool invocation.
@@ -161,7 +169,6 @@ Automatic discovery/import of independently created terminal Pi sessions into Ta
 - terminal-to-T3 Pi session import is not supported
 - unknown extension UI methods are ignored
 - richer question metadata is reduced to T3's current canonical shape
-- Pi/Takomi slash-command discovery is not integrated into the command menu
 - Takomi runtime assets are not bundled into the desktop installer; global installation or a suite root is still required
 
 ## Verification history

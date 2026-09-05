@@ -118,6 +118,7 @@ function handle(record) {
       }
       break;
     case "get_commands":
+      if (process.env.T3_PI_DISCOVERY_HANG === "1") break;
       if (process.env.T3_PI_CONFORMANCE_OUT_OF_ORDER === "1") {
         commandsRequest = record;
         respondOutOfOrder();

@@ -6,6 +6,8 @@ import {
   formatProviderSkillDisplayName,
   getProviderSlashCommandsForSlashMenu,
   getProviderSkillsForSlashMenu,
+  providerWorkspaceSnapshotRefreshDelay,
+  PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
   resolveProviderSkillSourceKind,
@@ -250,5 +252,42 @@ describe("workspace provider snapshots", () => {
   it("keeps the machine snapshot before this cwd has a provider snapshot", () => {
     expect(resolveProviderSkillsForCwd(provider, "/workspace/project-b")).toEqual(provider.skills);
     expect(resolveProviderSlashCommandsForCwd(provider, null)).toEqual(provider.slashCommands);
+  });
+
+  it("invalidates cached workspace resources at the shared TTL only when advertised", () => {
+    const checkedAtMs = Date.parse("2026-01-01T00:01:00.000Z");
+    const freshnessProvider = {
+      ...provider,
+      instanceId: ProviderInstanceId.make("pi"),
+      driver: ProviderDriverKind.make("pi"),
+      capabilities: { workspaceSnapshotFreshness: true },
+    } satisfies ServerProvider;
+    expect(
+      providerWorkspaceSnapshotRefreshDelay(freshnessProvider, "/workspace/project-a", checkedAtMs),
+    ).toBe(PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS);
+    expect(
+      providerWorkspaceSnapshotRefreshDelay(
+        freshnessProvider,
+        "/workspace/project-a",
+        checkedAtMs + PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
+      ),
+    ).toBe(0);
+    expect(
+      providerWorkspaceSnapshotRefreshDelay(freshnessProvider, "/workspace/project-b", checkedAtMs),
+    ).toBe(0);
+  });
+
+  it("does not schedule retry loops for a mounted non-Pi provider without freshness support", () => {
+    const checkedAtMs = Date.parse("2026-01-01T00:01:00.000Z");
+    expect(
+      providerWorkspaceSnapshotRefreshDelay(
+        provider,
+        "/workspace/project-a",
+        checkedAtMs + PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
+      ),
+    ).toBeNull();
+    expect(
+      providerWorkspaceSnapshotRefreshDelay(provider, "/workspace/project-a", checkedAtMs),
+    ).toBeNull();
   });
 });

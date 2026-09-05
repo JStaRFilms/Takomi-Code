@@ -980,8 +980,9 @@ describe("Pi adapter process-path JSONL decoding", () => {
           yield* adapter.sendTurn({ threadId, input: "Native logging", attachments: [] });
           yield* waitFor((event) => event.type === "turn.completed");
           yield* adapter.stopSession(threadId);
-          // get_state + prompt responses plus every one of the 32 synthetic native events.
-          expect(nativeRecords).toHaveLength(34);
+          // get_state, get_commands, and prompt responses plus every one of
+          // the 32 synthetic native events.
+          expect(nativeRecords).toHaveLength(35);
           const openedIds = events
             .filter(
               (event) => event.type === "request.opened" || event.type === "user-input.requested",

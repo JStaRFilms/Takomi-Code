@@ -337,6 +337,7 @@ import {
   formatProviderSkillDisplayName,
   getProviderSlashCommandsForSlashMenu,
   getProviderSkillsForSlashMenu,
+  providerWorkspaceSnapshotRefreshDelay,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
 } from "@t3tools/client-runtime/providerSkills";
@@ -1133,32 +1134,38 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   });
   const workspaceRefreshKeyRef = useRef<string | null>(null);
   const workspaceRefreshRetryRef = useRef<{ key: string; notBefore: number } | null>(null);
-  const hadWorkspaceSnapshotRef = useRef(false);
+  const [workspaceRefreshGeneration, setWorkspaceRefreshGeneration] = useState(0);
   useEffect(() => {
-    const hasWorkspaceSnapshot = Boolean(
-      gitCwd &&
-      selectedProviderStatus?.workspaceSnapshots?.some((snapshot) => snapshot.cwd === gitCwd),
-    );
-    if (hadWorkspaceSnapshotRef.current && !hasWorkspaceSnapshot) {
-      workspaceRefreshKeyRef.current = null;
-      workspaceRefreshRetryRef.current = null;
-    }
-    hadWorkspaceSnapshotRef.current = hasWorkspaceSnapshot;
-  }, [gitCwd, selectedProviderStatus]);
-  useEffect(() => {
-    if (!gitCwd || !selectedProviderEntry) return;
+    if (!gitCwd || !selectedProviderEntry || !selectedProviderStatus) return;
     const key = `${environmentId}:${selectedProviderEntry.instanceId}:${gitCwd}`;
-    const hasWorkspaceSnapshot = selectedProviderStatus?.workspaceSnapshots?.some(
-      (snapshot) => snapshot.cwd === gitCwd,
+    const refreshDelay = providerWorkspaceSnapshotRefreshDelay(
+      selectedProviderStatus,
+      gitCwd,
+      Date.now(),
     );
-    if (workspaceRefreshKeyRef.current === key) return;
-    if (hasWorkspaceSnapshot) {
+    if (refreshDelay === null) {
       workspaceRefreshKeyRef.current = key;
       workspaceRefreshRetryRef.current = null;
       return;
     }
+    if (refreshDelay > 0) {
+      workspaceRefreshKeyRef.current = key;
+      workspaceRefreshRetryRef.current = null;
+      const timer = window.setTimeout(() => {
+        if (workspaceRefreshKeyRef.current === key) workspaceRefreshKeyRef.current = null;
+        setWorkspaceRefreshGeneration((generation) => generation + 1);
+      }, refreshDelay);
+      return () => window.clearTimeout(timer);
+    }
+    if (workspaceRefreshKeyRef.current === key) return;
     const retry = workspaceRefreshRetryRef.current;
-    if (retry?.key === key && Date.now() < retry.notBefore) return;
+    if (retry?.key === key && Date.now() < retry.notBefore) {
+      const timer = window.setTimeout(() => {
+        workspaceRefreshKeyRef.current = null;
+        setWorkspaceRefreshGeneration((generation) => generation + 1);
+      }, retry.notBefore - Date.now());
+      return () => window.clearTimeout(timer);
+    }
     workspaceRefreshKeyRef.current = key;
     const retryLater = () => {
       if (workspaceRefreshKeyRef.current !== key) return;
@@ -1167,21 +1174,33 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         key,
         notBefore: Date.now() + WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS,
       };
+      setWorkspaceRefreshGeneration((generation) => generation + 1);
     };
     void refreshProviders({
       environmentId,
       input: { instanceId: selectedProviderEntry.instanceId, cwd: gitCwd },
     }).then((result) => {
-      const hasWorkspaceSnapshot =
-        result._tag === "Success" &&
-        result.value.providers
-          .find((provider) => provider.instanceId === selectedProviderEntry.instanceId)
-          ?.workspaceSnapshots?.some((snapshot) => snapshot.cwd === gitCwd);
-      if (!hasWorkspaceSnapshot && workspaceRefreshKeyRef.current === key) {
+      const refreshedProvider =
+        result._tag === "Success"
+          ? result.value.providers.find(
+              (provider) => provider.instanceId === selectedProviderEntry.instanceId,
+            )
+          : undefined;
+      const refreshedDelay = refreshedProvider
+        ? providerWorkspaceSnapshotRefreshDelay(refreshedProvider, gitCwd, Date.now())
+        : 0;
+      if (refreshedDelay !== null && refreshedDelay === 0) {
         retryLater();
       }
     }, retryLater);
-  }, [environmentId, gitCwd, prompt, refreshProviders, selectedProviderEntry]);
+  }, [
+    environmentId,
+    gitCwd,
+    refreshProviders,
+    selectedProviderEntry,
+    selectedProviderStatus,
+    workspaceRefreshGeneration,
+  ]);
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
     () => selectedProviderEntry?.models ?? [],
     [selectedProviderEntry],

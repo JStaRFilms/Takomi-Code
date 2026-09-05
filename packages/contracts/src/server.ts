@@ -94,6 +94,8 @@ export const ServerProviderCapabilities = Schema.Struct({
   ),
   commandDiscovery: Schema.optional(Schema.Literals(["available", "unavailable"])),
   skillDiscovery: Schema.optional(Schema.Literals(["available", "unavailable"])),
+  /** The provider actively refreshes cwd-scoped resource snapshots when stale. */
+  workspaceSnapshotFreshness: Schema.optional(Schema.Boolean),
   extensionInputMethods: Schema.optional(
     Schema.Array(Schema.Literals(["confirm", "select", "input", "editor"])),
   ),
@@ -125,10 +127,21 @@ export const ServerProviderSlashCommandInput = Schema.Struct({
 });
 export type ServerProviderSlashCommandInput = typeof ServerProviderSlashCommandInput.Type;
 
+export const ServerProviderSlashCommandSourceInfo = Schema.Struct({
+  /** Opaque environment-owned resource ID, never a client-readable host path. */
+  path: Schema.optional(TrimmedNonEmptyString),
+  source: Schema.optional(TrimmedNonEmptyString),
+  scope: Schema.optional(TrimmedNonEmptyString),
+  origin: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerProviderSlashCommandSourceInfo = typeof ServerProviderSlashCommandSourceInfo.Type;
+
 export const ServerProviderSlashCommand = Schema.Struct({
   name: TrimmedNonEmptyString,
   description: Schema.optional(TrimmedNonEmptyString),
   input: Schema.optional(ServerProviderSlashCommandInput),
+  /** Resource provenance reported by the provider without host-readable paths. */
+  sourceInfo: Schema.optional(ServerProviderSlashCommandSourceInfo),
 });
 export type ServerProviderSlashCommand = typeof ServerProviderSlashCommand.Type;
 

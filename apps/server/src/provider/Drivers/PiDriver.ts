@@ -11,6 +11,7 @@ import {
   type ServerProvider,
   TextGenerationError,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -24,7 +25,13 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makePiAdapter } from "../Layers/PiAdapter.ts";
-import { checkPiProviderStatus, makePendingPiProvider } from "../Layers/PiProvider.ts";
+import {
+  checkPiProviderStatus,
+  discoverPiResources,
+  makePendingPiProvider,
+  piResourceDiscoveryMessage,
+} from "../Layers/PiProvider.ts";
+import { piResourceFingerprint } from "../Layers/PiResources.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
@@ -51,6 +58,7 @@ const decodePiSettings = Schema.decodeSync(PiSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("pi");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
+export const PI_WORKSPACE_RESOURCE_TTL = Duration.minutes(5);
 
 const UPDATE = makeStaticProviderMaintenanceResolver(
   makeManualOnlyProviderMaintenanceCapabilities({
@@ -98,6 +106,8 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
     Effect.gen(function* () {
       const crypto = yield* Crypto.Crypto;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const serverConfig = yield* ServerConfig;
       const httpClient = yield* HttpClient.HttpClient;
       const serverSettings = yield* ServerSettingsService;
@@ -132,6 +142,8 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
       ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
       );
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
@@ -174,6 +186,76 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         generateThreadTitle: () => unsupportedTextGeneration("generateThreadTitle"),
       };
 
+      const resourceSettingsFingerprint = [
+        effectiveConfig.binaryPath,
+        effectiveConfig.homePath,
+        effectiveConfig.suiteRoot,
+        effectiveConfig.launchArgs,
+        effectiveConfig.customModels.join("\u001f"),
+        String(effectiveConfig.enabled),
+      ].join("\u001f");
+      const workspaceResources = new Map<
+        string,
+        { readonly fingerprint: string; readonly expiresAtMs: number }
+      >();
+      const snapshotForCwd = (cwd: string) =>
+        !effectiveConfig.enabled
+          ? snapshot.getSnapshot
+          : Effect.all({
+              machineSnapshot: snapshot.getSnapshot,
+              discovery: discoverPiResources(effectiveConfig, cwd, processEnv),
+              now: DateTime.now,
+            }).pipe(
+              Effect.map(({ machineSnapshot, discovery, now }) => {
+                const checkedAt = DateTime.formatIso(now);
+                if (discovery.status === "unavailable") {
+                  workspaceResources.delete(cwd);
+                  return {
+                    ...machineSnapshot,
+                    status: "error" as const,
+                    checkedAt,
+                    slashCommands: [],
+                    skills: [],
+                    capabilities: {
+                      ...machineSnapshot.capabilities,
+                      commandDiscovery: "unavailable" as const,
+                      skillDiscovery: "unavailable" as const,
+                    },
+                    message:
+                      discovery.reason === "deadline"
+                        ? "Pi command and skill discovery exceeded its deadline."
+                        : "Pi command and skill discovery failed.",
+                  };
+                }
+                const resources = discovery.resources;
+                workspaceResources.set(cwd, {
+                  fingerprint: piResourceFingerprint({
+                    settings: resourceSettingsFingerprint,
+                    resources,
+                  }),
+                  expiresAtMs:
+                    DateTime.toEpochMillis(now) + Duration.toMillis(PI_WORKSPACE_RESOURCE_TTL),
+                });
+                return {
+                  ...machineSnapshot,
+                  checkedAt,
+                  slashCommands: resources.slashCommands,
+                  skills: resources.skills,
+                  message: piResourceDiscoveryMessage(resources),
+                };
+              }),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            );
+      const isWorkspaceSnapshotCurrent = (cwd: string) =>
+        DateTime.now.pipe(
+          Effect.map((now) => {
+            const cached = workspaceResources.get(cwd);
+            return cached !== undefined && cached.expiresAtMs > DateTime.toEpochMillis(now);
+          }),
+        );
+
       return {
         instanceId,
         driverKind: DRIVER_KIND,
@@ -182,6 +264,8 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         accentColor,
         enabled,
         snapshot,
+        snapshotForCwd,
+        isWorkspaceSnapshotCurrent,
         adapter,
         textGeneration,
       } satisfies ProviderInstance;

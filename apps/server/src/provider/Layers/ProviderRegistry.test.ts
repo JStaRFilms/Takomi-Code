@@ -1051,6 +1051,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           } as const satisfies ServerProvider;
           const snapshotCalls = yield* Ref.make(0);
           const returnPendingSnapshot = yield* Ref.make(true);
+          const workspaceSnapshotCurrent = yield* Ref.make(true);
           const probeStarted = yield* Deferred.make<void>();
           const releaseProbe = yield* Deferred.make<void>();
           const makeInstance = (
@@ -1075,6 +1076,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               streamChanges: Stream.empty,
             },
             snapshotForCwd,
+            isWorkspaceSnapshotCurrent: () => Ref.get(workspaceSnapshotCurrent),
             adapter: {} as ProviderInstance["adapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
           });
@@ -1160,6 +1162,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             );
             yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
             assert.strictEqual(yield* Ref.get(snapshotCalls), 2);
+
+            // This Codex fixture has a stale checker but does not advertise
+            // workspace freshness. The registry must retain its snapshot and
+            // avoid turning an expired client timestamp into a retry loop.
+            yield* Ref.set(workspaceSnapshotCurrent, false);
+            yield* Ref.set(returnPendingSnapshot, true);
+            yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/workspace" });
+            assert.strictEqual(yield* Ref.get(snapshotCalls), 2);
+            assert.deepStrictEqual(
+              (yield* registry.getProviders)[0]?.workspaceSnapshots?.[0]?.skills,
+              scopedProvider.skills,
+            );
 
             yield* Ref.set(instancesRef, [rebuiltInstance]);
             yield* PubSub.publish(registryChanges, undefined);

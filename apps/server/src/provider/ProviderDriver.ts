@@ -71,6 +71,12 @@ export interface ProviderInstance {
   readonly enabled: boolean;
   readonly snapshot: ServerProviderShape;
   readonly snapshotForCwd?: (cwd: string) => Effect.Effect<ServerProvider, ProviderDriverError>;
+  /**
+   * Optional cheap freshness check for a cached workspace snapshot. Most
+   * providers keep snapshots until settings change; resource-backed providers
+   * can invalidate one after their host-side files change.
+   */
+  readonly isWorkspaceSnapshotCurrent?: (cwd: string) => Effect.Effect<boolean>;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
 }
