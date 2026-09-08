@@ -2113,10 +2113,14 @@ function WorkEntryRow({
   workEntry,
   workspaceRoot,
   isExpandedToolGroupEntry,
+  displayLabel,
+  onToggleEntry,
 }: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
   isExpandedToolGroupEntry: boolean;
+  displayLabel?: string | undefined;
+  onToggleEntry?: ((collapsed: boolean) => void) | undefined;
 }) {
   const { expandedTakomiToolCallIds, onToggleTakomiToolCall, onSelectTakomiToolCall } =
     use(TimelineRowCtx);
@@ -2136,6 +2140,8 @@ function WorkEntryRow({
       workEntry={workEntry}
       workspaceRoot={workspaceRoot}
       isExpandedToolGroupEntry={isExpandedToolGroupEntry}
+      displayLabel={displayLabel}
+      onToggleEntry={onToggleEntry}
     />
   );
 }

@@ -203,6 +203,7 @@ import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
+import { TakomiInspector } from "./chat/TakomiInspector";
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
@@ -232,7 +233,11 @@ import {
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
-import { getProviderModelCapabilities } from "../providerModels";
+import {
+  getProviderModelCapabilities,
+  getProviderRuntimeModes,
+  normalizeProviderRuntimeMode,
+} from "../providerModels";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -1818,7 +1823,8 @@ export default function ChatView(props: ChatViewProps) {
   // session.lastError. Bump a tick so the banner hides immediately. Mirrors
   // the branch mismatch banner.
   const [, setThreadErrorBannerDismissTick] = useState(0);
-  const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+  const requestedRuntimeMode =
+    composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const activeThreadId = activeThread?.id ?? null;
@@ -2597,6 +2603,10 @@ export default function ChatView(props: ChatViewProps) {
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
   const activeProviderStatus = selectedProviderEntry?.snapshot ?? null;
+  const runtimeMode = normalizeProviderRuntimeMode(
+    requestedRuntimeMode,
+    getProviderRuntimeModes(providerStatuses, activeProviderInstanceId ?? selectedProvider),
+  );
   const { enabled: interactionModeEnabled, interactionMode } = resolveComposerInteractionMode({
     planModeEnabled: settings.planModeEnabled,
     provider: activeProviderStatus,
@@ -8052,6 +8062,15 @@ export default function ChatView(props: ChatViewProps) {
         }
         composerDraftTarget={composerDraftTarget}
       />
+    ) : renderedRightPanelSurface?.kind === "takomi" ? (
+      <TakomiInspector
+        entries={workLogEntries}
+        selectedToolCallId={renderedRightPanelSurface.toolCallId}
+        sessionLive={agentSessionLive}
+        onSelectToolCallId={(toolCallId) => {
+          useRightPanelStore.getState().openTakomiInspector(activeThreadRef, toolCallId);
+        }}
+      />
     ) : renderedRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
         model={agentPanelModel}
@@ -8255,6 +8274,13 @@ export default function ChatView(props: ChatViewProps) {
                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
                 topFadeEnabled={!hasTimelineTopBanner}
                 loadEarlier={loadEarlierTurns}
+                onSelectTakomiToolCall={(entry) => {
+                  if (activeThreadRef) {
+                    useRightPanelStore
+                      .getState()
+                      .openTakomiInspector(activeThreadRef, entry.toolCallId ?? entry.id);
+                  }
+                }}
               />
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}

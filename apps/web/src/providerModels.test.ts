@@ -11,6 +11,7 @@ import {
   getProviderInteractionModeToggle,
   getProviderModelCapabilities,
   getProviderRuntimeModes,
+  normalizeProviderRuntimeMode,
 } from "./providerModels";
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
@@ -62,6 +63,7 @@ describe("provider capability controls", () => {
     expect(getProviderRuntimeModes([{ ...pi, capabilities: undefined }], pi.instanceId)).toContain(
       "approval-required",
     );
+    expect(normalizeProviderRuntimeMode("approval-required", ["full-access"])).toBe("full-access");
   });
 });
 

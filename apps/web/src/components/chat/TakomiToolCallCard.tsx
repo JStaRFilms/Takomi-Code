@@ -8,7 +8,9 @@ import {
   UsersIcon,
 } from "lucide-react";
 
-import { workEntryIndicatesToolFailure, type WorkLogEntry } from "../../session-logic";
+import { workEntryDisplayIndicatesToolFailure } from "@t3tools/client-runtime/work-log/presentation";
+
+import type { WorkLogEntry } from "../../session-logic";
 import { cn } from "~/lib/utils";
 
 const TOOL_DESCRIPTORS = {
@@ -60,7 +62,7 @@ export function TakomiToolCallCard(props: {
   if (!presentation) return null;
   const descriptor = descriptorFor(presentation.toolName, presentation.family);
   const failed =
-    workEntryIndicatesToolFailure(props.entry) || presentation.error?.severity === "error";
+    workEntryDisplayIndicatesToolFailure(props.entry) || presentation.error?.severity === "error";
   const status =
     presentation.error?.message ?? presentation.summary?.status ?? props.entry.toolLifecycleStatus;
   const count = presentation.summary?.total

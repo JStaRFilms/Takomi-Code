@@ -1255,6 +1255,16 @@ describe("resolveComposerInteractionMode", () => {
     ).toEqual({ enabled: false, interactionMode: "default" });
   });
 
+  it("resets Plan when advertised interaction modes exclude it", () => {
+    expect(
+      resolveComposerInteractionMode({
+        planModeEnabled: true,
+        provider: { capabilities: { interactionModes: ["default"] } },
+        interactionMode: "plan",
+      }),
+    ).toEqual({ enabled: false, interactionMode: "default" });
+  });
+
   it("keeps legacy plan behavior for providers that omit the capability", () => {
     expect(
       resolveComposerInteractionMode({

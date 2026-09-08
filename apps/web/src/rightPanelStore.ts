@@ -27,6 +27,7 @@ const RIGHT_PANEL_KINDS = [
   "terminal",
   "pull-request",
   "agents",
+  "takomi",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -72,13 +73,16 @@ export type RightPanelSurface =
       number: number;
       url?: string;
     }
-  | { id: "agents"; kind: "agents" };
+  | { id: "agents"; kind: "agents" }
+  /** Takomi-specific inspector selection; the generic panel only owns its tab state. */
+  | { id: "takomi"; kind: "takomi"; toolCallId: string | null };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 // v9 removed the "plan" surface kind (plans render inline in the transcript).
 // v10 keys pull-request surfaces by reference instead of a singleton tab.
 // v11 stops persisting the pull-request list's shared panel, so a restart opens the page fresh.
-const RIGHT_PANEL_STORAGE_VERSION = 11;
+// v12 restores persisted Takomi inspector tabs under the surface workspace model.
+const RIGHT_PANEL_STORAGE_VERSION = 12;
 
 /** A fixed workspace-level ref: each PR surface carries its own real environment. */
 export const PULL_REQUESTS_PANEL_REF = scopeThreadRef(
@@ -114,7 +118,7 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "takomi">,
   ) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
   openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
@@ -130,6 +134,8 @@ interface RightPanelStoreState {
     },
   ) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
+  /** Takomi is opened only from its timeline cards, never from the generic surface launcher. */
+  openTakomiInspector: (ref: ScopedThreadRef, toolCallId: string | null) => void;
   splitTerminal: (
     ref: ScopedThreadRef,
     surfaceId: string,
@@ -150,7 +156,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "takomi">,
   ) => void;
   removeThread: (ref: ScopedThreadRef) => void;
 }
@@ -162,7 +168,7 @@ const EMPTY_THREAD_STATE: ThreadRightPanelState = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request">,
+  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "takomi">,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -520,6 +526,16 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
           userAction(state, scopedThreadKey(ref), (current) =>
             upsertSurface(current, terminalSurface(terminalId)),
           ),
+        ),
+      openTakomiInspector: (ref, toolCallId) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => {
+            const surface: RightPanelSurface = { id: "takomi", kind: "takomi", toolCallId };
+            const surfaces = current.surfaces.some((entry) => entry.id === surface.id)
+              ? current.surfaces.map((entry) => (entry.id === surface.id ? surface : entry))
+              : [...current.surfaces, surface];
+            return { isOpen: true, activeSurfaceId: surface.id, surfaces };
+          }),
         ),
       splitTerminal: (ref, surfaceId, terminalId, direction = "horizontal") =>
         set((state) =>

@@ -458,13 +458,15 @@ export function resolveComposerProviderSelection(input: {
 /** Keep restored drafts and every plan control on the selected instance's supported mode. */
 export function resolveComposerInteractionMode(input: {
   planModeEnabled: boolean;
-  provider: Pick<ServerProvider, "showInteractionModeToggle"> | null | undefined;
+  provider: Pick<ServerProvider, "showInteractionModeToggle" | "capabilities"> | null | undefined;
   interactionMode: ProviderInteractionMode;
 }): { enabled: boolean; interactionMode: ProviderInteractionMode } {
   const enabled =
     input.planModeEnabled &&
     input.provider != null &&
-    input.provider.showInteractionModeToggle !== false;
+    (input.provider.capabilities
+      ? input.provider.capabilities.interactionModes?.includes("plan") === true
+      : input.provider.showInteractionModeToggle !== false);
   return {
     enabled,
     interactionMode: enabled ? input.interactionMode : "default",

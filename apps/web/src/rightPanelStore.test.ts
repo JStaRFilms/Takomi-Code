@@ -318,6 +318,43 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("opens and selects the Takomi inspector as a user panel action", () => {
+    const store = useRightPanelStore.getState();
+    const revision = store.getUserActionRevision(refA);
+
+    store.openTakomiInspector(refA, "tool-call-1");
+    store.openTakomiInspector(refA, "tool-call-2");
+
+    expect(store.getUserActionRevision(refA)).toBe(revision + 2);
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "takomi",
+      surfaces: [{ id: "takomi", kind: "takomi", toolCallId: "tool-call-2" }],
+    });
+  });
+
+  it("restores a persisted Takomi inspector selection", () => {
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: {
+          "env-1:thread-A": {
+            isOpen: true,
+            activeSurfaceId: "takomi",
+            surfaces: [{ id: "takomi", kind: "takomi", toolCallId: "tool-call-1" }],
+          },
+        },
+      }),
+    ).toEqual({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "takomi",
+          surfaces: [{ id: "takomi", kind: "takomi", toolCallId: "tool-call-1" }],
+        },
+      },
+    });
+  });
+
   it("open sets the active panel for a thread", () => {
     useRightPanelStore.getState().open(refA, "preview");
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("preview");

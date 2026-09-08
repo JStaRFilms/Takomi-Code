@@ -62,6 +62,14 @@ export function getProviderRuntimeModes(
   return snapshot?.capabilities ? (snapshot.capabilities.runtimeModes ?? []) : runtimeModeFallback;
 }
 
+/** A persisted draft must not claim a mode its selected provider cannot run. */
+export function normalizeProviderRuntimeMode(
+  runtimeMode: RuntimeMode,
+  supportedModes: ReadonlyArray<RuntimeMode>,
+): RuntimeMode {
+  return supportedModes.includes(runtimeMode) ? runtimeMode : (supportedModes[0] ?? runtimeMode);
+}
+
 const runtimeModeFallback: ReadonlyArray<RuntimeMode> = [
   "approval-required",
   "auto-accept-edits",
