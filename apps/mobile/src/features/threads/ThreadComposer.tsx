@@ -505,6 +505,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       onUpdateOptionSelections: (options) =>
         props.onUpdateModelSelection({ ...currentModelSelection, options }),
       runtimeMode: currentRuntimeMode,
+      runtimeModes,
       onUpdateRuntimeMode: props.onUpdateRuntimeMode,
     }),
     [
@@ -512,6 +513,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       currentRuntimeMode,
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
+      runtimeModes,
       providerOptionDescriptors,
       settingsOwnerId,
       threadProviderGroups,

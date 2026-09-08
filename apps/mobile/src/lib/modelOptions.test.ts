@@ -16,23 +16,26 @@ import {
 } from "./modelOptions";
 
 describe("mobile model options", () => {
-  it("uses provider capability descriptors to gate Pi runtime and Plan controls", () => {
-    const config = {
-      providers: [
-        {
-          instanceId: "pi",
-          capabilities: {
-            runtimeModes: ["full-access"],
-            interactionModes: ["default"],
+  it.each(["existing-thread settings", "new-task settings"])(
+    "uses provider capability descriptors to gate Pi runtime and Plan controls for %s",
+    (_flow) => {
+      const config = {
+        providers: [
+          {
+            instanceId: "pi",
+            capabilities: {
+              runtimeModes: ["full-access"],
+              interactionModes: ["default"],
+            },
           },
-        },
-      ],
-    } as unknown as ServerConfig;
+        ],
+      } as unknown as ServerConfig;
 
-    expect(providerRuntimeModes(config, "pi")).toEqual(["full-access"]);
-    expect(providerSupportsPlanMode(config, "pi")).toBe(false);
-    expect(providerRuntimeModes(null, "pi")).toContain("approval-required");
-  });
+      expect(providerRuntimeModes(config, "pi")).toEqual(["full-access"]);
+      expect(providerSupportsPlanMode(config, "pi")).toBe(false);
+      expect(providerRuntimeModes(null, "pi")).toContain("approval-required");
+    },
+  );
 
   it.each(["online new task", "offline queued creation", "existing-thread provider switch"])(
     "normalizes stale modes for Pi at the %s dispatch boundary",
