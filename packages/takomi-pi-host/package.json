@@ -9,7 +9,7 @@
     "./sessionCatalog": "./src/sessionCatalog.ts"
   },
   "scripts": {
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test src/*.test.ts"
   }
 }
