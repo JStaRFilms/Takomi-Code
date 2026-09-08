@@ -93,11 +93,11 @@ Do not run repository-wide checks by default.
 Typical package checks:
 
 ```bash
-pnpm --filter @t3tools/web typecheck
-pnpm --filter t3 typecheck
-pnpm --filter @t3tools/desktop typecheck
-pnpm --filter @t3tools/mobile typecheck
-pnpm exec vp test run <focused-test-files>
+vp run --filter @t3tools/web typecheck
+vp run --filter t3 typecheck
+vp run --filter @t3tools/desktop typecheck
+vp run --filter @t3tools/mobile typecheck
+vp test run <focused-test-files>
 ```
 
 ## 5. Keep documentation synchronized
@@ -109,6 +109,7 @@ Treat raw conversation transcripts and old implementation plans as historical. M
 Canonical maintained files include:
 
 - `README.md`
+- `release/README.md`
 - `docs/README.md`
 - `docs/internals/providers.md`
 - `docs/features/takomi-code-handoff.md`
@@ -118,35 +119,43 @@ Canonical maintained files include:
 
 ## 6. Build release artifacts
 
-### Windows x64 desktop
+Local release builds output to `release/` and are driven by repository scripts.
+
+### Build both applications
+
+From the repository root on Windows:
 
 ```powershell
-pnpm dist:desktop:win:x64
+vp run dist:local
+```
+
+### Windows x64 desktop only
+
+```powershell
+vp run dist:local:desktop
 ```
 
 Expected output:
 
 ```text
-release\Takomi-Code-<version>-x64.exe
+release\Takomi-Code-<desktop-version>-x64.exe
 ```
 
-Report the warning if no WSL `node-pty` prebuild is supplied: normal Windows operation works, but the packaged WSL backend does not.
+Report the warning if no WSL `node-pty` prebuild is supplied: normal Windows operation works, but the packaged WSL backend does not. If the desktop build fails while probing temporary directories, set `$env:TEMP` / `$env:TMP` / `$env:TMPDIR` to `C:\t3code-tmp` as documented in `release/README.md`.
 
-### Standalone Android on the configured Windows machine
-
-The helper builds committed `HEAD`, not uncommitted changes. Commit the audited source first, then run:
+### Standalone Android preview APK only
 
 ```powershell
-& "$env:USERPROFILE\Desktop\Build Takomi Android Standalone.cmd"
+vp run dist:local:android
 ```
 
 Expected output:
 
 ```text
-release\Takomi-Code-Standalone-<version>.apk
+release\Takomi-Code-Preview-<mobile-version>-<sha>[-dirty].apk
 ```
 
-The helper uses the short `C:\ta` worktree and `C:\tp` pnpm store. If Gradle owns a locked build directory, use that worktree's `gradlew.bat --stop` when available; never kill Java or Gradle processes by broad name/path matching.
+Uncommitted tracked changes are included (the artifact name appends `-dirty`). The build uses the managed short worktree `C:\takomi-local-build` and `C:\tp` pnpm virtual store. The output is an internal, debug-signed preview APK and is not Play Store uploadable. If Gradle owns a locked build directory, stop the daemon cleanly via `C:\takomi-local-build\apps\mobile\android\gradlew.bat --stop`; never kill Java or Gradle processes by broad name/path matching.
 
 ## 7. Finish safely
 
