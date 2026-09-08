@@ -13,7 +13,9 @@ Pi is a built-in driver. Its [adapter](../../apps/server/src/provider/Layers/PiA
 Pi JSON-RPC process and normalizes `pi.eventmsg` input into the shared provider runtime contract.
 Configuration and process ownership remain instance-scoped, while command and skill discovery is
 resolved for the thread's workspace. Pi-specific protocol behavior belongs at this boundary rather
-than in generic orchestration.
+than in generic orchestration. The [session catalog](../../apps/server/src/provider/Layers/PiSessionCatalog.ts)
+is currently a version-gated, read-only boundary for Pi 0.84.4: it supports bounded listing and
+ownership diagnostics, not attach, clone, or native-history import.
 
 ## Process and account isolation
 
@@ -75,7 +77,9 @@ there. Anything unproven stays manual-only but still reports the version gap. np
 provider. Homebrew
 compares against `brew info` since casks trail npm by hours; native installs share npm's version
 train, so the registry stays authoritative for them.
-See the [resolver](../../apps/server/src/provider/providerMaintenance.ts).
+See the [resolver](../../apps/server/src/provider/providerMaintenance.ts). Pi currently advertises
+manual-only maintenance because its configured binary and suite overrides do not prove a single
+installer-owned update path.
 
 Ownership is cached per instance and re-read immediately before an update runs. The
 [runner](../../apps/server/src/provider/providerMaintenanceRunner.ts) refuses when the lock key

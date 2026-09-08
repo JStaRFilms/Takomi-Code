@@ -1,55 +1,59 @@
 # Takomi Code handoff
 
-**Updated:** 2026-08-09
+**Updated:** 2026-09-08
 
-**Branch:** `Takomi-Code`
+**Branch:** `feat/pi-takomi-parity`
 
 **Repository:** `C:\CreativeOS\01_Projects\Code\Clones\2026-07-22_t3code`
 
 ## Read this first
 
-This is the starting point for a new implementation thread. Detailed feature documentation:
+This is the maintained status summary for the Takomi fork. Detailed documentation:
 
 - [Takomi / Pi provider](./takomi-pi-provider.md)
 - [Takomi tool-call UI](./takomi-tool-call-ui-audit.md)
 - [Desktop and Android builds](./takomi-desktop-and-android.md)
 - [Provider architecture](../internals/providers.md)
-- [Repository management notes](../../00_Notes/Managing%20Takomi%20Code%20Repository%20Changes.md)
+- [Local release procedure](../../release/README.md)
+
+The material under `docs/tasks/orchestrator-sessions/` is historical planning evidence, not current
+implementation or release guidance.
 
 ## Current state
 
-### Complete and validated
+### Complete
 
-- Pi/Takomi is registered as a first-party provider.
-- Pi runs as a JSON-RPC child process rather than through terminal scraping.
-- Text, reasoning, tools, images, questions, confirmations, compaction, model switching, interruption, and persistent sessions are bridged.
-- Global Pi/Takomi discovery works with blank provider overrides.
-- A Takomi suite checkout can be loaded explicitly for runtime development.
-- Session startup waits for Pi's persistent session file, preventing duplicate sessions on server restart.
-- Windows desktop branding is separated from upstream T3 Code.
-- Electron archive extraction works on Windows without Python.
-- A Windows x64 NSIS installer was built successfully.
-- A standalone ARM64 Android APK was built successfully with an embedded JavaScript bundle.
-- Core Takomi tool calls use bounded semantic inline cards with a synchronized optional inspector.
-- Takomi Board state, subagent transcripts, child selection, and completion history persist in place.
-- Main-agent and subagent thinking traces are presented when emitted by the model.
-- Single subagents render directly; parallel, chain, and async executions remain distinguishable.
-- Todo companion state collapses into one persistent progress card.
-- Suite mode preserves globally installed Pi companion extensions without duplicate Takomi registration.
+- Pi/Takomi is registered as a first-party provider and runs as a structured JSON-RPC child process.
+- Text, reasoning, tools, images, questions, confirmations, compaction, model switching,
+  interruption, and persistent session resumption are bridged into the provider runtime.
+- Project-scoped Pi slash commands, prompt templates, and skills are discovered for web and mobile
+  command menus, with trust and freshness reported through provider capabilities.
+- Pi 0.84.4 session catalogs can be listed with bounded pagination and ownership diagnostics.
+  Attaching, cloning, and importing those sessions into T3 threads remain unavailable.
+- Core Takomi tool calls use bounded semantic inline cards and an optional synchronized web/desktop
+  inspector. Board, Todo, and subagent state persist through updates and completion.
+- Windows desktop identity and state paths are separate from upstream T3 Code.
+- Repository scripts build a Windows x64 installer and a standalone arm64 Android preview APK into
+  `release/`.
+- Desktop, web, and mobile use the shared Takomi icon under `assets/takomi/`.
 
 ### Deliberately incomplete
 
-- Pi supports only `full-access` T3 runtime mode.
-- Pi utility text generation is not implemented.
-- Terminal-created Pi sessions are not imported into T3 automatically.
-- Rich/multi-question UI fidelity is partial.
+- Pi supports only T3's `full-access` runtime mode.
+- Pi utility text generation for titles and Git/PR text is not implemented.
+- Pi session listing currently requires the supported Pi 0.84.4 catalog boundary; session attach,
+  clone, native-history hydration, and automatic terminal-session import are not implemented.
+- Rich and multi-question UI fidelity remains partial.
 - Unknown tools intentionally use generic T3 work-log cards.
-- Pi/Takomi slash-command discovery is deferred.
-- Takomi runtime extensions/skills are not bundled into the desktop installer.
-- Desktop, web, and mobile use the shared Takomi icon under `assets/takomi/`.
-- Mobile visible names and icons are Takomi-branded, but package/scheme and Expo/EAS/Clerk infrastructure identifiers remain upstream-compatible until migration.
-- The Android APK uses a local debug signing key.
-- The packaged Windows WSL backend lacks a bundled Linux `node-pty` prebuild.
+- Takomi runtime extensions and skills are not bundled as an installable managed runtime with the
+  desktop application. Users still need a compatible Pi/Takomi installation or a suite-root
+  override.
+- Mobile has no native Takomi semantic tool cards or inspector.
+- Mobile visible names and icons are Takomi-branded, but package, scheme, Expo/EAS, update, and Clerk
+  infrastructure identifiers remain upstream-compatible pending migration.
+- The local Android preview APK is debug-signed and cannot be uploaded to the Play Store.
+- Without a supplied Linux `node-pty` prebuild, the packaged Windows application's WSL backend is
+  unavailable; the normal Windows backend still works.
 
 ## Provider configuration
 
@@ -63,101 +67,60 @@ Launch arguments: blank
 Runtime mode: full-access
 ```
 
-Takomi development suite:
+For suite development, set **Takomi suite root** to the VibeCode Protocol Suite checkout. Do not set
+`Pi agent directory` to the suite unless it is intentionally structured as a complete Pi agent home.
+
+## Current local release workflow
+
+Current source versions are desktop `0.0.40` and mobile `1.1.1`. Artifact names are generated from
+those version sources and the current commit:
 
 ```text
-C:\CreativeOS\01_Projects\Code\Personal_Stuff\2025-12-02_VibeCode-Protocol-Suite
+release\Takomi-Code-0.0.40-x64.exe
+release\Takomi-Code-Preview-1.1.1-<sha>[-dirty].apk
 ```
 
-Set that path only as **Takomi suite root** when testing suite source directly.
+From the repository root on Windows, build both:
 
-## Build artifacts on the current machine
-
-Desktop installer:
-
-```text
-release\Takomi-Code-0.0.34-x64.exe
+```powershell
+vp run dist:local
 ```
 
-Standalone Android APK:
+Or build one target:
 
-```text
-release\Takomi-Code-Standalone-1.0.2.apk
+```powershell
+vp run dist:local:desktop
+vp run dist:local:android
 ```
 
-Android build workspace and virtual store:
-
-```text
-C:\ta
-C:\tp
-```
-
-Android helper:
-
-```text
-C:\Users\johno\Desktop\Build Takomi Android Standalone.cmd
-```
-
-The Android helper is machine-local and not currently versioned in this repository. Its procedure is documented in [Desktop and Android builds](./takomi-desktop-and-android.md).
+The Android script owns the managed worktree `C:\takomi-local-build` and pnpm virtual store
+`C:\tp`. Do not replace this workflow with a machine-local helper. See
+[Desktop and Android builds](./takomi-desktop-and-android.md) for requirements and troubleshooting.
 
 ## Recommended next work
 
-Choose one bounded objective rather than attempting all items at once.
+Choose one bounded objective:
 
-### Option A: Detach mobile distribution identity
+1. **Mobile distribution identity:** migrate package IDs, schemes, Expo/EAS/update ownership,
+   Clerk/OAuth configuration, and release signing.
+2. **Pi session interoperability:** add safe attach/clone/import and native-history hydration on top
+   of the catalog boundary.
+3. **Pi interaction fidelity:** preserve richer question descriptions, previews, and multi-select
+   semantics.
+4. **Portable desktop distribution:** define, package, and version a managed Pi/Takomi runtime and
+   optionally supply the WSL `node-pty` prebuild.
 
-1. Replace upstream Expo owner/project/update configuration.
-2. Change mobile schemes and Android/iOS package IDs after migration planning.
-3. Configure Takomi-owned Clerk/relying-party infrastructure.
-4. Produce release signing credentials.
-5. Rebuild and verify local pairing and Pi provider selection on a real phone.
+## Verification
 
-### Option B: Pi interaction fidelity
-
-1. Improve question metadata, previews, and multi-select handling.
-2. Add Pi/Takomi slash-command discovery and command-menu integration.
-
-### Option C: Portable desktop distribution
-
-1. Bundle versioned Takomi extensions/skills into desktop resources.
-2. Define global-versus-bundled runtime precedence.
-3. Include or document Pi installation.
-4. Bundle the WSL `node-pty` prebuild if WSL support is required.
-5. Sign the Windows installer.
-
-## Verification commands
-
-Provider/contracts/server/web:
-
-```powershell
-pnpm --filter @t3tools/contracts test
-pnpm --filter t3 test
-pnpm --filter @t3tools/contracts typecheck
-pnpm --filter t3 typecheck
-pnpm --filter @t3tools/web typecheck
-pnpm --filter @t3tools/web build
-```
-
-Desktop:
-
-```powershell
-pnpm --filter @t3tools/desktop typecheck
-pnpm --filter @t3tools/scripts typecheck
-pnpm dev:desktop
-pnpm dist:desktop:win:x64
-```
-
-Android standalone:
-
-```powershell
-& "$env:USERPROFILE\Desktop\Build Takomi Android Standalone.cmd"
-```
+Use focused package checks for the area changed. For local release preparation, follow the checks in
+[`release/README.md`](../../release/README.md), then install and open each artifact on a test device.
 
 ## Safety notes
 
 - Do not copy `.git` directories between legacy Takomi and T3 repositories.
 - Do not merge unrelated histories merely to connect old and new implementations.
-- Do not globally replace `T3` or `t3code`; many internal package names, environment variables, and compatibility identifiers should remain.
-- Do not publish using the upstream `pingdotgg` Expo/EAS project.
+- Do not globally replace `T3` or `t3code`; internal package names, environment variables, and
+  compatibility identifiers intentionally remain.
+- Do not publish through the upstream `pingdotgg` Expo/EAS project.
 - Do not open the same Pi session file in terminal Pi while Takomi Code is writing it.
-- Do not claim safer Pi runtime modes until permission enforcement exists.
+- Do not claim safer Pi runtime modes until permission enforcement covers every Pi tool invocation.

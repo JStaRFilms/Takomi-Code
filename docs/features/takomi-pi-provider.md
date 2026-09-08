@@ -26,6 +26,8 @@ flowchart LR
 - **Web metadata:** `apps/web/src/components/settings/providerDriverMeta.ts`
 - **Web icon mapping:** `apps/web/src/components/chat/providerIconUtils.ts`
 - **Session logic:** `apps/web/src/session-logic.ts`
+- **Session catalog boundary:** `apps/server/src/provider/Layers/PiSessionCatalog.ts`
+- **Versioned host utilities:** `packages/takomi-pi-host/`
 
 The provider driver kind remains `pi` for compatibility, but its visible product/provider name is `Takomi`. Pi is treated as the internal runtime harness rather than a separate visible provider.
 
@@ -138,6 +140,17 @@ Project resources follow Pi's project-trust decision. Explicit `--approve` and `
 
 Resource snapshots are isolated by environment, provider instance, and exact project path. Pi advertises and refreshes them after five minutes and after provider settings change. Failed Pi discovery removes stale project resources and retries instead of falling back to resources discovered for the server or another project.
 
+## Session catalog
+
+For the supported Pi 0.84.4 protocol boundary, web and mobile can request a bounded, paginated list
+of Pi sessions for the selected provider instance and workspace. Catalog cursors are scoped to the
+environment, provider instance, exact workspace, server generation, and expiry. The server also
+tracks ownership diagnostics so an active session file is not presented as safely available to a
+second owner.
+
+This is discovery only. Provider capabilities still report session attach and clone as unavailable,
+and catalog entries cannot yet be hydrated into T3 thread history.
+
 ## Runtime constraints
 
 Only T3's `full-access` runtime mode is accepted. `approval-required` and `auto-accept-edits` are rejected because T3 does not yet enforce permissions around every Pi tool invocation.
@@ -160,13 +173,15 @@ pi --session "C:\path\to\session.jsonl"
 
 Do not open the same session file in terminal Pi while Takomi Code is actively writing it.
 
-Automatic discovery/import of independently created terminal Pi sessions into Takomi Code is not implemented.
+Compatible terminal Pi sessions can be listed in the Pi session catalog, but automatic import or
+attachment to a Takomi Code thread is not implemented.
 
 ## Known limitations
 
 - utility text generation (thread titles, branch names, commit messages, and PR text) is not implemented by the Pi driver
 - only `full-access` is supported
-- terminal-to-T3 Pi session import is not supported
+- Pi session attach, clone, native-history hydration, and terminal-to-T3 import are not supported
+- session catalog listing is version-gated to the supported Pi 0.84.4 boundary
 - unknown extension UI methods are ignored
 - richer question metadata is reduced to T3's current canonical shape
 - Takomi runtime assets are not bundled into the desktop installer; global installation or a suite root is still required

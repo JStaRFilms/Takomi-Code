@@ -76,6 +76,7 @@ Pay special attention to:
 - provider runtime ingestion and generic provider semantics;
 - Pi driver environment requirements and Effect/Schema API changes;
 - mobile package IDs, schemes, Expo updates, Clerk configuration, and signing;
+- Pi's version-gated, read-only session catalog and its attach/clone/import limitations;
 - documentation links, versions, artifact names, branch names, and stale commit hashes.
 
 If Takomi behavior overrides upstream globally, either narrow it to Takomi/Pi or present the user with the tradeoff.
@@ -135,7 +136,7 @@ vp run dist:local
 vp run dist:local:desktop
 ```
 
-Expected output:
+The desktop version comes from `apps/desktop/package.json` (currently `0.0.40`). Expected output:
 
 ```text
 release\Takomi-Code-<desktop-version>-x64.exe
@@ -149,7 +150,7 @@ Report the warning if no WSL `node-pty` prebuild is supplied: normal Windows ope
 vp run dist:local:android
 ```
 
-Expected output:
+The mobile version comes from `apps/mobile/app.config.ts` (currently `1.1.1`). Expected output:
 
 ```text
 release\Takomi-Code-Preview-<mobile-version>-<sha>[-dirty].apk

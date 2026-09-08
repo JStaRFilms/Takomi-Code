@@ -30,19 +30,21 @@ file in the directory.
      package versions aligned by running:
 
      ```powershell
-     node scripts/update-release-package-versions.ts 0.0.39
+     node scripts/update-release-package-versions.ts 0.0.40
      ```
 
-     Replace `0.0.39` with the intended new version. Do not reuse a published version for a
+     Replace `0.0.40` with the intended new version. Do not reuse a published version for a
      materially different public build.
 
-   - **Mobile:** update `version` in `apps/mobile/app.config.ts`, for example from `1.0.4` to
-     `1.0.5`. The local APK uses that value in its filename. Do not manually change Android
+   - **Mobile:** update `version` in `apps/mobile/app.config.ts`, for example from `1.1.1` to
+     `1.1.2`. The local APK uses that value in its filename. Do not manually change Android
      `versionCode` or iOS `buildNumber` for EAS production builds: EAS owns those remote build
      numbers and increments them through `apps/mobile/eas.json`.
 
 4. Review public configuration in the repository-root `.env` or `.env.local` when the build needs
    T3 Connect, Clerk, or relay configuration. Never commit secrets.
+
+The current source versions are desktop `0.0.40` and mobile `1.1.1`.
 
 ## Build both applications
 
@@ -75,7 +77,9 @@ vp run dist:local:android
 The Android build requires Java and the Android SDK. It uses the managed short paths
 `C:\takomi-local-build` and `C:\tp` to avoid Windows React Native/CMake path failures. The output is
 a standalone arm64 preview APK, signed with the generated debug key for direct installation. It
-does not require Metro.
+does not require Metro. If Gradle owns a locked generated directory, stop its daemon with
+`C:\takomi-local-build\apps\mobile\android\gradlew.bat --stop`; do not kill Java or Gradle by broad
+process matching.
 
 ## Windows desktop build troubleshooting
 

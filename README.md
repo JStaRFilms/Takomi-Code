@@ -8,6 +8,17 @@ Takomi Code tracks upstream T3 Code and adds the Pi/Takomi provider, Takomi tool
 - [Takomi desktop and Android builds](./docs/features/takomi-desktop-and-android.md)
 - [Current Takomi implementation status](./docs/features/takomi-code-handoff.md)
 
+On Windows, the repository-owned local release workflow builds both the desktop installer and the
+standalone Android preview APK into `release/`:
+
+```powershell
+vp run dist:local
+```
+
+Use `vp run dist:local:desktop` or `vp run dist:local:android` for one target. See the
+[local release guide](./release/README.md) for current versions, artifact names, prerequisites, and
+limitations.
+
 ---
 
 ## Upstream T3 Code overview

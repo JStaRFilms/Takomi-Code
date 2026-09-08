@@ -26,7 +26,9 @@
 
 - [Current handoff](./features/takomi-code-handoff.md)
 - [Takomi / Pi provider](./features/takomi-pi-provider.md)
+- [Takomi tool-call UI](./features/takomi-tool-call-ui-audit.md)
 - [Desktop and Android builds](./features/takomi-desktop-and-android.md)
+- [Local Windows build procedure](../release/README.md)
 
 ---
 
