@@ -513,6 +513,9 @@ importers:
       '@t3tools/tailscale':
         specifier: workspace:*
         version: link:../../packages/tailscale
+      '@t3tools/takomi-pi-host':
+        specifier: workspace:*
+        version: link:../../packages/takomi-pi-host
       '@t3tools/web':
         specifier: workspace:*
         version: link:../web

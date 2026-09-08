@@ -55,7 +55,9 @@ const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
 const decodeUnknownJsonString = Schema.decodeUnknownSync(UnknownFromJsonString);
 const encodeUnknownJsonString = Schema.encodeUnknownSync(UnknownFromJsonString);
 
-const piCapabilities = (resourcesAvailable: boolean) =>
+export const piSessionCatalogSupported = (version: string): boolean => version === "0.84.4";
+
+const piCapabilities = (resourcesAvailable: boolean, sessionCatalogAvailable: boolean) =>
   ({
     runtimeModes: ["full-access"],
     interactionModes: ["default"],
@@ -64,14 +66,19 @@ const piCapabilities = (resourcesAvailable: boolean) =>
     commandDiscovery: resourcesAvailable ? "available" : "unavailable",
     skillDiscovery: resourcesAvailable ? "available" : "unavailable",
     workspaceSnapshotFreshness: true,
+    sessions: {
+      list: sessionCatalogAvailable,
+      clone: false,
+      attach: false,
+    },
   }) satisfies ServerProviderCapabilities;
 
-const piPresentation = (resourcesAvailable = false) => ({
+const piPresentation = (resourcesAvailable = false, sessionCatalogAvailable = false) => ({
   displayName: "Takomi",
   // Legacy clients read this field instead of interactionModes. Keep Plan
   // hidden there too because Pi rejects it.
   showInteractionModeToggle: false,
-  capabilities: piCapabilities(resourcesAvailable),
+  capabilities: piCapabilities(resourcesAvailable, sessionCatalogAvailable),
 });
 
 export function piResourceDiscoveryMessage(resources: PiDiscoveredResources): string {
@@ -464,7 +471,7 @@ export function checkPiProviderStatus(
       driver: DRIVER_KIND,
       // Resource catalogs are always cwd-scoped; the machine snapshot stays
       // project-neutral so a scoped failure cannot leak another cwd's paths.
-      presentation: piPresentation(true),
+      presentation: piPresentation(true, piSessionCatalogSupported(version)),
       enabled: true,
       checkedAt,
       models,

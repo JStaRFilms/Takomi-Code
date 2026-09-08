@@ -1,9 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off - The CLI writes an explicitly requested manifest outside canonical source.
-import * as FileSystem from "node:fs/promises";
-import * as Readline from "node:readline";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeReadline from "node:readline";
 
 import { probePiHost } from "./host.ts";
 import { createRuntimePackageManifest, verifyRuntimeProvenance } from "./runtime.ts";
+import { scanPiSessionCatalog, type PiSessionCatalogScanRequest } from "./sessionCatalog.ts";
 
 interface ProbeRequest {
   readonly method: "probe";
@@ -21,6 +22,21 @@ function isProbeRequest(value: unknown): value is ProbeRequest {
     value.method === "probe" &&
     typeof value.packageRoot === "string" &&
     typeof value.manifestPath === "string"
+  );
+}
+
+type CatalogRequest = PiSessionCatalogScanRequest & { readonly method: "catalog" };
+
+function isCatalogRequest(value: unknown): value is CatalogRequest {
+  if (!isRecord(value)) return false;
+  return (
+    value.method === "catalog" &&
+    typeof value.workspacePath === "string" &&
+    typeof value.agentDir === "string" &&
+    typeof value.packageRoot === "string" &&
+    Array.isArray(value.launchArgs) &&
+    value.launchArgs.every((argument) => typeof argument === "string") &&
+    (value.environmentSessionDir === undefined || typeof value.environmentSessionDir === "string")
   );
 }
 
@@ -53,14 +69,20 @@ async function runVerify(args: ReadonlyArray<string>): Promise<void> {
   const verification = await verifyRuntimeProvenance(input, manifest);
   const manifestPath = options[0] === "--manifest" ? options[1] : undefined;
   if (manifestPath !== undefined) {
-    await FileSystem.writeFile(manifestPath, `${JSON.stringify(manifest, undefined, 2)}\n`);
+    await NodeFSP.writeFile(manifestPath, `${JSON.stringify(manifest, undefined, 2)}\n`);
   }
   process.stdout.write(`${JSON.stringify(verification)}\n`);
 }
 
 async function serve(): Promise<void> {
-  const input = Readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  const input = NodeReadline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   for await (const line of input) {
+    if (Buffer.byteLength(line) > 64 * 1024) {
+      process.stdout.write(
+        `${JSON.stringify({ error: "Host request exceeds the byte limit." })}\n`,
+      );
+      continue;
+    }
     let message: unknown;
     try {
       message = JSON.parse(line);
@@ -69,15 +91,19 @@ async function serve(): Promise<void> {
       continue;
     }
 
-    if (!isProbeRequest(message)) {
-      process.stdout.write(
-        `${JSON.stringify({ error: "Only the read-only 'probe' host operation is available." })}\n`,
-      );
+    if (!isProbeRequest(message) && !isCatalogRequest(message)) {
+      process.stdout.write(`${JSON.stringify({ error: "Invalid read-only host request." })}\n`);
       continue;
     }
 
     try {
-      process.stdout.write(`${JSON.stringify(await probePiHost(message))}\n`);
+      process.stdout.write(
+        `${JSON.stringify(
+          message.method === "probe"
+            ? await probePiHost(message)
+            : await scanPiSessionCatalog(message, { signal: AbortSignal.timeout(15_000) }),
+        )}\n`,
+      );
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Host probe failed.";
       process.stdout.write(`${JSON.stringify({ error: detail })}\n`);

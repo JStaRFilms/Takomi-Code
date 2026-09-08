@@ -5,6 +5,9 @@
     "takomi-pi-host": "./bin.mjs"
   },
   "type": "module",
+  "exports": {
+    "./sessionCatalog": "./src/sessionCatalog.ts"
+  },
   "scripts": {
     "typecheck": "tsgo --noEmit",
     "test": "node --experimental-strip-types --test src/*.test.ts"

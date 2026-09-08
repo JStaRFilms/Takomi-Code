@@ -85,6 +85,8 @@ export const ServerProviderCapabilities = Schema.Struct({
   sessions: Schema.optional(
     Schema.Struct({
       list: Schema.optional(Schema.Boolean),
+      clone: Schema.optional(Schema.Boolean),
+      attach: Schema.optional(Schema.Boolean),
       resume: Schema.optional(Schema.Boolean),
       fork: Schema.optional(Schema.Boolean),
       tree: Schema.optional(Schema.Boolean),

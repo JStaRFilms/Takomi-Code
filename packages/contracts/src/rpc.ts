@@ -82,6 +82,13 @@ import {
 } from "./provider.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
+  PiChildSessionLeaseDiagnostics,
+  PiChildSessionLeaseDiagnosticsInput,
+  PiSessionCatalogError,
+  PiSessionCatalogInput,
+  PiSessionCatalogPage,
+} from "./piSessionCatalog.ts";
+import {
   PullRequestActionInput,
   PullRequestActivity,
   PullRequestCommentInput,
@@ -232,6 +239,8 @@ export const WS_METHODS = {
 
   // Provider methods
   providerUploadFeedback: "provider.uploadFeedback",
+  providerListPiSessions: "provider.listPiSessions",
+  providerGetPiChildLeaseDiagnostics: "provider.getPiChildLeaseDiagnostics",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -719,6 +728,21 @@ export const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFee
   error: Schema.Union([ProviderUploadFeedbackError, EnvironmentAuthorizationError]),
 });
 
+export const WsProviderListPiSessionsRpc = Rpc.make(WS_METHODS.providerListPiSessions, {
+  payload: PiSessionCatalogInput,
+  success: PiSessionCatalogPage,
+  error: Schema.Union([PiSessionCatalogError, EnvironmentAuthorizationError]),
+});
+
+export const WsProviderGetPiChildLeaseDiagnosticsRpc = Rpc.make(
+  WS_METHODS.providerGetPiChildLeaseDiagnostics,
+  {
+    payload: PiChildSessionLeaseDiagnosticsInput,
+    success: PiChildSessionLeaseDiagnostics,
+    error: Schema.Union([PiSessionCatalogError, EnvironmentAuthorizationError]),
+  },
+);
+
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
   payload: VcsStatusInput,
   success: VcsStatusStreamEvent,
@@ -1102,6 +1126,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,
   WsProviderUploadFeedbackRpc,
+  WsProviderListPiSessionsRpc,
+  WsProviderGetPiChildLeaseDiagnosticsRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,

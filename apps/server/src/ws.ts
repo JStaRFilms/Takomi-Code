@@ -4,6 +4,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -51,6 +52,7 @@ import {
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   ProviderUploadFeedbackError,
+  PiSessionCatalogError,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   ServerSelfUpdateError,
@@ -100,6 +102,11 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import {
+  listBoundedPiSessions,
+  validatePiSessionProvider,
+} from "./provider/Layers/PiSessionCatalog.ts";
+import { PiSessionLifecycle } from "./provider/PiSessionLifecycle.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
@@ -125,6 +132,7 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
+import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
@@ -782,11 +790,15 @@ const makeWsRpcLayer = (
   clientOrigin: OrchestrationClientOrigin,
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
+  piSessionLifecycle: PiSessionLifecycle,
 ) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
+      const piCatalogConnectionGeneration = yield* crypto.randomUUIDv4;
+      const piCatalogTokenExpiresAt = (yield* Clock.currentTimeMillis) + 30 * 60 * 1000;
+      const fileSystem = yield* FileSystem.FileSystem;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const threadDeletionReactor = yield* ThreadDeletionReactor;
@@ -931,6 +943,37 @@ const makeWsRpcLayer = (
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const usage = yield* UsageService.UsageService;
       const relayClient = yield* RelayClient.RelayClient;
+      const resolvePiCatalogWorkspace = (projectId: ProjectId) =>
+        projectionSnapshotQuery.getProjectShellById(projectId).pipe(
+          Effect.mapError(
+            () =>
+              new PiSessionCatalogError({
+                reason: "workspace_unavailable",
+                message: "The selected workspace is unavailable.",
+              }),
+          ),
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.fail(
+                  new PiSessionCatalogError({
+                    reason: "workspace_unavailable",
+                    message: "The selected workspace is unavailable.",
+                  }),
+                ),
+              onSome: (project) =>
+                fileSystem.realPath(project.workspaceRoot).pipe(
+                  Effect.mapError(
+                    () =>
+                      new PiSessionCatalogError({
+                        reason: "workspace_unavailable",
+                        message: "The selected workspace is unavailable.",
+                      }),
+                  ),
+                ),
+            }),
+          ),
+        );
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
           message: `The authenticated token is missing required scope: ${requiredScope}.`,
@@ -2064,6 +2107,61 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "provider" },
           ),
+        [WS_METHODS.providerListPiSessions]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerListPiSessions,
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  () =>
+                    new PiSessionCatalogError({
+                      reason: "unavailable",
+                      message: "Pi session discovery is unavailable.",
+                    }),
+                ),
+              );
+              return yield* listBoundedPiSessions({
+                catalog: input,
+                serverSettings: settings,
+                workspaceCanonicalPath: yield* resolvePiCatalogWorkspace(input.projectId),
+                environmentId: (yield* serverEnvironment.getDescriptor).environmentId,
+                serverGeneration: `${piSessionLifecycle.serverGeneration}:${piCatalogConnectionGeneration}`,
+                expiresAt: piCatalogTokenExpiresAt,
+                lifecycle: piSessionLifecycle,
+              });
+            }),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerGetPiChildLeaseDiagnostics]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerGetPiChildLeaseDiagnostics,
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  () =>
+                    new PiSessionCatalogError({
+                      reason: "unavailable",
+                      message: "Pi child ownership diagnostics are unavailable.",
+                    }),
+                ),
+              );
+              yield* validatePiSessionProvider(settings, input.providerInstanceId);
+              const workspaceCanonicalPath = yield* resolvePiCatalogWorkspace(input.projectId);
+              const environmentId = (yield* serverEnvironment.getDescriptor).environmentId;
+              return piSessionLifecycle.diagnostics(
+                {
+                  environmentId,
+                  providerInstanceId: input.providerInstanceId,
+                  projectId: input.projectId,
+                  workspaceCanonicalPath,
+                  serverGeneration: `${piSessionLifecycle.serverGeneration}:${piCatalogConnectionGeneration}`,
+                  expiresAt: piCatalogTokenExpiresAt,
+                },
+                yield* Clock.currentTimeMillis,
+              );
+            }),
+            { "rpc.aggregate": "provider" },
+          ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,
@@ -3013,6 +3111,10 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         ),
     });
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const secretStore = yield* ServerSecretStore.ServerSecretStore;
+    const piSessionLifecycle = new PiSessionLifecycle(
+      yield* secretStore.getOrCreateRandom("pi-cloned-child-provenance", 32),
+    );
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3045,6 +3147,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               clientOrigin,
               clientAnalyticsProps,
               previewAutomationBroker,
+              piSessionLifecycle,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(ProviderMaintenanceRunner.layer),

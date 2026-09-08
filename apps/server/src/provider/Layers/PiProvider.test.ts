@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import {
   discoverPiResources,
   makePendingPiProvider,
+  piSessionCatalogSupported,
   piMachineProbeLaunchArgs,
   serverModelsFromPiModels,
 } from "./PiProvider.ts";
@@ -51,8 +52,15 @@ describe("Pi provider snapshot", () => {
         commandDiscovery: "unavailable",
         skillDiscovery: "unavailable",
         workspaceSnapshotFreshness: true,
+        sessions: {
+          list: false,
+          clone: false,
+          attach: false,
+        },
       });
       NodeAssert.equal(provider.showInteractionModeToggle, false);
+      NodeAssert.equal(piSessionCatalogSupported("0.84.4"), true);
+      NodeAssert.equal(piSessionCatalogSupported("0.84.5"), false);
     }),
   );
 });
