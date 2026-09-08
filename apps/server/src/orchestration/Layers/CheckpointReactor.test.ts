@@ -490,6 +490,7 @@ describe("CheckpointReactor", () => {
       engine,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       provider,
+      checkpointStore,
       cwd,
       drain,
       nextReceipt: Queue.take(receipts),
@@ -1600,11 +1601,12 @@ describe("CheckpointReactor", () => {
     ).toBe(true);
   });
 
-  effectIt.effect("rejects unsupported rewind before changing files, checkpoints, or history", () =>
+  effectIt.effect("rejects Pi rewind before filesystem restoreCheckpoint executes", () =>
     Effect.gen(function* () {
       const harness = yield* Effect.promise(() =>
-        createHarness({ providerName: ProviderDriverKind.make("antigravity") }),
+        createHarness({ providerName: ProviderDriverKind.make("pi") }),
       );
+      const restoreCheckpoint = vi.spyOn(harness.checkpointStore, "restoreCheckpoint");
       const threadId = ThreadId.make("thread-1");
       const createdAt = "2026-01-01T00:00:00.000Z";
       const checked = yield* Deferred.make<void>();
@@ -1614,7 +1616,7 @@ describe("CheckpointReactor", () => {
             Effect.fail(
               new ProviderValidationError({
                 operation: "ProviderService.assertConversationRollbackSupported",
-                issue: "Provider 'antigravity' does not support conversation rewind.",
+                issue: "Provider 'pi' does not support conversation rewind.",
               }),
             ),
           ),
@@ -1678,6 +1680,7 @@ describe("CheckpointReactor", () => {
         }),
       );
       expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+      expect(restoreCheckpoint).not.toHaveBeenCalled();
       expect(NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8")).toBe("v3\n");
       expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 2))).toBe(true);
     }),

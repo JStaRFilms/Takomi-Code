@@ -79,7 +79,7 @@ export const PiChildSessionLeaseDiagnostics = Schema.Struct({
 export type PiChildSessionLeaseDiagnostics = typeof PiChildSessionLeaseDiagnostics.Type;
 
 /** Errors intentionally omit filesystem paths and native session identifiers. */
-export class PiSessionCatalogError extends Schema.TaggedErrorClass<PiSessionCatalogError>()(
+export class PiSessionCatalogError extends Schema.TaggedError<PiSessionCatalogError>()(
   "PiSessionCatalogError",
   {
     reason: Schema.Literals([

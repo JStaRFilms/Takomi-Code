@@ -10,6 +10,7 @@ import {
   ThreadId,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
+import { it as effectIt } from "@effect/vitest";
 import { describe, expect, it } from "vite-plus/test";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -119,6 +120,21 @@ function runPiProcessScenario(
     ).pipe(Effect.provide(piAdapterTestLayer)),
   );
 }
+
+describe("Pi adapter capabilities", () => {
+  effectIt.effect("declares conversation rollback unsupported for provider preflight", () =>
+    Effect.gen(function* () {
+      const adapter = yield* Effect.scoped(
+        makePiAdapter(
+          decodePiSettings({ binaryPath: process.execPath, launchArgs: `"${piMockPeer}"` }),
+          { instanceId: ProviderInstanceId.make("pi-capabilities"), environment: process.env },
+        ),
+      ).pipe(Effect.provide(piAdapterTestLayer));
+
+      expect(adapter.capabilities.supportsConversationRollback).toBe(false);
+    }),
+  );
+});
 
 describe("Pi work-log normalization", () => {
   it("normalizes Pi bash calls into canonical command data", () => {

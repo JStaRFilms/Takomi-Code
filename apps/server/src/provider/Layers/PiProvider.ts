@@ -165,6 +165,13 @@ function decodePiModelsResponse(line: string): ReadonlyArray<PiModelRecord> | un
   }
 }
 
+const buildPiProvider = (
+  input: Parameters<typeof buildServerProvider>[0],
+): ServerProviderDraft => ({
+  ...buildServerProvider(input),
+  supportsConversationRollback: false,
+});
+
 function decodePiCommandsResponse(response: unknown): PiDiscoveredResources | undefined {
   if (
     !isRecord(response) ||
@@ -297,11 +304,10 @@ export function discoverPiResources(
   );
   return discovery.pipe(
     Effect.timeoutOption(operationBudget),
-    Effect.map(
-      (result): PiResourceDiscoveryResult =>
-        Option.isSome(result)
-          ? { status: "available", resources: result.value }
-          : { status: "unavailable", reason: "deadline" },
+    Effect.map((result): PiResourceDiscoveryResult =>
+      Option.isSome(result)
+        ? { status: "available", resources: result.value }
+        : { status: "unavailable", reason: "deadline" },
     ),
     Effect.orElseSucceed(() => ({ status: "unavailable", reason: "failed" }) as const),
   );
@@ -378,7 +384,7 @@ export function makePendingPiProvider(enabled = true): Effect.Effect<ServerProvi
   return Effect.gen(function* () {
     const now = yield* DateTime.now;
     const checkedAt = now.pipe(DateTime.formatIso);
-    return buildServerProvider({
+    return buildPiProvider({
       driver: DRIVER_KIND,
       presentation: piPresentation(),
       enabled,
@@ -408,7 +414,7 @@ export function checkPiProviderStatus(
     const checkedAt = now.pipe(DateTime.formatIso);
 
     if (!settings.enabled) {
-      return buildServerProvider({
+      return buildPiProvider({
         driver: DRIVER_KIND,
         presentation: piPresentation(),
         enabled: false,
@@ -441,7 +447,7 @@ export function checkPiProviderStatus(
         ? `Pi CLI binary '${binaryPath}' not found on PATH.`
         : `Failed to execute '${binaryPath} --version'.`;
 
-      return buildServerProvider({
+      return buildPiProvider({
         driver: DRIVER_KIND,
         presentation: piPresentation(),
         enabled: true,
@@ -467,7 +473,7 @@ export function checkPiProviderStatus(
       DEFAULT_PI_MODEL_CAPABILITIES,
     );
 
-    return buildServerProvider({
+    return buildPiProvider({
       driver: DRIVER_KIND,
       // Resource catalogs are always cwd-scoped; the machine snapshot stays
       // project-neutral so a scoped failure cannot leak another cwd's paths.

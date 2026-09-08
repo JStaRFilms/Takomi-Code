@@ -59,6 +59,7 @@ describe("Pi provider snapshot", () => {
         },
       });
       NodeAssert.equal(provider.showInteractionModeToggle, false);
+      NodeAssert.equal(provider.supportsConversationRollback, false);
       NodeAssert.equal(piSessionCatalogSupported("0.84.4"), true);
       NodeAssert.equal(piSessionCatalogSupported("0.84.5"), false);
     }),

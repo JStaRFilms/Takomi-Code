@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import {
   PiChildSessionLeaseDiagnostics,
+  PiSessionCatalogError,
   PiSessionCatalogInput,
   PiSessionCatalogPage,
 } from "./piSessionCatalog.ts";
@@ -10,6 +11,8 @@ import {
 const decodeInput = Schema.decodeUnknownSync(PiSessionCatalogInput);
 const decodePage = Schema.decodeUnknownSync(PiSessionCatalogPage);
 const decodeDiagnostics = Schema.decodeUnknownSync(PiChildSessionLeaseDiagnostics);
+const decodeError = Schema.decodeUnknownSync(PiSessionCatalogError);
+const encodeError = Schema.encodeUnknownSync(PiSessionCatalogError);
 
 describe("Pi session catalog contracts", () => {
   it("accepts opaque project/provider routing and bounded pagination only", () => {
@@ -22,6 +25,21 @@ describe("Pi session catalog contracts", () => {
     expect(() =>
       decodeInput({ providerInstanceId: "pi", projectId: "project-a", cursor: "x".repeat(129) }),
     ).toThrow();
+  });
+
+  it("preserves the catalog error wire shape", () => {
+    const error = new PiSessionCatalogError({ reason: "deadline", message: "Catalog timed out" });
+
+    expect(encodeError(error)).toEqual({
+      _tag: "PiSessionCatalogError",
+      reason: "deadline",
+      message: "Catalog timed out",
+    });
+    expect(decodeError(encodeError(error))).toMatchObject({
+      _tag: "PiSessionCatalogError",
+      reason: "deadline",
+      message: "Catalog timed out",
+    });
   });
 
   it("bounds lease diagnostics payloads", () => {

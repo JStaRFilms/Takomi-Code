@@ -2744,7 +2744,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
 
     const adapter: ProviderAdapterShape<ProviderAdapterError> = {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session", conversationRollback: false },
+      capabilities: { sessionModelSwitch: "in-session", supportsConversationRollback: false },
       startSession,
       sendTurn,
       interruptTurn,
