@@ -1,18 +1,16 @@
 import {
   EventId,
   MessageId,
-  OrchestrationGetSnapshotError,
   ThreadId,
   TurnId,
-  type OrchestrationEvent,
+  OrchestrationEvent,
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
 import { it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
-import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect } from "vite-plus/test";
 
@@ -23,6 +21,7 @@ import {
 
 const threadId = ThreadId.make("thread-coalescer-test");
 const turnId = TurnId.make("turn-coalescer-test");
+const encodeEvent = Schema.encodeSync(Schema.fromJsonString(OrchestrationEvent));
 
 function makeToolActivity(
   sequence: number,
@@ -65,7 +64,7 @@ function makeToolActivity(
   };
 }
 
-function makeMessage(sequence: number): OrchestrationEvent {
+function makeMessage(sequence: number, text = "Still working"): OrchestrationEvent {
   return {
     sequence,
     eventId: EventId.make(`event-${sequence}`),
@@ -81,7 +80,7 @@ function makeMessage(sequence: number): OrchestrationEvent {
       threadId,
       messageId: MessageId.make(`message-${sequence}`),
       role: "assistant",
-      text: "Still working",
+      text,
       turnId,
       streaming: false,
       createdAt: "2026-01-01T00:00:02.000Z",
@@ -138,15 +137,14 @@ describe("ThreadLiveEventCoalescer", () => {
         const startedAt = yield* Clock.currentTimeMillis;
         yield* Effect.forEach(
           Array.from({ length: 10 }, (_, index) => index + 2),
-          (sequence) =>
-            coalescer.offerAndWait({ kind: "event", event: makeToolActivity(sequence) }),
+          (sequence) => coalescer.offer({ kind: "event", event: makeToolActivity(sequence) }),
           { discard: true },
         );
-        yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(12) });
+        yield* coalescer.offer({ kind: "event", event: makeMessage(12) });
 
         expect(yield* Clock.currentTimeMillis).toBe(startedAt);
         expect(
-          Array.from(yield* coalescer.takeAll).map((item) =>
+          (yield* coalescer.stream.pipe(Stream.take(2), Stream.runCollect)).map((item) =>
             item.kind === "event" ? item.event.sequence : item.kind,
           ),
         ).toEqual([11, 12]);
@@ -159,13 +157,13 @@ describe("ThreadLiveEventCoalescer", () => {
       Effect.gen(function* () {
         const coalescer = yield* makeThreadLiveEventCoalescer({ coalesceWindow: "500 millis" });
         const startedAt = yield* Clock.currentTimeMillis;
-        yield* coalescer.offerAndWait({ kind: "event", event: makeToolActivity(2) });
-        yield* coalescer.offerAndWait({ kind: "event", event: makeToolActivity(3) });
-        yield* coalescer.offerAndWait({ kind: "synchronized" });
+        yield* coalescer.offer({ kind: "event", event: makeToolActivity(2) });
+        yield* coalescer.offer({ kind: "event", event: makeToolActivity(3) });
+        yield* coalescer.offer({ kind: "synchronized" });
 
         expect(yield* Clock.currentTimeMillis).toBe(startedAt);
         expect(
-          Array.from(yield* coalescer.takeAll).map((item) =>
+          (yield* coalescer.stream.pipe(Stream.take(2), Stream.runCollect)).map((item) =>
             item.kind === "event" ? item.event.sequence : item.kind,
           ),
         ).toEqual([3, "synchronized"]);
@@ -173,127 +171,79 @@ describe("ThreadLiveEventCoalescer", () => {
     ).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect("replaces an overflowed subscriber tail instead of silently dropping it", () =>
+  it.effect("fails and clears pending updates when their serialized payload fills the budget", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const snapshots = yield* Effect.sync(() => ({ count: 0 }));
+        const first = makeToolActivity(1);
         const coalescer = yield* makeThreadLiveEventCoalescer({
-          overflowSnapshot: Effect.sync(() => {
-            snapshots.count += 1;
-            return { kind: "event" as const, event: makeMessage(9_999) };
+          coalesceWindow: "500 millis",
+          maxSerializedBytes: Buffer.byteLength(encodeEvent(first)),
+        });
+        yield* coalescer.offer({ kind: "event", event: first });
+        expect(yield* coalescer.usage).toEqual({
+          retainedItems: 1,
+          retainedSerializedBytes: Buffer.byteLength(encodeEvent(first)),
+        });
+
+        const overflow = yield* coalescer
+          .offer({ kind: "event", event: makeToolActivity(2) })
+          .pipe(Effect.result);
+        expect(overflow._tag).toBe("Failure");
+        yield* coalescer.closed;
+        expect(yield* coalescer.usage).toEqual({ retainedItems: 0, retainedSerializedBytes: 0 });
+        const marker = yield* coalescer.offer({ kind: "synchronized" }).pipe(Effect.result);
+        expect(marker._tag).toBe("Failure");
+        const delivered = yield* coalescer.stream.pipe(Stream.runCollect, Effect.result);
+        expect(delivered._tag).toBe("Failure");
+      }),
+    ),
+  );
+
+  it.effect("keeps the flush timer alive when an offer's shorter scope closes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coalescer = yield* makeThreadLiveEventCoalescer({ coalesceWindow: "50 millis" });
+        yield* Effect.scoped(coalescer.offer({ kind: "event", event: makeToolActivity(1) }));
+        yield* TestClock.adjust("50 millis");
+        const items = yield* coalescer.stream.pipe(Stream.take(1), Stream.runCollect);
+        expect(
+          items.map((item) => (item.kind === "event" ? item.event.sequence : item.kind)),
+        ).toEqual([1]);
+      }),
+    ),
+  );
+
+  it.effect("keeps an unacknowledged batch charged and clears later events on overflow", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const coalescer = yield* makeThreadLiveEventCoalescer({ maxItems: 3 });
+        const first = makeMessage(1, "é".repeat(1_024));
+        yield* coalescer.offer({ kind: "event", event: first });
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const pull = yield* Stream.toPull(coalescer.stream);
+            const batch = yield* pull;
+            expect(
+              batch.map((item) => (item.kind === "event" ? item.event.sequence : null)),
+            ).toEqual([1]);
+            yield* coalescer.offer({ kind: "event", event: makeMessage(2) });
+            yield* coalescer.offer({ kind: "event", event: makeToolActivity(3) });
+            expect((yield* coalescer.usage).retainedItems).toBe(3);
+
+            const overflow = yield* coalescer
+              .offer({ kind: "event", event: makeToolActivity(4, { kind: "tool.completed" }) })
+              .pipe(Effect.result);
+            expect(overflow._tag).toBe("Failure");
+            // Do not pull or acknowledge the batch. Cleanup must still finish.
+            yield* coalescer.closed;
+            expect(yield* coalescer.usage).toEqual({
+              retainedItems: 1,
+              retainedSerializedBytes: Buffer.byteLength(encodeEvent(first)),
+            });
           }),
-        });
-        for (let sequence = 1; sequence <= 257; sequence += 1) {
-          yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(sequence) });
-        }
-
-        const items = Array.from(yield* coalescer.takeAll);
-        expect(snapshots.count).toBe(1);
-        expect(items).toHaveLength(1);
-        expect(items[0]).toMatchObject({ kind: "event", event: { sequence: 9_999 } });
-      }),
-    ),
-  );
-
-  it.effect(
-    "emits snapshot then exactly one marker when synchronization overflows full output",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const replacement = { kind: "event" as const, event: makeMessage(9_999) };
-          const coalescer = yield* makeThreadLiveEventCoalescer({
-            overflowSnapshot: Effect.succeed(replacement),
-          });
-          for (let sequence = 1; sequence <= 256; sequence += 1) {
-            yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(sequence) });
-          }
-          yield* coalescer.offerAndWait({ kind: "synchronized" });
-
-          expect(Array.from(yield* coalescer.takeAll)).toEqual([
-            replacement,
-            { kind: "synchronized" },
-          ]);
-        }),
-      ),
-  );
-
-  it.effect("bounds ingress while output snapshot recovery is stalled", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const snapshotStarted = yield* Deferred.make<void>();
-        const releaseSnapshot = yield* Deferred.make<void>();
-        const snapshotCount = yield* Ref.make(0);
-        const coalescer = yield* makeThreadLiveEventCoalescer({
-          overflowSnapshot: Deferred.succeed(snapshotStarted, undefined).pipe(
-            Effect.andThen(Deferred.await(releaseSnapshot)),
-            Effect.andThen(Ref.update(snapshotCount, (count) => count + 1)),
-            Effect.as({ kind: "event" as const, event: makeMessage(9_999) }),
-          ),
-        });
-        for (let sequence = 1; sequence <= 256; sequence += 1) {
-          yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(sequence) });
-        }
-        const outputOverflow = yield* coalescer
-          .offerAndWait({ kind: "event", event: makeMessage(257) })
-          .pipe(Effect.forkChild);
-        yield* Deferred.await(snapshotStarted);
-        for (let sequence = 258; sequence < 770; sequence += 1) {
-          yield* coalescer.offer({ kind: "event", event: makeMessage(sequence) });
-        }
-        const ingressOverflow = yield* coalescer
-          .offer({ kind: "event", event: makeMessage(770) })
-          .pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Deferred.succeed(releaseSnapshot, undefined);
-        yield* Fiber.join(outputOverflow);
-        yield* Fiber.join(ingressOverflow);
-
-        expect(yield* Ref.get(snapshotCount)).toBe(2);
-        expect(Array.from(yield* coalescer.takeAll)).toEqual([
-          { kind: "event", event: makeMessage(9_999) },
-        ]);
-      }),
-    ),
-  );
-
-  it.effect("terminates with a typed failure when overflow recovery cannot load a snapshot", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const expected = new OrchestrationGetSnapshotError({
-          message: "thread deleted during recovery",
-          cause: threadId,
-        });
-        const coalescer = yield* makeThreadLiveEventCoalescer({
-          overflowSnapshot: Effect.fail(expected),
-        });
-        for (let sequence = 1; sequence <= 257; sequence += 1) {
-          yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(sequence) });
-        }
-        // Once terminal recovery fails, later synchronization markers settle
-        // immediately instead of waiting on a detached input worker.
-        yield* coalescer.offerAndWait({ kind: "synchronized" });
-        expect(yield* Effect.flip(coalescer.takeAll)).toBe(expected);
-      }),
-    ),
-  );
-
-  it.effect("fails once when the authoritative overflow snapshot exceeds the byte budget", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const huge = makeMessage(9_999);
-        if (huge.type !== "thread.message-sent") return;
-        const oversized = {
-          ...huge,
-          payload: { ...huge.payload, text: "x".repeat(2 * 1024 * 1024) },
-        } satisfies OrchestrationEvent;
-        const coalescer = yield* makeThreadLiveEventCoalescer({
-          overflowSnapshot: Effect.succeed({ kind: "event", event: oversized }),
-        });
-        for (let sequence = 1; sequence <= 257; sequence += 1) {
-          yield* coalescer.offerAndWait({ kind: "event", event: makeMessage(sequence) });
-        }
-        const error = yield* Effect.flip(coalescer.takeAll);
-        expect(error).toBeInstanceOf(OrchestrationGetSnapshotError);
-        expect(error.message).toContain("exceeds the live transport budget");
+        );
+        expect(yield* coalescer.usage).toEqual({ retainedItems: 0, retainedSerializedBytes: 0 });
       }),
     ),
   );

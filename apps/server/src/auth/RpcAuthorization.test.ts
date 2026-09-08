@@ -43,6 +43,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("requires write access to import agent session history", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.agentSessionsScan)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.agentSessionsImport)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("treats Pi catalog and cloned-child ownership diagnostics as scoped reads", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.providerListPiSessions)).toBe(
       AuthOrchestrationReadScope,

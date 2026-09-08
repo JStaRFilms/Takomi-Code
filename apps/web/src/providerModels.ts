@@ -5,9 +5,9 @@ import {
   ProviderDriverKind,
   type ModelCapabilities,
   type ProviderInstanceId,
+  type RuntimeMode,
   type ServerProvider,
   type ServerProviderModel,
-  type RuntimeMode,
 } from "@t3tools/contracts";
 import { createModelCapabilities, resolveSelectableModel } from "@t3tools/shared/model";
 
@@ -31,7 +31,7 @@ export function getProviderModels(
   return getProviderSnapshot(providers, provider)?.models ?? [];
 }
 
-export function getProviderSnapshot(
+function getProviderSnapshot(
   providers: ReadonlyArray<ServerProvider>,
   provider: ProviderDriverKind | ProviderInstanceId,
 ): ServerProvider | undefined {
@@ -41,13 +41,13 @@ export function getProviderSnapshot(
   return providers.find((candidate) => candidate.instanceId === defaultInstanceId);
 }
 
+// Pi reports its supported modes per instance. Keep these selectors data-driven
+// so an unavailable or future provider does not inherit Pi's restrictions.
 export function getProviderInteractionModeToggle(
   providers: ReadonlyArray<ServerProvider>,
   provider: ProviderDriverKind | ProviderInstanceId,
 ): boolean {
   const snapshot = getProviderSnapshot(providers, provider);
-  // Missing capabilities are a legacy snapshot: preserve established provider
-  // behavior until the server can make a specific declaration.
   if (snapshot?.capabilities) {
     return snapshot.capabilities.interactionModes?.includes("plan") === true;
   }

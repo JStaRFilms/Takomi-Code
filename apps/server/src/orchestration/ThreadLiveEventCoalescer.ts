@@ -1,9 +1,8 @@
-import {
+import type {
+  OrchestrationEvent,
   OrchestrationGetSnapshotError,
-  type OrchestrationEvent,
-  type OrchestrationThreadStreamItem,
+  OrchestrationThreadStreamItem,
 } from "@t3tools/contracts";
-import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -13,18 +12,11 @@ import * as Queue from "effect/Queue";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
-import { boundedJsonBytes } from "../utils/boundedJsonBytes.ts";
 import { projectActivityEvent } from "./ActivityPayloadProjection.ts";
+import { makeLiveStreamBudget, type RetainedLiveItem } from "./LiveStreamBudget.ts";
 
 const COALESCE_WINDOW = Duration.millis(50);
 const MAX_PENDING_UPDATES = 512;
-const MAX_INGRESS_ITEMS = 512;
-const MAX_OUTPUT_ITEMS = 256;
-const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
-
-function serializedBytes(value: unknown): number {
-  return boundedJsonBytes(value, MAX_OUTPUT_BYTES);
-}
 
 export type ThreadLiveInput =
   | { readonly kind: "event"; readonly event: OrchestrationEvent }
@@ -104,127 +96,22 @@ export function coalesceLiveToolUpdatedEvents(
 export const makeThreadLiveEventCoalescer = Effect.fn("makeThreadLiveEventCoalescer")(
   function* (options?: {
     readonly coalesceWindow?: Duration.Input;
-    readonly overflowSnapshot?: Effect.Effect<
-      OrchestrationThreadStreamItem,
-      OrchestrationGetSnapshotError
-    >;
+    readonly maxItems?: number;
+    readonly maxSerializedBytes?: number;
   }) {
-    const output = yield* Queue.dropping<
-      {
-        readonly item: OrchestrationThreadStreamItem;
-        readonly bytes: number;
-      },
+    const coalescerScope = yield* Effect.scope;
+    const budget = yield* makeLiveStreamBudget(options);
+    const cleanupComplete = yield* Deferred.make<void>();
+    const output = yield* Queue.unbounded<
+      RetainedLiveItem<OrchestrationThreadStreamItem>,
       OrchestrationGetSnapshotError
-    >(MAX_OUTPUT_ITEMS);
-    let queuedBytes = 0;
-    let overflowed = false;
-    let terminated = false;
-    const input = yield* Queue.dropping<{
-      readonly value: ThreadLiveInput;
-      readonly processed?: Deferred.Deferred<void>;
-    }>(MAX_INGRESS_ITEMS);
+    >();
     const mutex = yield* Semaphore.make(1);
     const coalesceWindow = options?.coalesceWindow ?? COALESCE_WINDOW;
-    let pendingUpdates: Array<OrchestrationEvent> = [];
+    let pendingUpdates: Array<RetainedLiveItem<OrchestrationEvent>> = [];
     let windowGeneration = 0;
     let windowFiber: Fiber.Fiber<void, never> | null = null;
-
-    const terminate = Effect.fn("ThreadLiveEventCoalescer.terminate")(function* (
-      error: OrchestrationGetSnapshotError,
-    ) {
-      terminated = true;
-      const pending = (yield* Queue.size(input)) > 0 ? yield* Queue.takeAll(input) : ([] as const);
-      yield* Effect.forEach(
-        pending,
-        (entry) =>
-          entry.processed === undefined
-            ? Effect.void
-            : Deferred.succeed(entry.processed, undefined).pipe(Effect.asVoid),
-        { discard: true },
-      );
-      yield* Queue.shutdown(input);
-      yield* Queue.fail(output, error);
-    });
-
-    const forceSnapshot = Effect.fn("ThreadLiveEventCoalescer.forceSnapshot")(function* (
-      reason: "ingress-count" | "output-count-or-bytes",
-      attemptedBytes: number,
-      completion?: OrchestrationThreadStreamItem,
-    ) {
-      if (overflowed) return;
-      overflowed = true;
-      const queueItems = yield* Queue.size(output);
-      const queueBytesHighWater = queuedBytes;
-      if (queueItems > 0) yield* Queue.takeAll(output);
-      queuedBytes = 0;
-      yield* Effect.logWarning("thread durable subscription overflow; forcing snapshot", {
-        reason,
-        ingressItemLimit: MAX_INGRESS_ITEMS,
-        queueItemLimit: MAX_OUTPUT_ITEMS,
-        queueByteLimit: MAX_OUTPUT_BYTES,
-        queueItems,
-        queueBytesHighWater,
-        attemptedBytes,
-      });
-      if (options?.overflowSnapshot === undefined) return;
-      const startedAt = yield* Clock.currentTimeMillis;
-      yield* options.overflowSnapshot.pipe(
-        Effect.matchEffect({
-          onFailure: terminate,
-          onSuccess: (snapshot) => {
-            const snapshotBytes = serializedBytes(snapshot);
-            const completionBytes = completion === undefined ? 0 : serializedBytes(completion);
-            if (snapshotBytes + completionBytes > MAX_OUTPUT_BYTES) {
-              return terminate(
-                new OrchestrationGetSnapshotError({
-                  message: "Authoritative thread snapshot exceeds the live transport budget",
-                  cause: {
-                    snapshotBytes,
-                    completionBytes,
-                    byteLimit: MAX_OUTPUT_BYTES,
-                  },
-                }),
-              );
-            }
-            queuedBytes = snapshotBytes + completionBytes;
-            overflowed = false;
-            return Clock.currentTimeMillis.pipe(
-              Effect.tap((finishedAt) =>
-                Effect.logDebug("thread subscription converged by snapshot", {
-                  reason,
-                  convergenceMs: finishedAt - startedAt,
-                }),
-              ),
-              Effect.andThen(Queue.offer(output, { item: snapshot, bytes: snapshotBytes })),
-              Effect.andThen(
-                completion === undefined
-                  ? Effect.void
-                  : Queue.offer(output, { item: completion, bytes: completionBytes }).pipe(
-                      Effect.asVoid,
-                    ),
-              ),
-            );
-          },
-        }),
-      );
-    });
-
-    const enqueueOutput = Effect.fn("ThreadLiveEventCoalescer.enqueueOutput")(function* (
-      item: OrchestrationThreadStreamItem,
-    ) {
-      if (overflowed) return;
-      const bytes = serializedBytes(item);
-      if (queuedBytes + bytes <= MAX_OUTPUT_BYTES) {
-        queuedBytes += bytes;
-        if (yield* Queue.offer(output, { item, bytes })) return;
-        queuedBytes = Math.max(0, queuedBytes - bytes);
-      }
-      yield* forceSnapshot(
-        "output-count-or-bytes",
-        bytes,
-        item.kind === "synchronized" ? item : undefined,
-      );
-    });
+    let closed = false;
 
     const cancelWindow = Effect.fn("ThreadLiveEventCoalescer.cancelWindow")(function* () {
       const fiber = windowFiber;
@@ -235,20 +122,21 @@ export const makeThreadLiveEventCoalescer = Effect.fn("makeThreadLiveEventCoales
       yield* Fiber.interrupt(fiber);
     });
 
-    const flushPending = Effect.fn("ThreadLiveEventCoalescer.flushPending")(function* (
-      boundary?: OrchestrationEvent,
-    ) {
-      const events = boundary ? [...pendingUpdates, boundary] : pendingUpdates;
-      pendingUpdates = [];
-      if (events.length === 0) {
+    const flushPending = Effect.fn("ThreadLiveEventCoalescer.flushPending")(function* () {
+      if (pendingUpdates.length === 0) {
         return;
       }
-      yield* Effect.forEach(
-        coalesceLiveToolUpdatedEvents(events),
-        (event) => enqueueOutput({ kind: "event", event: projectActivityEvent(event) }),
-        { discard: true },
+      const items = yield* budget.replace(
+        pendingUpdates,
+        coalesceLiveToolUpdatedEvents(pendingUpdates.map((item) => item.value)).map((event) => ({
+          kind: "event" as const,
+          event,
+        })),
+        (item) => item.event,
       );
-    });
+      pendingUpdates = [];
+      yield* Queue.offerAll(output, items);
+    }, Effect.uninterruptible);
 
     const flushWindow = (generation: number) =>
       Effect.sleep(coalesceWindow).pipe(
@@ -264,113 +152,90 @@ export const makeThreadLiveEventCoalescer = Effect.fn("makeThreadLiveEventCoales
             }
           }),
         ),
+        Effect.catchTags({ OrchestrationGetSnapshotError: () => Effect.void }),
       );
 
-    const process = Effect.fn("ThreadLiveEventCoalescer.process")(function* (
-      input: ThreadLiveInput,
+    // Keep each source batch together so a synchronization marker cannot pass
+    // events already pulled from PubSub but still being coalesced.
+    const offerAll = Effect.fn("ThreadLiveEventCoalescer.offerAll")(function* (
+      inputs: ReadonlyArray<ThreadLiveInput>,
     ) {
       yield* mutex.withPermits(1)(
-        Effect.gen(function* () {
-          if (input.kind === "event" && isToolUpdated(input.event)) {
-            pendingUpdates.push(input.event);
-            if (pendingUpdates.length === 1) {
-              const generation = ++windowGeneration;
-              windowFiber = yield* Effect.forkScoped(Effect.ignore(flushWindow(generation)));
-            }
-            if (pendingUpdates.length >= MAX_PENDING_UPDATES) {
+        Effect.forEach(
+          inputs,
+          (input) =>
+            Effect.gen(function* () {
+              yield* budget.check;
+              if (input.kind === "event") {
+                // Retain only the client payload, not full persisted tool output.
+                yield* budget.retain(projectActivityEvent(input.event)).pipe(
+                  Effect.tap((item) => Effect.sync(() => pendingUpdates.push(item))),
+                  Effect.uninterruptible,
+                );
+              }
+              if (input.kind === "event" && isToolUpdated(input.event)) {
+                if (pendingUpdates.length === 1) {
+                  const generation = ++windowGeneration;
+                  windowFiber = yield* Effect.forkIn(flushWindow(generation), coalescerScope);
+                }
+                if (pendingUpdates.length >= MAX_PENDING_UPDATES) {
+                  yield* cancelWindow();
+                  windowGeneration += 1;
+                  yield* flushPending();
+                }
+                return;
+              }
+
               yield* cancelWindow();
               windowGeneration += 1;
+              // A non-update event closes the run immediately. The coalescer keeps
+              // that boundary after the final update from the run.
               yield* flushPending();
-            }
-            return;
-          }
-
-          yield* cancelWindow();
-          windowGeneration += 1;
-          // A non-update event closes the run immediately. The coalescer keeps
-          // that boundary after the final update from the run.
-          if (input.kind === "event") {
-            yield* flushPending(input.event);
-          } else {
-            yield* flushPending();
-            yield* enqueueOutput({ kind: "synchronized" });
-          }
-        }),
+              if (input.kind === "synchronized") {
+                yield* budget.retain({ kind: "synchronized" as const }).pipe(
+                  Effect.flatMap((marker) => Queue.offer(output, marker)),
+                  Effect.uninterruptible,
+                );
+              }
+            }),
+          { discard: true },
+        ),
       );
     });
 
-    yield* Stream.fromQueue(input).pipe(
-      Stream.runForEach(({ value, processed }) =>
-        process(value).pipe(
-          Effect.andThen(processed ? Deferred.succeed(processed, undefined) : Effect.void),
-        ),
-      ),
+    const close = (error?: OrchestrationGetSnapshotError) =>
+      mutex.withPermits(1)(
+        Effect.gen(function* () {
+          if (closed) {
+            return;
+          }
+          closed = true;
+          windowGeneration += 1;
+          yield* cancelWindow();
+          budget.release(pendingUpdates);
+          pendingUpdates = [];
+          budget.release(yield* Queue.clear(output).pipe(Effect.orDie));
+          if (error) {
+            yield* Queue.fail(output, error);
+          }
+          yield* Queue.shutdown(output);
+          yield* Deferred.succeed(cleanupComplete, undefined);
+        }),
+      );
+
+    yield* Effect.addFinalizer(() => close());
+    yield* budget.failed.pipe(
+      Effect.catchTags({ OrchestrationGetSnapshotError: close }),
       Effect.forkScoped,
     );
 
-    const recoverIngressOverflow = Effect.fn("ThreadLiveEventCoalescer.recoverIngressOverflow")(
-      function* () {
-        const dropped =
-          (yield* Queue.size(input)) > 0 ? yield* Queue.takeAll(input) : ([] as const);
-        yield* mutex.withPermits(1)(
-          Effect.gen(function* () {
-            yield* cancelWindow();
-            windowGeneration += 1;
-            pendingUpdates = [];
-            yield* forceSnapshot("ingress-count", 0);
-          }),
-        );
-        yield* Effect.forEach(
-          dropped,
-          (entry) =>
-            entry.processed === undefined
-              ? Effect.void
-              : Deferred.succeed(entry.processed, undefined).pipe(Effect.asVoid),
-          { discard: true },
-        );
-      },
-    );
-
-    const offer = (value: ThreadLiveInput) =>
-      terminated
-        ? Effect.void
-        : Queue.offer(input, { value }).pipe(
-            Effect.flatMap((accepted) => (accepted ? Effect.void : recoverIngressOverflow())),
-          );
-
-    // Synchronization callers wait for their marker to pass through the same
-    // ordered input queue before draining output produced ahead of it. If an
-    // ingress overflow races the marker, recovery settles its deferred only
-    // after the replacement snapshot has been enqueued.
-    const offerAndWait = Effect.fn("ThreadLiveEventCoalescer.offerAndWait")(function* (
-      value: ThreadLiveInput,
-    ) {
-      if (terminated) return;
-      const processed = yield* Deferred.make<void>();
-      const accepted = yield* Queue.offer(input, { value, processed });
-      if (!accepted) {
-        yield* recoverIngressOverflow();
-        yield* process(value);
-        yield* Deferred.succeed(processed, undefined);
-      }
-      yield* Deferred.await(processed);
-    });
-
     return {
-      offer,
-      offerAndWait,
-      stream: Stream.fromQueue(output).pipe(
-        Stream.map((next) => {
-          queuedBytes = Math.max(0, queuedBytes - next.bytes);
-          return next.item;
-        }),
-      ),
-      takeAll: Queue.takeAll(output).pipe(
-        Effect.map((items) => {
-          queuedBytes = 0;
-          return items.map((next) => next.item);
-        }),
-      ),
+      offer: (input: ThreadLiveInput) => offerAll([input]),
+      offerAll,
+      stream: budget.deliver(Stream.fromQueue(output)),
+      failed: budget.failed,
+      closed: Deferred.await(cleanupComplete),
+      usage: budget.usage,
     } as const;
   },
 );

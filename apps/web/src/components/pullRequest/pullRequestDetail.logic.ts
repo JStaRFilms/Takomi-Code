@@ -1,22 +1,44 @@
-import type {
-  PullRequestAction,
-  PullRequestActor,
-  PullRequestBaseComparison,
-  PullRequestCheck,
-  PullRequestChecksState,
-  PullRequestComment,
-  PullRequestCommit,
-  PullRequestDetailView,
-  PullRequestMergeability,
-  PullRequestReaction,
-  PullRequestReviewThread,
-  PullRequestState,
-  PullRequestUpdateMethod,
-  SourceControlProviderKind,
-  VcsRef,
+import * as Schema from "effect/Schema";
+
+import {
+  PullRequestDetail,
+  type PullRequestAction,
+  type PullRequestActor,
+  type PullRequestBaseComparison,
+  type PullRequestCheck,
+  type PullRequestChecksState,
+  type PullRequestComment,
+  type PullRequestCommit,
+  type PullRequestDetailView,
+  type PullRequestMergeability,
+  type PullRequestMergeMethod,
+  type PullRequestReaction,
+  type PullRequestReviewThread,
+  type PullRequestState,
+  type PullRequestUpdateMethod,
+  type SourceControlProviderKind,
+  type VcsRef,
 } from "@t3tools/contracts";
 
 import { inferReviewCommentFenceLanguage, type ReviewCommentContext } from "~/reviewCommentContext";
+
+export const PULL_REQUEST_MERGE_METHOD_LABELS: Record<PullRequestMergeMethod, string> = {
+  merge: "Merge",
+  squash: "Squash and merge",
+  rebase: "Rebase and merge",
+};
+
+export function resolvePullRequestMergeMethod(
+  allowed: ReadonlyArray<PullRequestMergeMethod>,
+  current: PullRequestMergeMethod | null,
+  projectDefault: PullRequestMergeMethod | undefined,
+  lastSelected: PullRequestMergeMethod,
+): PullRequestMergeMethod {
+  for (const method of [current, projectDefault, lastSelected]) {
+    if (method && allowed.includes(method)) return method;
+  }
+  return allowed[0] ?? "merge";
+}
 
 const safeShellArgument = /^[A-Za-z0-9._/@+=,-]+$/;
 const bitbucketRepositoryName = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
@@ -184,13 +206,6 @@ export function isStackedPullRequestBase(
     ? defaultRef.name.slice(remotePrefix.length)
     : defaultRef.name;
   return defaultBranch !== baseBranch;
-}
-
-/** Plain-language state, shown beside the author. Conflicts are a merge signal, not a state. */
-export function describePullRequestState(state: PullRequestState, isDraft: boolean): string {
-  if (state === "merged") return "Merged";
-  if (state === "closed") return "Closed";
-  return isDraft ? "Draft" : "Ready for review";
 }
 
 /** Chronological ascending, oldest to newest — reversed for the "newest" reading order. */
@@ -1008,4 +1023,76 @@ const ACTION_NEEDS_HOST_REFRESH: Record<PullRequestAction, boolean> = {
 
 export function pullRequestActionNeedsHostRefresh(action: PullRequestAction): boolean {
   return ACTION_NEEDS_HOST_REFRESH[action];
+}
+
+type SnapshotStorage = Pick<Storage, "getItem" | "setItem">;
+
+export interface PullRequestDetailSnapshotRef {
+  readonly projectId: string;
+  readonly repository: string;
+  readonly number: number;
+}
+
+const pullRequestDetailSnapshotKey = (
+  environmentId: string,
+  reference: PullRequestDetailSnapshotRef,
+) =>
+  `t3.pullRequests.detail:${environmentId}:${reference.projectId}:${reference.repository}#${reference.number}`;
+
+const decodeDetailSnapshot = Schema.decodeUnknownOption(PullRequestDetail);
+
+/**
+ * The last detail answered for this change request, brought back across a reload. The registry
+ * the queries live in is recreated with the renderer, so without this a reopen cold-starts
+ * into a full-tab ghost even though the title, author, and the rest barely moved. Hydrated,
+ * the chrome stays and the live read replaces fields in place — line counts included.
+ */
+export function readPullRequestDetailSnapshot(
+  storage: SnapshotStorage | undefined,
+  environmentId: string,
+  reference: PullRequestDetailSnapshotRef,
+): PullRequestDetail | null {
+  try {
+    const raw = storage?.getItem(pullRequestDetailSnapshotKey(environmentId, reference));
+    if (!raw) return null;
+    const decoded = decodeDetailSnapshot(JSON.parse(raw));
+    return decoded._tag === "Some" ? decoded.value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writePullRequestDetailSnapshot(
+  storage: SnapshotStorage | undefined,
+  environmentId: string,
+  reference: PullRequestDetailSnapshotRef,
+  detail: PullRequestDetail,
+): void {
+  try {
+    storage?.setItem(
+      pullRequestDetailSnapshotKey(environmentId, reference),
+      JSON.stringify(detail),
+    );
+  } catch {
+    // Quota or a private-mode store: the next open waits on the live read, which is the
+    // cold start this snapshot exists to avoid, not a failure of its own.
+  }
+}
+
+/** Live host state wins; a snapshot is only the same change request, never a neighbour's. */
+export function resolveDisplayedPullRequestDetail(input: {
+  readonly live: PullRequestDetail | null;
+  readonly cached: PullRequestDetail | null;
+  readonly reference: PullRequestDetailSnapshotRef;
+}): PullRequestDetail | null {
+  if (input.live !== null) return input.live;
+  if (
+    input.cached !== null &&
+    input.cached.projectId === input.reference.projectId &&
+    input.cached.repository.toLowerCase() === input.reference.repository.toLowerCase() &&
+    input.cached.number === input.reference.number
+  ) {
+    return input.cached;
+  }
+  return null;
 }

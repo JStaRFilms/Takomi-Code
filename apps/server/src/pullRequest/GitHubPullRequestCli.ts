@@ -18,6 +18,7 @@ import {
   type PullRequestReviewVerdict,
   type PullRequestReviewerCandidateList,
   type PullRequestReviewerKind,
+  type PullRequestLabelCandidateList,
   type PullRequestThreadCommentsResult,
   type PullRequestUpdateMethod,
 } from "@t3tools/contracts";
@@ -42,6 +43,9 @@ import {
   decodeReactionSubjectScopeJson,
   decodeRepositoryAccessJson,
   decodeReviewerCandidatesJson,
+  decodeLabelCandidatesJson,
+  buildLabelRequestJson,
+  LABEL_CANDIDATES_GRAPHQL_QUERY,
   decodeReviewDismissalsJson,
   decodeReviewThreadCommentsJson,
   decodeReviewThreadsJson,
@@ -93,7 +97,7 @@ import type { ProviderListCursor } from "./PullRequestProvider.ts";
  * Names the read that produced unusable output, so a failure reports the call it came from
  * rather than borrowing another operation's message.
  */
-export class GitHubPullRequestReadError extends Schema.TaggedErrorClass<GitHubPullRequestReadError>()(
+export class GitHubPullRequestReadError extends Schema.TaggedError<GitHubPullRequestReadError>()(
   "GitHubPullRequestReadError",
   {
     command: Schema.Literal("gh"),
@@ -112,7 +116,7 @@ export class GitHubPullRequestReadError extends Schema.TaggedErrorClass<GitHubPu
 }
 
 /** Not a decode failure: gh answered, the account it answered for just has no login. */
-export class GitHubViewerLoginUnavailableError extends Schema.TaggedErrorClass<GitHubViewerLoginUnavailableError>()(
+export class GitHubViewerLoginUnavailableError extends Schema.TaggedError<GitHubViewerLoginUnavailableError>()(
   "GitHubViewerLoginUnavailableError",
   {
     command: Schema.Literal("gh"),
@@ -129,7 +133,7 @@ export class GitHubViewerLoginUnavailableError extends Schema.TaggedErrorClass<G
 }
 
 /** Not a decode failure: gh answered, but the pull request carried no update time. */
-export class GitHubPullRequestUpdatedAtUnavailableError extends Schema.TaggedErrorClass<GitHubPullRequestUpdatedAtUnavailableError>()(
+export class GitHubPullRequestUpdatedAtUnavailableError extends Schema.TaggedError<GitHubPullRequestUpdatedAtUnavailableError>()(
   "GitHubPullRequestUpdatedAtUnavailableError",
   {
     command: Schema.Literal("gh"),
@@ -148,7 +152,7 @@ export class GitHubPullRequestUpdatedAtUnavailableError extends Schema.TaggedErr
 }
 
 /** Not a decode failure: the reader asked to carry on from a cursor this walk never handed out. */
-export class GitHubDiffCursorError extends Schema.TaggedErrorClass<GitHubDiffCursorError>()(
+export class GitHubDiffCursorError extends Schema.TaggedError<GitHubDiffCursorError>()(
   "GitHubDiffCursorError",
   {
     command: Schema.Literal("gh"),
@@ -165,7 +169,7 @@ export class GitHubDiffCursorError extends Schema.TaggedErrorClass<GitHubDiffCur
 }
 
 /** Not a decode failure: the reader named a commit that is not a sha this repository could hold. */
-export class GitHubDiffCommitError extends Schema.TaggedErrorClass<GitHubDiffCommitError>()(
+export class GitHubDiffCommitError extends Schema.TaggedError<GitHubDiffCommitError>()(
   "GitHubDiffCommitError",
   {
     command: Schema.Literal("gh"),
@@ -182,7 +186,7 @@ export class GitHubDiffCommitError extends Schema.TaggedErrorClass<GitHubDiffCom
 }
 
 /** The revisions read successfully, but cannot name both sides this file needs. */
-export class GitHubDiffRevisionsUnavailableError extends Schema.TaggedErrorClass<GitHubDiffRevisionsUnavailableError>()(
+export class GitHubDiffRevisionsUnavailableError extends Schema.TaggedError<GitHubDiffRevisionsUnavailableError>()(
   "GitHubDiffRevisionsUnavailableError",
   {
     command: Schema.Literal("gh"),
@@ -203,7 +207,7 @@ export class GitHubDiffRevisionsUnavailableError extends Schema.TaggedErrorClass
 }
 
 /** A blob exists, but expanding it would be unsafe or would not produce text. */
-export class GitHubDiffFileContentsUnavailableError extends Schema.TaggedErrorClass<GitHubDiffFileContentsUnavailableError>()(
+export class GitHubDiffFileContentsUnavailableError extends Schema.TaggedError<GitHubDiffFileContentsUnavailableError>()(
   "GitHubDiffFileContentsUnavailableError",
   {
     command: Schema.Literal("gh"),
@@ -229,7 +233,7 @@ export class GitHubDiffFileContentsUnavailableError extends Schema.TaggedErrorCl
  * name that is not one is refused here rather than escaped into something GitHub might read as a
  * qualifier of its own.
  */
-export class GitHubRepositorySelectorError extends Schema.TaggedErrorClass<GitHubRepositorySelectorError>()(
+export class GitHubRepositorySelectorError extends Schema.TaggedError<GitHubRepositorySelectorError>()(
   "GitHubRepositorySelectorError",
   {
     command: Schema.Literal("gh"),
@@ -247,7 +251,7 @@ export class GitHubRepositorySelectorError extends Schema.TaggedErrorClass<GitHu
 }
 
 /** Not a decode failure: the reader named a subject this pull request never handed out. */
-export class GitHubSubjectScopeError extends Schema.TaggedErrorClass<GitHubSubjectScopeError>()(
+export class GitHubSubjectScopeError extends Schema.TaggedError<GitHubSubjectScopeError>()(
   "GitHubSubjectScopeError",
   {
     command: Schema.Literal("gh"),
@@ -265,7 +269,7 @@ export class GitHubSubjectScopeError extends Schema.TaggedErrorClass<GitHubSubje
 }
 
 /** GitHub answered successfully, but approving every returned workflow would be unsafe. */
-export class GitHubWorkflowApprovalRefusedError extends Schema.TaggedErrorClass<GitHubWorkflowApprovalRefusedError>()(
+export class GitHubWorkflowApprovalRefusedError extends Schema.TaggedError<GitHubWorkflowApprovalRefusedError>()(
   "GitHubWorkflowApprovalRefusedError",
   {
     command: Schema.Literal("gh"),
@@ -292,7 +296,7 @@ export class GitHubWorkflowApprovalRefusedError extends Schema.TaggedErrorClass<
 }
 
 /** GitHub omitted the immutable head identity needed to scope an approval safely. */
-export class GitHubWorkflowApprovalHeadUnavailableError extends Schema.TaggedErrorClass<GitHubWorkflowApprovalHeadUnavailableError>()(
+export class GitHubWorkflowApprovalHeadUnavailableError extends Schema.TaggedError<GitHubWorkflowApprovalHeadUnavailableError>()(
   "GitHubWorkflowApprovalHeadUnavailableError",
   {
     command: Schema.Literal("gh"),
@@ -310,7 +314,7 @@ export class GitHubWorkflowApprovalHeadUnavailableError extends Schema.TaggedErr
 }
 
 /** The pull request moved after its approval candidates were read. */
-export class GitHubWorkflowApprovalHeadChangedError extends Schema.TaggedErrorClass<GitHubWorkflowApprovalHeadChangedError>()(
+export class GitHubWorkflowApprovalHeadChangedError extends Schema.TaggedError<GitHubWorkflowApprovalHeadChangedError>()(
   "GitHubWorkflowApprovalHeadChangedError",
   {
     command: Schema.Literal("gh"),
@@ -464,6 +468,9 @@ export class GitHubPullRequestCli extends Context.Service<
         readonly headBranch: string;
         readonly baseBranch: string;
         readonly state: "open" | "closed" | "merged";
+        readonly isDraft?: boolean;
+        readonly closedAt?: string | null;
+        readonly mergedAt?: string | null;
         readonly updatedAt: string;
       },
       GitHubPullRequestCliError
@@ -597,6 +604,24 @@ export class GitHubPullRequestCli extends Context.Service<
       readonly requested: boolean;
     }) => Effect.Effect<void, GitHubPullRequestCliError>;
 
+    /** The repository's labels, and which of them this pull request already wears. */
+    readonly listLabelCandidates: (input: {
+      readonly cwd: string;
+      readonly repository: string;
+      readonly host: string;
+      readonly number: number;
+    }) => Effect.Effect<PullRequestLabelCandidateList, GitHubPullRequestCliError>;
+
+    readonly setLabels: (input: {
+      readonly cwd: string;
+      readonly repository: string;
+      readonly host: string;
+      readonly number: number;
+      readonly labels: ReadonlyArray<string>;
+      /** False takes each label off; true adds each to whatever is already there. */
+      readonly applied: boolean;
+    }) => Effect.Effect<void, GitHubPullRequestCliError>;
+
     readonly runPullRequestAction: (input: {
       readonly cwd: string;
       readonly repository: string;
@@ -689,7 +714,7 @@ export class GitHubPullRequestCli extends Context.Service<
  * The host is not read off the identity: it travels alongside it, because the identity a
  * project records is the path below its host and never names the host itself.
  */
-export function parseRepositorySelector(value: string): {
+function parseRepositorySelector(value: string): {
   readonly owner: string;
   readonly name: string;
 } {
@@ -955,6 +980,7 @@ function actionArgs(
   }
 }
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const github = yield* GitHubCli.GitHubCli;
   const graphQlBudget = yield* GitHubGraphQlBudget.GitHubGraphQlBudget;
@@ -1628,6 +1654,9 @@ export const make = Effect.gen(function* () {
                   headBranch: summary.headRefName,
                   baseBranch: summary.baseRefName,
                   state: summary.state ?? "open",
+                  ...(summary.isDraft === true ? { isDraft: true } : {}),
+                  closedAt: summary.closedAt ?? null,
+                  mergedAt: summary.mergedAt ?? null,
                   updatedAt: summary.updatedAt,
                 }),
           ),
@@ -1975,6 +2004,56 @@ export const make = Effect.gen(function* () {
           stdin: buildReviewerRequestJson(input.reviewers),
         })
         .pipe(Effect.asVoid);
+    },
+
+    listLabelCandidates: (input) => {
+      const { owner, name } = parseRepositorySelector(input.repository);
+      return graphqlRead({
+        cwd: input.cwd,
+        host: input.host,
+        operation: "listLabelCandidates",
+        allowReserve: true,
+        variables: [
+          ["-f", `owner=${owner}`],
+          ["-f", `name=${name}`],
+          ["-F", `number=${input.number}`],
+        ],
+        query: LABEL_CANDIDATES_GRAPHQL_QUERY,
+        decode: decodeLabelCandidatesJson,
+      });
+    },
+
+    setLabels: (input) => {
+      const { owner, name } = parseRepositorySelector(input.repository);
+      // A pull request is an issue to the labels API. Adding posts a list and leaves what was
+      // already there; taking off is one delete per label, since the endpoint names one in its
+      // path. The name goes into the path encoded, because a label may carry a space or a slash.
+      const issue = `repos/${owner}/${name}/issues/${input.number}/labels`;
+      if (input.applied) {
+        return github
+          .execute({
+            cwd: input.cwd,
+            args: ["api", "--method", "POST", "--hostname", input.host, issue, "--input", "-"],
+            stdin: buildLabelRequestJson(input.labels),
+          })
+          .pipe(Effect.asVoid);
+      }
+      return Effect.forEach(
+        input.labels,
+        (label) =>
+          github.execute({
+            cwd: input.cwd,
+            args: [
+              "api",
+              "--method",
+              "DELETE",
+              "--hostname",
+              input.host,
+              `${issue}/${encodeURIComponent(label)}`,
+            ],
+          }),
+        { concurrency: 1, discard: true },
+      );
     },
 
     runPullRequestAction: (input) => {

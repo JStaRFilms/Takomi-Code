@@ -15,10 +15,6 @@ import {
 import * as ConnectionResolver from "./resolver.ts";
 import * as RpcSession from "../rpc/session.ts";
 
-// Each deadline starts only when its own stage starts. The supervisor retains
-// a 50-second ceiling, so a healthy slow preparation cannot consume sync time.
-export const CONNECTION_STAGE_TIMEOUT = "15 seconds";
-
 export type ConnectionDriverProgress =
   | {
       readonly stage: "preparing";
@@ -42,6 +38,10 @@ export class ConnectionDriver extends Context.Service<
     ) => Effect.Effect<EnvironmentConnectionLease, ConnectionAttemptError, Scope.Scope>;
   }
 >()("@t3tools/client-runtime/connection/driver/ConnectionDriver") {}
+
+// The driver now uses the supervisor's single setup deadline, but unit tests
+// retain this stage helper to cover the individual timeout diagnostics.
+export const CONNECTION_STAGE_TIMEOUT = "15 seconds";
 
 export function withStageDeadline<A, E, R>(
   stage: ConnectionAttemptStage,
@@ -92,6 +92,7 @@ export function withStageDeadline<A, E, R>(
   );
 }
 
+/** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const resolver = yield* ConnectionResolver.ConnectionResolver;
   const sessions = yield* RpcSession.RpcSessionFactory;
@@ -106,19 +107,11 @@ export const make = Effect.gen(function* () {
       "connection.target.kind": target._tag,
     });
     yield* reportProgress({ stage: "preparing" });
-    const prepared = yield* withStageDeadline("preparing", target.label, resolver.prepare(entry));
+    const prepared = yield* resolver.prepare(entry);
     yield* reportProgress({ stage: "opening", prepared });
-    const session = yield* withStageDeadline(
-      "opening",
-      target.label,
-      Effect.gen(function* () {
-        const openedSession = yield* sessions.connect(prepared);
-        yield* openedSession.opened ?? Effect.void;
-        return openedSession;
-      }),
-    );
+    const session = yield* sessions.connect(prepared);
     yield* reportProgress({ stage: "synchronizing", prepared });
-    yield* withStageDeadline("synchronizing", target.label, session.ready);
+    yield* session.ready;
     return { prepared, session } satisfies EnvironmentConnectionLease;
   });
 
