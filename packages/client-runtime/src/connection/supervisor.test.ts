@@ -435,7 +435,7 @@ describe("EnvironmentSupervisor", () => {
         supervisor.state,
         (state) => state.phase === "connecting" && state.stage === "synchronizing",
       );
-      yield* TestClock.adjust("49 seconds");
+      yield* TestClock.adjust("14 seconds");
       expect((yield* SubscriptionRef.get(supervisor.state)).stage).toBe("synchronizing");
 
       yield* TestClock.adjust("1 second");
@@ -446,7 +446,7 @@ describe("EnvironmentSupervisor", () => {
         lastFailure: {
           _tag: "ConnectionTransientError",
           reason: "timeout",
-          message: "Test environment exceeded the 50 second connection safety ceiling.",
+          message: "Test environment did not respond during connection setup.",
         },
       });
       expect(yield* Ref.get(harness.releaseCount)).toBe(1);
@@ -467,7 +467,7 @@ describe("EnvironmentSupervisor", () => {
         supervisor.state,
         (state) => state.phase === "connecting" && state.stage === "preparing",
       );
-      yield* TestClock.adjust("50 seconds");
+      yield* TestClock.adjust("15 seconds");
       const retrying = yield* eventuallyState(
         supervisor.state,
         (state) => state.phase === "backoff" && state.attempt === 1,
@@ -477,7 +477,7 @@ describe("EnvironmentSupervisor", () => {
         lastFailure: {
           _tag: "ConnectionTransientError",
           reason: "timeout",
-          message: "Test environment exceeded the 50 second connection safety ceiling.",
+          message: "Test environment did not respond during connection setup.",
         },
       });
     }).pipe(Effect.provide(TestClock.layer())),
@@ -717,7 +717,7 @@ describe("EnvironmentSupervisor", () => {
 
       expect(yield* Ref.get(harness.prepareCount)).toBe(1);
 
-      yield* TestClock.adjust("50 seconds");
+      yield* TestClock.adjust("15 seconds");
       const retrying = yield* eventuallyState(
         supervisor.state,
         (state) => state.phase === "backoff" && state.attempt === 1,
@@ -727,7 +727,7 @@ describe("EnvironmentSupervisor", () => {
         lastFailure: {
           _tag: "ConnectionTransientError",
           reason: "timeout",
-          message: "Test environment exceeded the 50 second connection safety ceiling.",
+          message: "Test environment did not respond during connection setup.",
         },
       });
       expect(yield* Ref.get(harness.prepareCount)).toBe(1);

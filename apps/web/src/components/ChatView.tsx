@@ -165,6 +165,7 @@ import { useTheme } from "../hooks/useTheme";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { subscribeSnapShotComposerFocus } from "../lib/desktopSnapShot";
+import { playTurnCompleteSound } from "../lib/turnCompleteSound";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
@@ -397,6 +398,7 @@ import {
   shouldOpenProactivePullRequest,
   shouldRetargetThreadPullRequestPanel,
   shouldOpenProactiveTurnDiff,
+  shouldPlayTurnCompleteChime,
   shouldRenderPreviewMiniPlayer,
   getStartedThreadModelChangeBlockReason,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
@@ -4170,6 +4172,7 @@ export default function ChatView(props: ChatViewProps) {
   const proactivePanelObservationRef = useRef<ReturnType<
     typeof observeProactivePanelUserChoice
   > | null>(null);
+  const lastPlayedTurnCompleteChimeRef = useRef<TurnId | null>(null);
 
   useEffect(() => {
     if (!isServerThread || activeThreadKey === null || activeThreadRef === null) {
@@ -4222,6 +4225,19 @@ export default function ChatView(props: ChatViewProps) {
     })
       ? settledTurnId
       : null;
+    if (
+      settings.turnCompletePlaySound &&
+      shouldPlayTurnCompleteChime({
+        previousRunningTurnId,
+        runningTurnId: activeRunningTurnId,
+        settledTurnId,
+        turnCompleted: activeLatestTurn?.state === "completed",
+        lastPlayedTurnId: lastPlayedTurnCompleteChimeRef.current,
+      })
+    ) {
+      lastPlayedTurnCompleteChimeRef.current = settledTurnId;
+      playTurnCompleteSound();
+    }
     const proactivePanelsEnabled = settings.proactivePanelsEnabled && !shouldUseRightPanelSheet;
     const eligibleCompletion = proactivePanelsEnabled && newlyCompletedTurnId !== null;
     const completedCheckpoint = eligibleCompletion
@@ -4279,6 +4295,7 @@ export default function ChatView(props: ChatViewProps) {
     onDiffPanelOpen,
     pullRequestsCapabilityKnown,
     settings.proactivePanelsEnabled,
+    settings.turnCompletePlaySound,
     shouldUseRightPanelSheet,
     supportsPullRequests,
     threadDetailLoading,

@@ -209,6 +209,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["automatically open diff pull request pr right panel agent completion"],
   },
   {
+    id: "turn-complete-sound",
+    title: "Turn complete sound",
+    to: "/settings/general",
+    searchTerms: ["chime ding notification sound agent finished done completion"],
+  },
+  {
     id: "skills-in-slash-menu",
     title: "Show skills in slash menu",
     to: "/settings/general",

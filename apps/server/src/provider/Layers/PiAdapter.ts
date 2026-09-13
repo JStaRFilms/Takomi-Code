@@ -824,28 +824,190 @@ function nativeTakomiTaskStatus(
   return normalizeTakomiTaskStatus(record.status ?? record.state) ?? fallback;
 }
 
+const MERGE_MAX_COUNTERS: ReadonlySet<string> = new Set([
+  "tokens",
+  "total",
+  "totalTokens",
+  "toolCount",
+  "durationMs",
+  "input",
+  "output",
+  "cacheRead",
+  "cacheWrite",
+  "cost",
+  "turns",
+]);
+
+/**
+ * Best-wins merge for one child's fields across Details snapshots. A naive
+ * spread lets a stale placeholder progress entry (`tokens: 0, toolCount: 0`,
+ * as the extension emits alongside real results) clobber the end-of-task
+ * totals the same payload carries in `results[]`. Counters keep the max,
+ * terminal status sticks, nested usage/progress records merge field by field,
+ * arrays keep the longest (cumulative), and empty strings never overwrite
+ * real text.
+ */
+function mergeRowValues(
+  existing: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!existing) return { ...incoming };
+  const merged: Record<string, unknown> = { ...existing };
+  for (const [key, next] of Object.entries(incoming)) {
+    const prev = existing[key];
+    if (next === undefined || next === null) continue;
+    if (prev === undefined || prev === null) {
+      merged[key] = next;
+      continue;
+    }
+    if (MERGE_MAX_COUNTERS.has(key) && typeof next === "number" && typeof prev === "number") {
+      merged[key] = Math.max(prev, next);
+      continue;
+    }
+    if ((key === "status" || key === "state") && typeof next === "string") {
+      const prevStatus = normalizeTakomiTaskStatus(prev);
+      const nextStatus = normalizeTakomiTaskStatus(next);
+      const prevTerminal = prevStatus !== undefined && isTerminalTakomiTaskStatus(prevStatus);
+      const nextTerminal = nextStatus !== undefined && isTerminalTakomiTaskStatus(nextStatus);
+      merged[key] = nextTerminal || !prevTerminal ? next : prev;
+      continue;
+    }
+    if ((key === "usage" || key === "progress") && isRecord(prev) && isRecord(next)) {
+      merged[key] = mergeRowValues(prev, next);
+      continue;
+    }
+    if (Array.isArray(next)) {
+      merged[key] = Array.isArray(prev) && prev.length >= next.length ? prev : next;
+      continue;
+    }
+    if (typeof next === "string") {
+      merged[key] = next.trim().length === 0 ? prev : next;
+      continue;
+    }
+    merged[key] = next;
+  }
+  return merged;
+}
+
+/**
+ * Cross-snapshot best-wins for typed usage: a final placeholder-zero frame
+ * must not regress a real live total an earlier partial already reported.
+ */
+function bestTypedUsage(
+  prev: RuntimeTaskUsage | undefined,
+  next: RuntimeTaskUsage | undefined,
+): RuntimeTaskUsage | undefined {
+  if (!prev) return next;
+  if (!next) return prev;
+  const maxOptional = (left: number | undefined, right: number | undefined) =>
+    left === undefined ? right : right === undefined ? left : Math.max(left, right);
+  const inputTokens = maxOptional(prev.inputTokens, next.inputTokens);
+  const cachedInputTokens = maxOptional(prev.cachedInputTokens, next.cachedInputTokens);
+  const outputTokens = maxOptional(prev.outputTokens, next.outputTokens);
+  return {
+    totalTokens: Math.max(prev.totalTokens, next.totalTokens),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(Math.max(prev.toolUses ?? 0, next.toolUses ?? 0) > 0
+      ? { toolUses: Math.max(prev.toolUses ?? 0, next.toolUses ?? 0) }
+      : {}),
+    ...(Math.max(prev.durationMs ?? 0, next.durationMs ?? 0) > 0
+      ? { durationMs: Math.max(prev.durationMs ?? 0, next.durationMs ?? 0) }
+      : {}),
+  };
+}
+
+function countMessageToolCalls(value: unknown): number {
+  if (!Array.isArray(value)) return 0;
+  let count = 0;
+  for (const messageValue of value) {
+    const message = isRecord(messageValue) ? messageValue : undefined;
+    const content = message && Array.isArray(message.content) ? message.content : [];
+    for (const partValue of content) {
+      const part = isRecord(partValue) ? partValue : undefined;
+      if (part?.type === "toolCall" || part?.type === "tool_call") count += 1;
+    }
+  }
+  return count;
+}
+
+/**
+ * Tool calls the native payload shows but its counters don't. Pi's
+ * `toolCount`/`tokens` frequently stay 0 while `toolCalls`, message
+ * tool-call parts, and `recentTools` list real work (e.g. a completed
+ * list-folders run reading "0 tok · 0 tools"). Counts are different views
+ * of the same calls, so take the max rather than summing.
+ */
+function countObservedToolCalls(
+  record: Record<string, unknown>,
+  progress: Record<string, unknown> | undefined,
+): number {
+  const fromToolCalls = Array.isArray(record.toolCalls) ? record.toolCalls.length : 0;
+  const fromMessages = Math.max(
+    countMessageToolCalls(record.messages),
+    progress ? countMessageToolCalls(progress.messages) : 0,
+  );
+  const recentTools = (value: unknown): number =>
+    isRecord(value) && Array.isArray(value.recentTools) ? value.recentTools.length : 0;
+  const fromRecent = Math.max(recentTools(record), progress ? recentTools(progress) : 0);
+  return Math.max(fromToolCalls, fromMessages, fromRecent);
+}
+
 function takomiTaskUsage(
   record: Record<string, unknown>,
   progress: Record<string, unknown> | undefined,
 ): RuntimeTaskUsage | undefined {
   const usage = firstRecord(record.usage, progress?.usage);
   const tokenUsage = firstRecord(record.totalTokens, progress?.totalTokens);
+  // End-of-task rollup (`progressSummary: {toolCount, tokens, durationMs}`)
+  // carried next to per-message `usage`. Read it as a fallback source.
+  const progressSummary = firstRecord(record.progressSummary);
   const inputTokens = readFiniteCount(usage?.input ?? tokenUsage?.input);
   const cachedInputTokens = readFiniteCount(usage?.cacheRead ?? tokenUsage?.cacheRead);
   const outputTokens = readFiniteCount(usage?.output ?? tokenUsage?.output);
+  const explicitTotalSource =
+    tokenUsage?.total ??
+    record.tokens ??
+    progress?.tokens ??
+    progressSummary?.tokens ??
+    record.total ??
+    progress?.total;
   const totalTokens =
     readFiniteCount(tokenUsage?.total) ??
-    readFiniteCount(record.tokens ?? progress?.tokens) ??
+    readFiniteCount(record.tokens ?? progress?.tokens ?? progressSummary?.tokens) ??
+    readFiniteCount(record.total ?? progress?.total) ??
     (inputTokens !== undefined || outputTokens !== undefined
       ? (inputTokens ?? 0) + (outputTokens ?? 0)
       : undefined);
   const durationMs =
-    readFiniteCount(record.durationMs ?? progress?.durationMs) ??
+    readFiniteCount(record.durationMs ?? progress?.durationMs ?? progressSummary?.durationMs) ??
     (typeof record.startedAt === "number" && typeof record.endedAt === "number"
       ? readFiniteCount(record.endedAt - record.startedAt)
       : undefined);
-  const toolUses = readFiniteCount(record.toolCount ?? progress?.toolCount);
+  const toolUses = (() => {
+    const native = readFiniteCount(
+      record.toolCount ?? progress?.toolCount ?? progressSummary?.toolCount,
+    );
+    if (native !== undefined && native > 0) return native;
+    const observed = countObservedToolCalls(record, progress);
+    if (observed > 0) return observed;
+    return undefined;
+  })();
   if (totalTokens === undefined && durationMs === undefined && toolUses === undefined) {
+    return undefined;
+  }
+  // Pi emits placeholder usage ({input: 0, output: 0, toolCount: 0}) before
+  // live token totals arrive. A synthesized 0 with no duration/tool signal
+  // would render as "0 tok" next to a real model name — suppress it so the
+  // row reads "— tok" until genuine totals land, matching Claude's
+  // total_tokens gating.
+  if (
+    explicitTotalSource === undefined &&
+    (totalTokens === undefined || totalTokens === 0) &&
+    durationMs === undefined &&
+    toolUses === undefined
+  ) {
     return undefined;
   }
   return {
@@ -868,6 +1030,8 @@ function takomiTaskFromRecord(
     readonly agentIndex?: number;
     readonly phaseIndex?: number;
     readonly phaseTitle?: string;
+    readonly fallbackModel?: string;
+    readonly fallbackEffort?: string;
   },
 ): TakomiSubagentTask | undefined {
   const record = isRecord(value) ? value : undefined;
@@ -875,14 +1039,17 @@ function takomiTaskFromRecord(
   const taskId = defaults.taskId ?? readTakomiTaskId(record);
   if (!taskId) return undefined;
   const progress = firstRecord(record.progress);
+  // Title is the work description (Claude: description), not the agent kind.
+  // Agent/type names belong in `role` so the panel renders
+  // "Explore Takomi backend [Explore]" instead of "researcher [researcher]".
   const title = boundedText(
     record.title ??
       record.name ??
       record.label ??
-      record.agentName ??
-      record.agent ??
       record.description ??
-      record.task,
+      record.task ??
+      record.agentName ??
+      record.agent,
     240,
   );
   const summary = boundedText(
@@ -898,7 +1065,10 @@ function takomiTaskFromRecord(
         ? progress.recentOutput
             .filter((line): line is string => typeof line === "string")
             .join("\n")
-        : undefined),
+        : undefined) ??
+      extractText(record.messages) ??
+      extractText(progress?.messages) ??
+      boundedText(progress?.currentToolArgs, 1_200),
     1_200,
   );
   const lastToolName = boundedText(
@@ -906,9 +1076,18 @@ function takomiTaskFromRecord(
     100,
   );
   const error = boundedText(record.error ?? record.errorMessage, 1_200);
-  const role = boundedText(record.role ?? record.subagentType ?? record.subagent_type, 120);
-  const model = boundedText(record.model ?? record.modelId ?? record.model_id, 160);
-  const effort = boundedText(record.effort ?? record.thinkingLevel ?? record.thinking_level, 80);
+  const role = boundedText(
+    record.role ?? record.subagentType ?? record.subagent_type ?? record.agentName ?? record.agent,
+    120,
+  );
+  const model = boundedText(
+    record.model ?? record.modelId ?? record.model_id ?? defaults.fallbackModel,
+    160,
+  );
+  const effort = boundedText(
+    record.effort ?? record.thinkingLevel ?? record.thinking_level ?? defaults.fallbackEffort,
+    80,
+  );
   const typedUsage = takomiTaskUsage(record, progress);
   const agentIndex =
     readFiniteCount(record.agentIndex ?? record.agent_index ?? record.index ?? record.flatIndex) ??
@@ -971,6 +1150,9 @@ export function normalizeTakomiSubagentTasks(input: {
   readonly result: unknown;
   readonly partialResult: unknown;
   readonly lifecycleStatus: "inProgress" | "completed" | "failed";
+  /** Session model slug (Claude-style inheritance) when a child omits its own. */
+  readonly fallbackModel?: string;
+  readonly fallbackEffort?: string;
 }): readonly TakomiSubagentTask[] {
   const sources = [
     ...takomiDetailsSnapshots(input.partialResult),
@@ -992,7 +1174,7 @@ export function normalizeTakomiSubagentTasks(input: {
     const add = (index: number | undefined, value: unknown) => {
       const row = isRecord(value) ? value : undefined;
       if (index === undefined || !row) return;
-      rows.set(index, { ...rows.get(index), ...row });
+      rows.set(index, mergeRowValues(rows.get(index), row));
     };
 
     if (Array.isArray(source.results)) {
@@ -1006,10 +1188,58 @@ export function normalizeTakomiSubagentTasks(input: {
         if (progress) add(readFiniteCount(progress.index) ?? index, progress);
       });
     }
-    if (Array.isArray(source.progress)) {
-      source.progress.forEach((progress, arrayIndex) => {
+    const progressList = Array.isArray(source.progress) ? source.progress : undefined;
+    const resultsList = Array.isArray(source.results) ? source.results : undefined;
+    if (progressList) {
+      // A progress-only array without explicit indexes must never merge by
+      // position into results rows: a single active-child entry would land on
+      // row 0 and pair researcher model with builder tokens. Match by index
+      // or by agent/task identity; otherwise leave it for the live row.
+      const nameToIndex = new Map<string, number>();
+      for (const [index, row] of rows) {
+        for (const key of [row.agent, row.agentName, row.task, row.title, row.label]) {
+          const name = readString(key)?.toLowerCase();
+          if (name && !nameToIndex.has(name)) nameToIndex.set(name, index);
+        }
+      }
+      const liveIndexes = [...rows.entries()]
+        .filter(
+          ([, row]) =>
+            normalizeTakomiTaskStatus(row.status ?? row.state) === "running" ||
+            normalizeTakomiTaskStatus(row.status ?? row.state) === undefined,
+        )
+        .map(([index]) => index);
+      progressList.forEach((progress, arrayIndex) => {
         const record = isRecord(progress) ? progress : undefined;
-        add(readFiniteCount(record?.index) ?? arrayIndex, progress);
+        if (!record) return;
+        const explicit = readFiniteCount(record?.index);
+        if (explicit !== undefined) {
+          add(explicit, progress);
+          return;
+        }
+        const identity = readString(
+          record.agent ?? record.agentName ?? record.task ?? record.title,
+        )?.toLowerCase();
+        const byName = identity ? nameToIndex.get(identity) : undefined;
+        if (byName !== undefined) {
+          add(byName, progress);
+          return;
+        }
+        if (source.results === undefined) {
+          // Progress-only snapshot (live run before results arrive): position
+          // is self-consistent within this source.
+          add(arrayIndex, progress);
+          return;
+        }
+        if (resultsList !== undefined && resultsList.length === progressList.length) {
+          add(arrayIndex, progress);
+          return;
+        }
+        if (liveIndexes.length === 1) {
+          add(liveIndexes[0]!, progress);
+        }
+        // Otherwise drop: mis-merging into row 0 pairs the wrong model with
+        // the wrong token totals, which is worse than a delayed update.
       });
     }
     for (const node of workflowGraphNodes(graph)) {
@@ -1026,15 +1256,20 @@ export function normalizeTakomiSubagentTasks(input: {
         parentAgentId: input.toolCallId,
         ...(workflowName ? { workflowName } : {}),
         agentIndex: index,
+        ...(input.fallbackModel ? { fallbackModel: input.fallbackModel } : {}),
+        ...(input.fallbackEffort ? { fallbackEffort: input.fallbackEffort } : {}),
         ...(readFiniteCount(row.stepIndex) !== undefined
           ? { phaseIndex: readFiniteCount(row.stepIndex)! }
           : {}),
         ...(boundedText(row.phase, 120) ? { phaseTitle: boundedText(row.phase, 120)! } : {}),
       });
       if (!task) continue;
+      const prevTask = tasks.get(task.taskId);
+      const bestUsage = bestTypedUsage(prevTask?.typedUsage, task.typedUsage);
       tasks.set(task.taskId, {
-        ...tasks.get(task.taskId),
+        ...prevTask,
         ...task,
+        ...(bestUsage ? { typedUsage: bestUsage } : {}),
         ...(nativeRunId ? { runHandles: { runId: nativeRunId } } : {}),
       });
     }
@@ -1087,7 +1322,12 @@ function taskFingerprint(task: TakomiSubagentTask): string {
 export function createTakomiSubagentTaskTracker(): TakomiSubagentTaskTracker {
   const tasksByToolCallId = new Map<
     string,
-    { readonly open: Map<string, TakomiSubagentTask>; readonly completed: Set<string> }
+    {
+      readonly open: Map<string, TakomiSubagentTask>;
+      readonly completed: Set<string>;
+      /** Last emitted snapshot per task, including settled members. */
+      readonly lastSeen: Map<string, TakomiSubagentTask>;
+    }
   >();
   const settledToolCallIds = new Set<string>();
   return {
@@ -1096,12 +1336,27 @@ export function createTakomiSubagentTaskTracker(): TakomiSubagentTaskTracker {
       const state = tasksByToolCallId.get(toolCallId) ?? {
         open: new Map<string, TakomiSubagentTask>(),
         completed: new Set<string>(),
+        lastSeen: new Map<string, TakomiSubagentTask>(),
       };
       const events: TakomiSubagentTaskEvent[] = [];
       for (const task of tasks) {
-        // A terminal snapshot may be repeated before the tool itself ends.
-        // Never re-open a member that has already emitted task.completed.
-        if (state.completed.has(task.taskId)) continue;
+        // Already emitted task.completed: never re-open (no started) and
+        // never duplicate the terminal event — but DO forward changed
+        // snapshots as updated/progress. Native snapshots can report
+        // terminal-then-running (an early placeholder completion corrected
+        // by live frames, or the authoritative end frame with real totals);
+        // the fold freezes terminal status/timestamps while still
+        // max-merging usage, and genuinely resumed work reactivates through
+        // the normal path — so forwarding changed snapshots is safe.
+        if (state.completed.has(task.taskId)) {
+          const previous = state.lastSeen.get(task.taskId);
+          if (previous && taskFingerprint(previous) !== taskFingerprint(task)) {
+            events.push({ type: "updated", task });
+            events.push({ type: "progress", task });
+            state.lastSeen.set(task.taskId, task);
+          }
+          continue;
+        }
         const previous = state.open.get(task.taskId);
         const changed = !previous || taskFingerprint(previous) !== taskFingerprint(task);
         if (!previous) {
@@ -1120,8 +1375,10 @@ export function createTakomiSubagentTaskTracker(): TakomiSubagentTaskTracker {
           });
           state.open.delete(task.taskId);
           state.completed.add(task.taskId);
+          state.lastSeen.set(task.taskId, task);
         } else {
           state.open.set(task.taskId, task);
+          state.lastSeen.set(task.taskId, task);
         }
       }
       if (lifecycleStatus !== "inProgress") {
@@ -1129,6 +1386,7 @@ export function createTakomiSubagentTaskTracker(): TakomiSubagentTaskTracker {
         for (const task of state.open.values()) {
           events.push({ type: "completed", task, completionStatus });
           state.completed.add(task.taskId);
+          state.lastSeen.set(task.taskId, task);
         }
         tasksByToolCallId.delete(toolCallId);
         settledToolCallIds.add(toolCallId);
@@ -1319,6 +1577,65 @@ export function normalizeTakomiPresentation(input: {
   };
 }
 
+export type TodoPlanStep = {
+  readonly step: string;
+  readonly status: "pending" | "inProgress" | "completed";
+};
+
+/**
+ * Map a Takomi `todo` tool's raw task list onto `turn.plan.updated` steps so
+ * Pi sessions reuse the composer tasks badge (the surface OpenCode drives via
+ * `todo.updated`). Operates on the full task array — unlike the presentation
+ * summary, which truncates items for the timeline card — so the drawer scrolls
+ * through every step with correct counts. Last-write-wins per turn applies
+ * downstream, matching the other adapters.
+ */
+export function planStepsFromTodoTasks(value: unknown): TodoPlanStep[] | null {
+  if (!Array.isArray(value)) return null;
+  const steps: TodoPlanStep[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const normalizedStatus = readString(entry.status ?? entry.state)
+      ?.toLowerCase()
+      .replaceAll("-", "_")
+      .replaceAll(" ", "_");
+    if (
+      normalizedStatus === "deleted" ||
+      normalizedStatus === "cancelled" ||
+      normalizedStatus === "canceled"
+    ) {
+      continue;
+    }
+    const step =
+      boundedText(
+        entry.label ??
+          entry.name ??
+          entry.subject ??
+          entry.title ??
+          entry.content ??
+          entry.text ??
+          entry.task,
+        160,
+      ) ?? "Task";
+    steps.push({
+      step,
+      status:
+        normalizedStatus === "completed" ||
+        normalizedStatus === "complete" ||
+        normalizedStatus === "success" ||
+        normalizedStatus === "succeeded" ||
+        normalizedStatus === "done"
+          ? "completed"
+          : normalizedStatus === "in_progress" ||
+              normalizedStatus === "running" ||
+              normalizedStatus === "active"
+            ? "inProgress"
+            : "pending",
+    });
+  }
+  return steps;
+}
+
 function extractText(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
@@ -1498,6 +1815,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         result: message.result,
         partialResult: message.partialResult,
         lifecycleStatus,
+        ...((context.appliedModelSlug ?? context.defaultModelSlug)
+          ? { fallbackModel: (context.appliedModelSlug ?? context.defaultModelSlug)! }
+          : {}),
+        ...(context.appliedThinkingLevel ? { fallbackEffort: context.appliedThinkingLevel } : {}),
       });
       for (const event of context.takomiSubagentTaskTracker.observe({
         toolCallId,
@@ -2067,6 +2388,29 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
               data: item,
             },
           });
+          // Mirror the todo list onto turn.plan.updated so Pi sessions drive
+          // the composer tasks badge (OpenCode's todo.updated equivalent).
+          // Timings come from successive plan activities downstream; the
+          // timeline card keeps its own truncated presentation.
+          if (toolName.toLowerCase() === "todo" && context.activeTurnId) {
+            const mergedArgs = firstRecord(argsPayload.value) ?? {};
+            const mergedResult = firstRecord(resultPayload.value, partialResultPayload.value) ?? {};
+            const mergedStructured =
+              firstRecord(mergedResult.structuredContent, mergedResult.details) ?? {};
+            const planSource: Record<string, unknown> = {
+              ...mergedArgs,
+              ...mergedResult,
+              ...mergedStructured,
+            };
+            const plan = planStepsFromTodoTasks(planSource.tasks);
+            if (plan !== null) {
+              yield* emit({
+                ...(yield* eventBase(context, message)),
+                type: "turn.plan.updated",
+                payload: { plan },
+              });
+            }
+          }
           if (isEnd) {
             context.toolActivityByCallId.delete(toolCallId);
             context.truncatedToolActivityCallIds.delete(toolCallId);
@@ -2106,6 +2450,26 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 : {}),
             },
           });
+          // Mirror Claude/Codex/OpenCode: a successful compaction also emits
+          // thread.state.changed so ingestion projects the shared
+          // "Compacted context X → Y tokens" timeline divider. Without this,
+          // Pi/Takomi compactions only emit item.completed with itemType
+          // context_compaction, which ingestion drops (not a tool lifecycle
+          // type), leaving no illustration at all.
+          if (!failed && message.aborted !== true && isRecord(message.result)) {
+            const beforeTokens = readFiniteCount(message.result.tokensBefore);
+            const afterTokens = readFiniteCount(message.result.estimatedTokensAfter);
+            yield* emit({
+              ...(yield* eventBase(context, message)),
+              type: "thread.state.changed",
+              payload: {
+                state: "compacted",
+                ...(beforeTokens !== undefined ? { beforeTokens } : {}),
+                ...(afterTokens !== undefined ? { afterTokens } : {}),
+                detail: message,
+              },
+            });
+          }
           break;
         }
         case "extension_error": {

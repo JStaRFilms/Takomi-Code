@@ -30,6 +30,11 @@ export interface OrchestrationAggregateReplayStats {
   readonly hasCreateEvent: boolean;
 }
 
+export interface OrchestrationEventReadOptions {
+  readonly eventTypes?: ReadonlyArray<OrchestrationEvent["type"]>;
+  readonly toSequenceInclusive?: number;
+}
+
 /**
  * OrchestrationEventStoreShape - Service API for orchestration event persistence.
  */
@@ -51,6 +56,7 @@ export interface OrchestrationEventStoreShape {
    *
    * @param sequenceExclusive - Sequence cursor (exclusive).
    * @param limit - Maximum number of events to emit.
+   * @param options - Optional event type and upper sequence filters applied in storage.
    * @returns Stream containing ordered events.
    *
    * Reads in fixed-size pages and normalizes non-integer/negative limits.
@@ -58,6 +64,7 @@ export interface OrchestrationEventStoreShape {
   readonly readFromSequence: (
     sequenceExclusive: number,
     limit?: number,
+    options?: OrchestrationEventReadOptions,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
 
   /** Read one aggregate through a captured global head, without decoding other streams. */

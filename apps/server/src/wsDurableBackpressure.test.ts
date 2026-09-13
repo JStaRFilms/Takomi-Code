@@ -26,7 +26,7 @@ describe("durable subscription backpressure", () => {
     ),
   );
 
-  it.effect("uses authoritative config recovery when one item exceeds the byte budget", () =>
+  it.effect("allows one oversized item but recovers if another item queues behind it", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const buffer = yield* makeBoundedDurableLiveStream<string, never, never>({
@@ -34,7 +34,12 @@ describe("durable subscription backpressure", () => {
           source: Stream.never,
           authoritativeSnapshot: Effect.succeed("config-snapshot"),
         });
-        yield* buffer.offer("x".repeat(DURABLE_SUBSCRIPTION_QUEUE_BYTES));
+        const oversized = "x".repeat(DURABLE_SUBSCRIPTION_QUEUE_BYTES);
+        yield* buffer.offer(oversized);
+        expect(Array.from(yield* buffer.takeAll)).toEqual([oversized]);
+
+        yield* buffer.offer(oversized);
+        yield* buffer.offer("next-update");
         expect(Array.from(yield* buffer.takeAll)).toEqual(["config-snapshot"]);
       }),
     ),

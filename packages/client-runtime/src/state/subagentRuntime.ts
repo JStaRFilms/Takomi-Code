@@ -406,8 +406,14 @@ function applyStatus(agent: MutableAgent, status: RuntimeSubagentStatus, at: str
   const wasTerminal = isTerminalSubagentStatus(agent.status);
   const isTerminal = isTerminalSubagentStatus(status);
   if (wasTerminal && isTerminal) {
-    // Duplicate terminal events are idempotent: first write wins, timestamps
-    // don't slide.
+    // Failure is monotonic: an adapter may first receive a provider's
+    // placeholder completion and then its authoritative failed end frame.
+    // Other duplicate terminal events remain first-write-wins, and terminal
+    // timestamps never slide.
+    if (status === "failed" && agent.status !== "failed") {
+      agent.status = "failed";
+      agent.result = null;
+    }
     return;
   }
   if ((wasTerminal || agent.status === "idle") && (status === "running" || status === "pending")) {
@@ -896,4 +902,29 @@ export function formatSubagentTokenCount(totalTokens: number): string {
     return `${value >= 100 ? Math.round(value) : value.toFixed(1)}k`;
   }
   return `${(totalTokens / 1_000_000).toFixed(1)}M`;
+}
+
+/**
+ * Settled-row elapsed milliseconds for display. Wall clock (ingestion
+ * startedAt → completedAt) collapses to ~0 when a child is first seen via
+ * an already-terminal snapshot (Pi burst delivery: start, progress, and
+ * completion ingested in the same second). The provider-measured duration
+ * is the truer value then — but genuine wall overhead is never shortened,
+ * so this keeps the larger of the two. Null when there is nothing to show.
+ */
+export function settledAgentElapsedMs(agent: {
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+  readonly usage: SubagentUsage | null;
+}): number | null {
+  const { startedAt, completedAt, usage } = agent;
+  const durationMs = usage?.durationMs;
+  if (startedAt === null || completedAt === null) {
+    return durationMs ?? null;
+  }
+  const wallMs = Date.parse(completedAt) - Date.parse(startedAt);
+  if (Number.isNaN(wallMs)) {
+    return durationMs ?? null;
+  }
+  return Math.max(wallMs, durationMs ?? 0);
 }

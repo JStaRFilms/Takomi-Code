@@ -97,6 +97,35 @@ function respondOutOfOrder() {
   commandsRequest = undefined;
 }
 
+function emitTodoFlow() {
+  emit({ type: "tool_execution_start", toolCallId: "todo-1", toolName: "todo", args: {} });
+  emit({
+    type: "tool_execution_update",
+    toolCallId: "todo-1",
+    toolName: "todo",
+    partialResult: {
+      tasks: [
+        { id: "task-1", title: "Read files", status: "completed" },
+        { id: "task-2", title: "Fix Pi todos", status: "in_progress" },
+      ],
+    },
+  });
+  emit({
+    type: "tool_execution_end",
+    toolCallId: "todo-1",
+    toolName: "todo",
+    result: {
+      tasks: [
+        { id: "task-1", title: "Read files", status: "completed" },
+        { id: "task-2", title: "Fix Pi todos", status: "in_progress" },
+        { id: "task-3", title: "Run tests", status: "pending" },
+        { id: "task-4", title: "Old task", status: "deleted" },
+      ],
+    },
+  });
+  emit({ type: "agent_settled" });
+}
+
 function handle(record) {
   if (process.env.T3_PI_CONFORMANCE_EARLY_EXIT === "1") {
     process.stderr.write("synthetic early exit\n");
@@ -141,6 +170,8 @@ function handle(record) {
         );
       } else if (process.env.T3_PI_CONFORMANCE_UI_TIMEOUT_ONLY === "1") {
         emitTimeoutRequest();
+      } else if (process.env.T3_PI_CONFORMANCE_TODO === "1") {
+        emitTodoFlow();
       } else {
         emitFixtureEvents();
       }

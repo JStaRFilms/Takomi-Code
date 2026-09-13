@@ -5,6 +5,7 @@ import {
   foldSubagentActivities,
   formatSubagentModelLabel,
   formatSubagentTokenCount,
+  settledAgentElapsedMs,
 } from "./subagentRuntime.ts";
 
 let sequence = 0;
@@ -179,6 +180,35 @@ describe("foldSubagentActivities", () => {
       ),
     ]);
     expect(agents[0]!.completedAt).toBe("2026-08-01T11:00:00.000Z");
+  });
+
+  it("accepts an explicit failed progress correction after a placeholder completion", () => {
+    const agents = fold([
+      activity("task.started", { taskId: "task-corrected", taskType: "local_agent" }),
+      activity(
+        "task.completed",
+        { taskId: "task-corrected", status: "completed", summary: "placeholder" },
+        "2026-08-01T11:00:00.000Z",
+      ),
+      activity(
+        "task.progress",
+        {
+          taskId: "task-corrected",
+          status: "failed",
+          error: "Acceptance rejected",
+          typedUsage: { totalTokens: 6839 },
+        },
+        "2026-08-01T12:00:00.000Z",
+      ),
+    ]);
+
+    expect(agents[0]).toMatchObject({
+      status: "failed",
+      error: "Acceptance rejected",
+      result: null,
+      completedAt: "2026-08-01T11:00:00.000Z",
+      usage: { totalTokens: 6839 },
+    });
   });
 
   it("reactivation increments the run count and clears result/error", () => {
@@ -760,6 +790,35 @@ describe("terminal robustness", () => {
       activity("task.completed", { taskId: "t2", status: "completed", summary: "second result" }),
     ]);
     expect(agents[0]!.result).toBe("first result");
+  });
+
+  it("prefers native duration for settled rows when burst ingestion collapses wall time", () => {
+    // Pi burst delivery: start → progress → completion ingested in the same
+    // second, so wall clock reads 0s next to real token counts.
+    expect(
+      settledAgentElapsedMs({
+        startedAt: "2026-08-01T11:00:00.000Z",
+        completedAt: "2026-08-01T11:00:00.000Z",
+        usage: { totalTokens: 6839, toolUses: 6, durationMs: 22553 },
+      }),
+    ).toBe(22553);
+  });
+
+  it("keeps genuine wall overhead when it exceeds the native duration", () => {
+    expect(
+      settledAgentElapsedMs({
+        startedAt: "2026-08-01T10:59:00.000Z",
+        completedAt: "2026-08-01T11:00:00.000Z",
+        usage: { totalTokens: 100, durationMs: 2000 },
+      }),
+    ).toBe(60_000);
+  });
+
+  it("returns null with nothing to measure", () => {
+    expect(settledAgentElapsedMs({ startedAt: null, completedAt: null, usage: null })).toBeNull();
+    expect(
+      settledAgentElapsedMs({ startedAt: null, completedAt: null, usage: { totalTokens: 5 } }),
+    ).toBeNull();
   });
 
   it("provider endedAt wins over ingestion time on the settling transition", () => {

@@ -65,6 +65,7 @@ import {
   shouldOpenProactivePullRequest,
   shouldRetargetThreadPullRequestPanel,
   shouldOpenProactiveTurnDiff,
+  shouldPlayTurnCompleteChime,
   shouldRenderPreviewMiniPlayer,
   shouldShowBranchMismatchBanner,
   shouldShowPlanFollowUpPrompt,
@@ -323,6 +324,67 @@ describe("proactive panels", () => {
         runningTurnId: null,
         settledTurnId: turnId,
         turnCompleted: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("chimes only when the observed running turn settles, never on entry", () => {
+    const turnId = TurnId.make("turn-1");
+    expect(
+      shouldPlayTurnCompleteChime({
+        previousRunningTurnId: turnId,
+        runningTurnId: null,
+        settledTurnId: turnId,
+        turnCompleted: true,
+        lastPlayedTurnId: null,
+      }),
+    ).toBe(true);
+    // Entering an already-done thread must stay silent.
+    expect(
+      shouldPlayTurnCompleteChime({
+        previousRunningTurnId: undefined,
+        runningTurnId: null,
+        settledTurnId: turnId,
+        turnCompleted: true,
+        lastPlayedTurnId: null,
+      }),
+    ).toBe(false);
+    expect(
+      shouldPlayTurnCompleteChime({
+        previousRunningTurnId: turnId,
+        runningTurnId: TurnId.make("turn-2"),
+        settledTurnId: turnId,
+        turnCompleted: true,
+        lastPlayedTurnId: null,
+      }),
+    ).toBe(false);
+    expect(
+      shouldPlayTurnCompleteChime({
+        previousRunningTurnId: turnId,
+        runningTurnId: null,
+        settledTurnId: turnId,
+        turnCompleted: false,
+        lastPlayedTurnId: null,
+      }),
+    ).toBe(false);
+    expect(
+      shouldPlayTurnCompleteChime({
+        previousRunningTurnId: TurnId.make("turn-2"),
+        runningTurnId: null,
+        settledTurnId: turnId,
+        turnCompleted: true,
+        lastPlayedTurnId: null,
+      }),
+    ).toBe(false);
+    // A deferred proactive panel may re-run the effect for the same settled
+    // turn; sound delivery remains one-shot.
+    expect(
+      shouldPlayTurnCompleteChime({
+        previousRunningTurnId: turnId,
+        runningTurnId: null,
+        settledTurnId: turnId,
+        turnCompleted: true,
+        lastPlayedTurnId: turnId,
       }),
     ).toBe(false);
   });

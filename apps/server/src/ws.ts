@@ -411,8 +411,10 @@ export function makeBoundedDurableLiveStream<T, E, R>(input: {
           return;
         }
         const bytes = serializedBytes(value);
+        // A config snapshot can be larger than this incremental update, so replacing an
+        // oversized first item would increase traffic without reducing peak payload size.
         const reserved = yield* Ref.modify(queuedBytes, (current) =>
-          current + bytes <= DURABLE_SUBSCRIPTION_QUEUE_BYTES
+          current === 0 || current + bytes <= DURABLE_SUBSCRIPTION_QUEUE_BYTES
             ? [true, current + bytes]
             : [false, current],
         );

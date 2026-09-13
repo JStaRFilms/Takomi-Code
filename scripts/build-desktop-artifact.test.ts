@@ -1102,7 +1102,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
                 Effect.gen(function* () {
                   assert.equal(command._tag, "StandardCommand");
                   if (command._tag !== "StandardCommand") return mockProcess(1);
-                  assert.equal(command.command, "cargo");
+                  assert.match(command.command, /(?:^|[\\/])cargo(?:\.exe)?$/i);
                   assert.deepEqual(command.args, [
                     "build",
                     "--locked",
@@ -1130,7 +1130,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
               `${backend}-capture/t3-${backend}-snap-shot`,
             );
             assert.equal(yield* fs.readFileString(installed), `helper-${arch}`);
-            assert.equal((yield* fs.stat(installed)).mode & 0o777, 0o755);
+            if (process.platform !== "win32") {
+              assert.equal((yield* fs.stat(installed)).mode & 0o777, 0o755);
+            }
             if (backend === "hyprland")
               assert.equal(
                 yield* fs.readFileString(
@@ -1413,6 +1415,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
     return Effect.scoped(
       Effect.gen(function* () {
+        const path = yield* Path.Path;
         const fixture = yield* makeWindowsPayloadFixture({ copyUnpackedNatives: true });
         yield* validateWindowsPackagedPayload({
           stageDistDir: fixture.stageDistDir,
@@ -1420,8 +1423,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           targetArch: "arm64",
         });
 
+        const appExecutablePath = path.join(fixture.packagedAppDir, fixture.appExecutableName);
         assert.isFalse(
-          commands.some((command) => command.options.env?.ELECTRON_RUN_AS_NODE === "1"),
+          commands.some(
+            (command) =>
+              command.command === appExecutablePath &&
+              command.options.env?.ELECTRON_RUN_AS_NODE === "1",
+          ),
         );
         assert.isTrue(
           commands.some(
@@ -2031,7 +2039,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
         yield* stageWslRuntimeArchive({ sourceDir, archivePath, hashPath });
         const process = yield* spawner.spawn(
-          ChildProcess.make("tar", ["-tzf", archivePath], {
+          ChildProcess.make("tar", ["-tzf", path.relative(sourceDir, archivePath)], {
+            cwd: sourceDir,
             stdin: "ignore",
             stdout: "pipe",
             stderr: "pipe",

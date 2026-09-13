@@ -260,6 +260,15 @@ describe("ClientSettings proactive panels", () => {
   });
 });
 
+describe("ClientSettings turn complete sound", () => {
+  it("defaults the completion chime on and accepts client-local updates", () => {
+    expect(decodeClientSettings({}).turnCompletePlaySound).toBe(true);
+    expect(decodeClientSettingsPatch({ turnCompletePlaySound: false }).turnCompletePlaySound).toBe(
+      false,
+    );
+  });
+});
+
 describe("ClientSettings quit confirmation", () => {
   it("defaults to hold", () => {
     expect(decodeClientSettings({}).confirmQuit).toBe("hold");

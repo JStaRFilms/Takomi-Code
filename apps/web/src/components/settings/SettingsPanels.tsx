@@ -539,6 +539,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.proactivePanelsEnabled !== DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled
         ? ["Proactive panels"]
         : []),
+      ...(settings.turnCompletePlaySound !== DEFAULT_UNIFIED_SETTINGS.turnCompletePlaySound
+        ? ["Turn complete sound"]
+        : []),
       ...(settings.showSkillsInSlashMenu !== DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu
         ? ["Show skills in slash menu"]
         : []),
@@ -609,6 +612,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.diffIgnoreWhitespace,
       settings.diffLayout,
       settings.proactivePanelsEnabled,
+      settings.turnCompletePlaySound,
       settings.environmentIdentificationMode,
       settings.contextWindowMeterEnabled,
       settings.fontFamilyCode,
@@ -706,6 +710,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       diffLayout: DEFAULT_UNIFIED_SETTINGS.diffLayout,
       proactivePanelsEnabled: DEFAULT_UNIFIED_SETTINGS.proactivePanelsEnabled,
+      turnCompletePlaySound: DEFAULT_UNIFIED_SETTINGS.turnCompletePlaySound,
       showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
       composerCollapseOnScroll: DEFAULT_UNIFIED_SETTINGS.composerCollapseOnScroll,
       contextWindowMeterEnabled: DEFAULT_UNIFIED_SETTINGS.contextWindowMeterEnabled,
@@ -2313,6 +2318,32 @@ export function GeneralSettingsPanel() {
                 updateSettings({ proactivePanelsEnabled: Boolean(checked) })
               }
               aria-label="Proactive panels"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("turn-complete-sound")}
+          description="Play a chime in this web or desktop client when the agent finishes a turn."
+          resetAction={
+            settings.turnCompletePlaySound !== DEFAULT_UNIFIED_SETTINGS.turnCompletePlaySound ? (
+              <SettingResetButton
+                label="turn complete sound"
+                onClick={() =>
+                  updateSettings({
+                    turnCompletePlaySound: DEFAULT_UNIFIED_SETTINGS.turnCompletePlaySound,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.turnCompletePlaySound}
+              onCheckedChange={(checked) =>
+                updateSettings({ turnCompletePlaySound: Boolean(checked) })
+              }
+              aria-label="Turn complete sound"
             />
           }
         />

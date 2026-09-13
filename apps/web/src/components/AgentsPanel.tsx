@@ -20,6 +20,7 @@ import type {
 import {
   formatSubagentModelLabel,
   formatSubagentTokenCount,
+  settledAgentElapsedMs,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
@@ -87,7 +88,9 @@ function elapsedBetween(startedAt: string, endIso: string | null): string {
 function AgentElapsed({ agent }: { agent: RuntimeSubagent }) {
   const textRef = useRef<HTMLSpanElement>(null);
   const live = agent.status === "running" || agent.status === "waiting";
-  const startedAt = agent.startedAt;
+  // firstSeenAt always exists (roster order key); startedAt can be missing
+  // when the start row aged out, so fall back rather than showing nothing.
+  const startedAt = agent.startedAt ?? agent.firstSeenAt;
 
   useEffect(() => {
     if (!live || !startedAt) {
@@ -106,9 +109,21 @@ function AgentElapsed({ agent }: { agent: RuntimeSubagent }) {
   if (!startedAt) {
     return null;
   }
+  if (!live) {
+    // Settled rows freeze: prefer the provider-measured duration when wall
+    // clock collapsed (burst ingestion), else the wall time.
+    const settledMs = settledAgentElapsedMs(agent);
+    return (
+      <span ref={textRef} className="tabular-nums">
+        {settledMs !== null
+          ? formatElapsedSeconds(settledMs / 1000)
+          : elapsedBetween(startedAt, agent.completedAt)}
+      </span>
+    );
+  }
   return (
     <span ref={textRef} className="tabular-nums">
-      {elapsedBetween(startedAt, live ? null : agent.completedAt)}
+      {elapsedBetween(startedAt, null)}
     </span>
   );
 }
@@ -150,7 +165,12 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
       : agent.role;
   const metadata = [
     modelLabel,
-    agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok",
+    // A zero total means the provider never measured usage (Pi placeholder
+    // frames), not a genuine zero — read it as unknown so a completed worker
+    // never reports "0 tok" next to real tool counts.
+    agent.usage && agent.usage.totalTokens > 0
+      ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok`
+      : "— tok",
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
@@ -471,10 +491,12 @@ function CollapsedWorkflowSection({
     (sum, member) => sum + (member.usage?.totalTokens ?? 0),
     members.length === 0 ? (group.workflow.usage?.totalTokens ?? 0) : 0,
   );
-  const elapsed =
-    group.workflow.startedAt && group.workflow.completedAt
-      ? elapsedBetween(group.workflow.startedAt, group.workflow.completedAt)
-      : null;
+  const elapsedMs = settledAgentElapsedMs({
+    startedAt: group.workflow.startedAt,
+    completedAt: group.workflow.completedAt,
+    usage: group.workflow.usage,
+  });
+  const elapsed = elapsedMs !== null ? formatElapsedSeconds(elapsedMs / 1000) : null;
   return (
     <section>
       <button

@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - The integration tests launch only the synthetic Pi peer.
-import * as Path from "node:path";
+import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -26,12 +26,13 @@ import {
   normalizePiToolWorkLog,
   normalizeTakomiPresentation,
   normalizeTakomiSubagentTasks,
+  planStepsFromTodoTasks,
 } from "./PiAdapter.ts";
 import { ServerConfig } from "../../config.ts";
 import type { ProviderAdapterError } from "../Errors.ts";
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
-const piMockPeer = Path.join(import.meta.dirname, "../testFixtures/piMockPeer.mjs");
+const piMockPeer = NodePath.join(import.meta.dirname, "../testFixtures/piMockPeer.mjs");
 const piAdapterTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-pi-adapter-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
@@ -57,68 +58,64 @@ function runPiProcessScenario(
     readonly waitFor: (predicate: (event: ProviderRuntimeEvent) => boolean) => Effect.Effect<void>;
   }) => Effect.Effect<void, ProviderAdapterError>,
 ) {
-  return Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const nativeRecords: unknown[] = [];
-        const adapter = yield* makePiAdapter(
-          decodePiSettings({
-            binaryPath: process.execPath,
-            launchArgs: `"${piMockPeer}"`,
-          }),
-          {
-            instanceId: ProviderInstanceId.make("pi-conformance"),
-            environment,
-            nativeEventLogger: {
-              filePath: "synthetic-native.log",
-              write: (event) =>
-                environment.T3_PI_CONFORMANCE_NATIVE_LOG_FAIL === "1"
-                  ? Effect.die(new Error("sensitive native logger failure"))
-                  : Effect.sync(() => nativeRecords.push(event)),
-              close: () => Effect.void,
-            },
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const nativeRecords: unknown[] = [];
+      const adapter = yield* makePiAdapter(
+        decodePiSettings({
+          binaryPath: process.execPath,
+          launchArgs: `"${piMockPeer}"`,
+        }),
+        {
+          instanceId: ProviderInstanceId.make("pi-conformance"),
+          environment,
+          nativeEventLogger: {
+            filePath: "synthetic-native.log",
+            write: (event) =>
+              environment.T3_PI_CONFORMANCE_NATIVE_LOG_FAIL === "1"
+                ? Effect.die(new Error("sensitive native logger failure"))
+                : Effect.sync(() => nativeRecords.push(event)),
+            close: () => Effect.void,
           },
-        );
-        const events: ProviderRuntimeEvent[] = [];
-        const signals: Array<{
-          readonly predicate: (event: ProviderRuntimeEvent) => boolean;
-          readonly deferred: Deferred.Deferred<void>;
-        }> = [];
-        yield* Stream.runForEach(adapter.streamEvents, (event) =>
-          Effect.gen(function* () {
-            events.push(event);
-            for (const signal of signals) {
-              if (signal.predicate(event))
-                yield* Deferred.succeed(signal.deferred, undefined).pipe(Effect.ignore);
-            }
-          }),
-        ).pipe(Effect.forkScoped);
-        const waitFor = (predicate: (event: ProviderRuntimeEvent) => boolean) =>
-          Effect.gen(function* () {
-            if (events.some(predicate)) return;
-            const deferred = yield* Deferred.make<void>();
-            signals.push({ predicate, deferred });
-            yield* Deferred.await(deferred).pipe(
-              Effect.timeout("15 seconds"),
-              Effect.catchTag("TimeoutError", () =>
-                Effect.die(
-                  new Error(
-                    `Timed out with events: ${events.map((event) => event.type).join(", ")}`,
-                  ),
-                ),
+        },
+      );
+      const events: ProviderRuntimeEvent[] = [];
+      const signals: Array<{
+        readonly predicate: (event: ProviderRuntimeEvent) => boolean;
+        readonly deferred: Deferred.Deferred<void>;
+      }> = [];
+      yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.gen(function* () {
+          events.push(event);
+          for (const signal of signals) {
+            if (signal.predicate(event))
+              yield* Deferred.succeed(signal.deferred, undefined).pipe(Effect.ignore);
+          }
+        }),
+      ).pipe(Effect.forkScoped);
+      const waitFor = (predicate: (event: ProviderRuntimeEvent) => boolean) =>
+        Effect.gen(function* () {
+          if (events.some(predicate)) return;
+          const deferred = yield* Deferred.make<void>();
+          signals.push({ predicate, deferred });
+          yield* Deferred.await(deferred).pipe(
+            Effect.timeout("15 seconds"),
+            Effect.catchTag("TimeoutError", () =>
+              Effect.die(
+                new Error(`Timed out with events: ${events.map((event) => event.type).join(", ")}`),
               ),
-            );
-          });
-        yield* use({
-          adapter,
-          events,
-          nativeRecords,
-          threadId: ThreadId.make("pi-decoder-process-path"),
-          waitFor,
+            ),
+          );
         });
-      }),
-    ).pipe(Effect.provide(piAdapterTestLayer)),
-  );
+      yield* use({
+        adapter,
+        events,
+        nativeRecords,
+        threadId: ThreadId.make("pi-decoder-process-path"),
+        waitFor,
+      });
+    }),
+  ).pipe(Effect.provide(piAdapterTestLayer));
 }
 
 describe("Pi adapter capabilities", () => {
@@ -762,6 +759,425 @@ describe("normalizeTakomiPresentation", () => {
   });
 });
 
+describe("planStepsFromTodoTasks", () => {
+  it("maps todo statuses onto plan steps and drops deleted and cancelled tasks", () => {
+    expect(
+      planStepsFromTodoTasks([
+        { id: "1", title: "Read files", status: "completed" },
+        { id: "2", title: "Fix it", status: "in_progress" },
+        { id: "3", title: "Run tests", status: "pending" },
+        { id: "4", title: "Old task", status: "cancelled" },
+        { id: "5", title: "Gone", status: "deleted" },
+      ]),
+    ).toEqual([
+      { step: "Read files", status: "completed" },
+      { step: "Fix it", status: "inProgress" },
+      { step: "Run tests", status: "pending" },
+    ]);
+  });
+
+  it("covers the full task list beyond the presentation truncation limit", () => {
+    const tasks = Array.from({ length: 25 }, (_, index) => ({
+      id: `task-${index + 1}`,
+      title: `Task ${index + 1}`,
+      status: index === 24 ? "deleted" : index % 2 === 0 ? "completed" : "pending",
+    }));
+
+    const plan = planStepsFromTodoTasks(tasks);
+
+    expect(plan).toHaveLength(24);
+    expect(plan?.[0]).toEqual({ step: "Task 1", status: "completed" });
+    expect(plan?.at(-1)).toEqual({ step: "Task 24", status: "pending" });
+  });
+
+  it("falls back to a default step label for blank task titles", () => {
+    expect(planStepsFromTodoTasks([{ id: "1", title: "   ", status: "running" }])).toEqual([
+      { step: "Task", status: "inProgress" },
+    ]);
+  });
+
+  it("returns an empty plan for an explicit cleared task list", () => {
+    expect(planStepsFromTodoTasks(undefined)).toBeNull();
+    expect(planStepsFromTodoTasks([])).toEqual([]);
+    expect(planStepsFromTodoTasks([{ id: "1", title: "Gone", status: "deleted" }])).toEqual([]);
+  });
+});
+
+describe("Pi Agents-surface parity (Claude reference)", () => {
+  it("titles with the task description and keeps the agent kind as role", () => {
+    const tasks = normalizeTakomiSubagentTasks({
+      toolCallId: "call-parity",
+      partialResult: {
+        details: {
+          mode: "parallel",
+          results: [
+            {
+              agent: "Explore",
+              task: "Explore Takomi subagent backend",
+              status: "running",
+              progress: { index: 0, status: "running", currentTool: "Read" },
+            },
+          ],
+        },
+      },
+      result: undefined,
+      lifecycleStatus: "inProgress",
+    });
+    expect(tasks.find((task) => task.taskId === "call-parity:result:0")).toMatchObject({
+      taskId: "call-parity:result:0",
+      description: "Explore Takomi subagent backend",
+      title: "Explore Takomi subagent backend",
+      role: "Explore",
+      lastToolName: "Read",
+    });
+  });
+
+  it("suppresses placeholder zero usage so rows read — tok until live totals land", () => {
+    const tasks = normalizeTakomiSubagentTasks({
+      toolCallId: "call-zero",
+      partialResult: {
+        details: { results: [{ agent: "worker", task: "Work", usage: { input: 0, output: 0 } }] },
+      },
+      result: undefined,
+      lifecycleStatus: "inProgress",
+    });
+    expect(tasks[0]?.typedUsage).toBeUndefined();
+  });
+
+  it("never merges an index-less progress entry into the wrong child", () => {
+    const tasks = normalizeTakomiSubagentTasks({
+      toolCallId: "call-mismerge",
+      partialResult: {
+        details: {
+          mode: "parallel",
+          results: [
+            { index: 0, agent: "researcher", task: "Inspect", status: "completed" },
+            { index: 1, agent: "builder", task: "Implement", status: "running" },
+          ],
+          progress: [{ agent: "builder", status: "running", tokens: 41, toolCount: 3 }],
+        },
+      },
+      result: undefined,
+      lifecycleStatus: "inProgress",
+    });
+    const researcher = tasks.find((task) => task.taskId === "call-mismerge:result:0");
+    const builder = tasks.find((task) => task.taskId === "call-mismerge:result:1");
+    expect(researcher?.typedUsage).toBeUndefined();
+    expect(builder?.typedUsage).toMatchObject({ totalTokens: 41, toolUses: 3 });
+  });
+
+  it("falls back to the session model when a child omits its own", () => {
+    const tasks = normalizeTakomiSubagentTasks({
+      toolCallId: "call-model",
+      partialResult: { details: { results: [{ agent: "worker", task: "Work" }] } },
+      result: undefined,
+      lifecycleStatus: "inProgress",
+      fallbackModel: "openai/gpt-5.5",
+    });
+    expect(tasks[0]?.model).toBe("openai/gpt-5.5");
+  });
+
+  it("counts observed tool calls when native counters stay at zero", () => {
+    const tasks = normalizeTakomiSubagentTasks({
+      toolCallId: "call-tools",
+      partialResult: {
+        details: {
+          results: [
+            {
+              agent: "worker",
+              task: "List the folders",
+              status: "completed",
+              exitCode: 0,
+              usage: { input: 0, output: 0 },
+              toolCount: 0,
+              toolCalls: [
+                { text: "read dir", expandedText: "listed 12 entries" },
+                { text: "read dir", expandedText: "listed 3 entries" },
+              ],
+              messages: [
+                {
+                  role: "assistant",
+                  content: [{ type: "toolCall", name: "read", arguments: "{}" }],
+                },
+              ],
+            },
+          ],
+        },
+      },
+      result: undefined,
+      lifecycleStatus: "inProgress",
+    });
+    expect(tasks[0]?.typedUsage).toMatchObject({ toolUses: 2 });
+  });
+
+  it("prefers a positive native tool count over the observed one", () => {
+    const tasks = normalizeTakomiSubagentTasks({
+      toolCallId: "call-native-tools",
+      partialResult: {
+        details: {
+          results: [
+            {
+              agent: "worker",
+              task: "Work",
+              toolCount: 46,
+              usage: { input: 100, output: 56 },
+              toolCalls: [{ text: "one" }],
+            },
+          ],
+        },
+      },
+      result: undefined,
+      lifecycleStatus: "inProgress",
+    });
+    expect(tasks[0]?.typedUsage).toMatchObject({ totalTokens: 156, toolUses: 46 });
+  });
+
+  it("keeps end-of-task totals when a stale progress entry reports zeros", () => {
+    const tasks = normalizeTakomiSubagentTasks({
+      toolCallId: "call-clobber",
+      partialResult: undefined,
+      result: {
+        details: {
+          mode: "single",
+          results: [
+            {
+              index: 0,
+              agent: "worker",
+              task: "List the folders",
+              status: "completed",
+              exitCode: 0,
+              usage: { input: 1200, output: 300 },
+              toolCount: 4,
+              progress: { index: 0, status: "completed", tokens: 1500, toolCount: 4 },
+            },
+          ],
+          progress: [{ index: 0, status: "running", tokens: 0, toolCount: 0 }],
+        },
+      },
+      lifecycleStatus: "completed",
+    });
+    const child = tasks.find((task) => task.taskId === "call-clobber:result:0");
+    expect(child?.status).toBe("completed");
+    expect(child?.typedUsage).toMatchObject({ totalTokens: 1500, toolUses: 4 });
+  });
+
+  it("merges partial nested usage fields without discarding sibling counters", () => {
+    const tasks = normalizeTakomiSubagentTasks({
+      toolCallId: "call-partial-usage",
+      partialResult: {
+        details: {
+          results: [
+            {
+              index: 0,
+              agent: "worker",
+              task: "Work",
+              usage: { input: 100, output: 20 },
+              progress: { index: 0, usage: { cacheRead: 50 } },
+            },
+          ],
+        },
+      },
+      result: undefined,
+      lifecycleStatus: "inProgress",
+    });
+
+    expect(tasks.find((task) => task.taskId === "call-partial-usage:result:0")?.typedUsage).toEqual(
+      {
+        totalTokens: 120,
+        inputTokens: 100,
+        cachedInputTokens: 50,
+        outputTokens: 20,
+      },
+    );
+  });
+
+  it("keeps a live total when the final frame regresses to placeholder zeros", () => {
+    const tasks = normalizeTakomiSubagentTasks({
+      toolCallId: "call-regress",
+      partialResult: {
+        details: {
+          results: [
+            {
+              index: 0,
+              agent: "worker",
+              task: "Work",
+              status: "running",
+              progress: { index: 0, status: "running", tokens: 41, toolCount: 3 },
+            },
+          ],
+        },
+      },
+      result: {
+        details: {
+          results: [
+            {
+              index: 0,
+              agent: "worker",
+              task: "Work",
+              status: "completed",
+              exitCode: 0,
+              usage: { input: 0, output: 0 },
+              toolCount: 0,
+            },
+          ],
+        },
+      },
+      lifecycleStatus: "completed",
+    });
+    const child = tasks.find((task) => task.taskId === "call-regress:result:0");
+    expect(child?.status).toBe("completed");
+    expect(child?.typedUsage).toMatchObject({ totalTokens: 41, toolUses: 3 });
+  });
+
+  it("re-emits real totals when the end-of-tool frame follows an early zero terminal snapshot", () => {
+    // Production shape: an early partial already carried a terminal child
+    // with placeholder zeros; the authoritative tool-end frame then delivers
+    // usage, progressSummary counters, and toolCalls (6 tools, 6839 tokens).
+    const toolCallId = "call-authoritative-end";
+    const tracker = createTakomiSubagentTaskTracker();
+    const early = normalizeTakomiSubagentTasks({
+      toolCallId,
+      partialResult: {
+        details: {
+          mode: "single",
+          results: [{ agent: "worker", task: "List the folders", status: "completed" }],
+        },
+      },
+      result: undefined,
+      lifecycleStatus: "inProgress",
+    });
+    const earlyEvents = tracker.observe({
+      toolCallId,
+      tasks: early,
+      lifecycleStatus: "inProgress",
+    });
+    expect(earlyEvents.filter((e) => e.type === "completed")).toHaveLength(2);
+
+    const final = normalizeTakomiSubagentTasks({
+      toolCallId,
+      partialResult: undefined,
+      result: {
+        details: {
+          mode: "single",
+          results: [
+            {
+              agent: "worker",
+              task: "List the folders",
+              exitCode: 1,
+              error: "Acceptance rejected",
+              usage: { input: 6141, output: 698, cacheRead: 6144 },
+              model: "openai-codex/gpt-5.6-luna:minimal",
+              progressSummary: { toolCount: 6, tokens: 6839, durationMs: 22553 },
+              toolCalls: Array.from({ length: 6 }, (_, i) => ({ text: `tool-${i}` })),
+            },
+          ],
+        },
+      },
+      lifecycleStatus: "completed",
+    });
+    const finalChild = final.find((t) => t.taskId === `${toolCallId}:result:0`);
+    expect(finalChild?.typedUsage).toMatchObject({ totalTokens: 6839, toolUses: 6 });
+    const finalEvents = tracker.observe({ toolCallId, tasks: final, lifecycleStatus: "completed" });
+    // Never re-opened, but the new totals are re-emitted for the fold.
+    expect(finalEvents.some((e) => e.type === "started")).toBe(false);
+    expect(
+      finalEvents.filter((event) => event.type === "progress").map((event) => event.task.status),
+    ).toEqual(["failed", "failed"]);
+    const refresh = finalEvents.filter(
+      (e) => e.type === "progress" && e.task.taskId === `${toolCallId}:result:0`,
+    );
+    expect(refresh).toHaveLength(1);
+    if (refresh[0]?.type === "progress") {
+      expect(refresh[0].task).toMatchObject({
+        status: "failed",
+        error: "Acceptance rejected",
+      });
+      expect(refresh[0].task.typedUsage).toMatchObject({ totalTokens: 6839, toolUses: 6 });
+    }
+  });
+
+  it("forwards live counters that arrive after an early placeholder completion", () => {
+    // Pi reported the child terminal with zeros, then kept working: later
+    // live frames must flow (updated/progress) without re-opening (started).
+    const toolCallId = "call-live-after-terminal";
+    const tracker = createTakomiSubagentTaskTracker();
+    const early = normalizeTakomiSubagentTasks({
+      toolCallId,
+      partialResult: {
+        details: { results: [{ agent: "worker", task: "Work", status: "completed" }] },
+      },
+      result: undefined,
+      lifecycleStatus: "inProgress",
+    });
+    expect(
+      tracker
+        .observe({ toolCallId, tasks: early, lifecycleStatus: "inProgress" })
+        .map((e) => e.type),
+    ).toContain("completed");
+
+    const live = normalizeTakomiSubagentTasks({
+      toolCallId,
+      partialResult: {
+        details: {
+          results: [
+            {
+              agent: "worker",
+              task: "Work",
+              status: "running",
+              progress: {
+                index: 0,
+                status: "running",
+                tokens: 1200,
+                toolCount: 2,
+                currentTool: "read",
+              },
+            },
+          ],
+        },
+      },
+      result: undefined,
+      lifecycleStatus: "inProgress",
+    });
+    const liveEvents = tracker.observe({ toolCallId, tasks: live, lifecycleStatus: "inProgress" });
+    const types = liveEvents.map((e) => e.type);
+    expect(types).toContain("updated");
+    expect(types).toContain("progress");
+    expect(types).not.toContain("started");
+    expect(types).not.toContain("completed");
+    const progress = liveEvents.find((e) => e.type === "progress");
+    if (progress?.type === "progress") {
+      expect(progress.task.typedUsage).toMatchObject({ totalTokens: 1200, toolUses: 2 });
+      expect(progress.task.lastToolName).toBe("read");
+    }
+  });
+
+  it("reads the end-of-task progressSummary rollup when usage is absent", () => {
+    const tasks = normalizeTakomiSubagentTasks({
+      toolCallId: "call-summary-only",
+      partialResult: undefined,
+      result: {
+        details: {
+          mode: "single",
+          results: [
+            {
+              agent: "worker",
+              task: "Work",
+              exitCode: 0,
+              progressSummary: { toolCount: 6, tokens: 6839, durationMs: 22553 },
+            },
+          ],
+        },
+      },
+      lifecycleStatus: "completed",
+    });
+    expect(tasks.find((t) => t.taskId === "call-summary-only:result:0")?.typedUsage).toMatchObject({
+      totalTokens: 6839,
+      toolUses: 6,
+      durationMs: 22553,
+    });
+  });
+});
+
 describe("Pi adapter process-path JSONL decoding", () => {
   const startInput = (threadId: ThreadId) => ({
     threadId,
@@ -770,8 +1186,8 @@ describe("Pi adapter process-path JSONL decoding", () => {
     runtimeMode: "full-access" as const,
   });
 
-  it("preserves fragmented UTF-8 and surfaces malformed and oversized records", async () => {
-    await runPiProcessScenario(
+  effectIt.live("preserves fragmented UTF-8 and surfaces malformed and oversized records", () =>
+    runPiProcessScenario(
       {
         ...process.env,
         T3_PI_CONFORMANCE_MALFORMED: "1",
@@ -809,11 +1225,11 @@ describe("Pi adapter process-path JSONL decoding", () => {
           ).toBeDefined();
           yield* adapter.stopSession(threadId);
         }),
-    );
-  });
+    ),
+  );
 
-  it("rejects oversized native UI IDs before canonical request persistence", async () => {
-    await runPiProcessScenario(
+  effectIt.live("rejects oversized native UI IDs before canonical request persistence", () =>
+    runPiProcessScenario(
       { ...process.env, T3_PI_CONFORMANCE_INVALID_UI_ID: "1" },
       ({ adapter, events, nativeRecords, threadId, waitFor }) =>
         Effect.gen(function* () {
@@ -838,11 +1254,11 @@ describe("Pi adapter process-path JSONL decoding", () => {
           ).toBe(false);
           yield* adapter.stopSession(threadId);
         }),
-    );
-  });
+    ),
+  );
 
-  it("flushes an unterminated EOF frame before reporting process exit", async () => {
-    await runPiProcessScenario(
+  effectIt.live("flushes an unterminated EOF frame before reporting process exit", () =>
+    runPiProcessScenario(
       { ...process.env, T3_PI_CONFORMANCE_UNTERMINATED: "1" },
       ({ adapter, events, threadId, waitFor }) =>
         Effect.gen(function* () {
@@ -866,11 +1282,11 @@ describe("Pi adapter process-path JSONL decoding", () => {
             ),
           ).toHaveLength(1);
         }),
-    );
-  });
+    ),
+  );
 
-  it("cleans the failed start generation after an abrupt process exit", async () => {
-    await runPiProcessScenario(
+  effectIt.live("cleans the failed start generation after an abrupt process exit", () =>
+    runPiProcessScenario(
       { ...process.env, T3_PI_CONFORMANCE_EARLY_EXIT: "1" },
       ({ adapter, threadId }) =>
         Effect.gen(function* () {
@@ -878,11 +1294,11 @@ describe("Pi adapter process-path JSONL decoding", () => {
           expect(Exit.isFailure(result)).toBe(true);
           expect(yield* adapter.hasSession(threadId)).toBe(false);
         }),
-    );
-  });
+    ),
+  );
 
-  it("keeps a replacement generation registered when the prior process terminates", async () => {
-    await runPiProcessScenario(process.env, ({ adapter, events, threadId, waitFor }) =>
+  effectIt.live("keeps a replacement generation registered when the prior process terminates", () =>
+    runPiProcessScenario(process.env, ({ adapter, events, threadId, waitFor }) =>
       Effect.gen(function* () {
         yield* adapter.startSession(startInput(threadId));
         yield* adapter.startSession(startInput(threadId));
@@ -897,11 +1313,11 @@ describe("Pi adapter process-path JSONL decoding", () => {
         ).toHaveLength(1);
         yield* adapter.stopSession(threadId);
       }),
-    );
-  });
+    ),
+  );
 
-  it("scopes reused native UI IDs by generation", async () => {
-    await runPiProcessScenario(
+  effectIt.live("scopes reused native UI IDs by generation", () =>
+    runPiProcessScenario(
       { ...process.env, T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE: "1" },
       ({ adapter, events, nativeRecords, threadId, waitFor }) =>
         Effect.gen(function* () {
@@ -984,63 +1400,63 @@ describe("Pi adapter process-path JSONL decoding", () => {
             ).toHaveLength(1);
           }
         }),
-    );
-  });
+    ),
+  );
 
-  it("writes each native Pi record and settles open UI waiters once on stop", async () => {
-    await runPiProcessScenario(
-      process.env,
-      ({ adapter, events, nativeRecords, threadId, waitFor }) =>
-        Effect.gen(function* () {
-          yield* adapter.startSession(startInput(threadId));
-          yield* adapter.sendTurn({ threadId, input: "Native logging", attachments: [] });
-          yield* waitFor((event) => event.type === "turn.completed");
-          yield* adapter.stopSession(threadId);
-          // get_state, get_commands, and prompt responses plus every one of
-          // the 32 synthetic native events.
-          expect(nativeRecords).toHaveLength(35);
-          const openedIds = events
-            .filter(
-              (event) => event.type === "request.opened" || event.type === "user-input.requested",
-            )
-            .map((event) => event.requestId!);
-          const resolvedIds = events
-            .filter(
-              (event) => event.type === "request.resolved" || event.type === "user-input.resolved",
-            )
-            .map((event) => event.requestId);
-          expect(openedIds.length).toBeGreaterThan(0);
-          for (const requestId of openedIds) {
-            expect(resolvedIds.filter((resolvedId) => resolvedId === requestId)).toHaveLength(1);
-          }
-        }),
-    );
-  });
+  effectIt.live("writes each native Pi record and settles open UI waiters once on stop", () =>
+    runPiProcessScenario(process.env, ({ adapter, events, nativeRecords, threadId, waitFor }) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession(startInput(threadId));
+        yield* adapter.sendTurn({ threadId, input: "Native logging", attachments: [] });
+        yield* waitFor((event) => event.type === "turn.completed");
+        yield* adapter.stopSession(threadId);
+        // get_state, get_commands, and prompt responses plus every one of
+        // the 32 synthetic native events.
+        expect(nativeRecords).toHaveLength(35);
+        const openedIds = events
+          .filter(
+            (event) => event.type === "request.opened" || event.type === "user-input.requested",
+          )
+          .map((event) => event.requestId!);
+        const resolvedIds = events
+          .filter(
+            (event) => event.type === "request.resolved" || event.type === "user-input.resolved",
+          )
+          .map((event) => event.requestId);
+        expect(openedIds.length).toBeGreaterThan(0);
+        for (const requestId of openedIds) {
+          expect(resolvedIds.filter((resolvedId) => resolvedId === requestId)).toHaveLength(1);
+        }
+      }),
+    ),
+  );
 
-  it("keeps Pi normalization alive when native logging fails without exposing the logger error", async () => {
-    await runPiProcessScenario(
-      { ...process.env, T3_PI_CONFORMANCE_NATIVE_LOG_FAIL: "1" },
-      ({ adapter, events, threadId, waitFor }) =>
-        Effect.gen(function* () {
-          yield* adapter.startSession(startInput(threadId));
-          yield* adapter.sendTurn({ threadId, input: "Logger failure", attachments: [] });
-          yield* waitFor((event) => event.type === "turn.completed");
-          const diagnostics = events.filter(
-            (event) =>
-              event.type === "runtime.warning" &&
-              event.payload.message === "Pi native event logging failed.",
-          );
-          expect(diagnostics.length).toBeGreaterThan(0);
-          expect(diagnostics.map(runtimeWarningReason)).not.toContain(
-            "sensitive native logger failure",
-          );
-          yield* adapter.stopSession(threadId);
-        }),
-    );
-  });
+  effectIt.live(
+    "keeps Pi normalization alive when native logging fails without exposing the logger error",
+    () =>
+      runPiProcessScenario(
+        { ...process.env, T3_PI_CONFORMANCE_NATIVE_LOG_FAIL: "1" },
+        ({ adapter, events, threadId, waitFor }) =>
+          Effect.gen(function* () {
+            yield* adapter.startSession(startInput(threadId));
+            yield* adapter.sendTurn({ threadId, input: "Logger failure", attachments: [] });
+            yield* waitFor((event) => event.type === "turn.completed");
+            const diagnostics = events.filter(
+              (event) =>
+                event.type === "runtime.warning" &&
+                event.payload.message === "Pi native event logging failed.",
+            );
+            expect(diagnostics.length).toBeGreaterThan(0);
+            expect(diagnostics.map(runtimeWarningReason)).not.toContain(
+              "sensitive native logger failure",
+            );
+            yield* adapter.stopSession(threadId);
+          }),
+      ),
+  );
 
-  it("writes one Pi-compatible cancellation for an expired request", async () => {
-    await runPiProcessScenario(
+  effectIt.live("writes one Pi-compatible cancellation for an expired request", () =>
+    runPiProcessScenario(
       {
         ...process.env,
         T3_PI_CONFORMANCE_UI_TIMEOUT_ONLY: "1",
@@ -1073,46 +1489,48 @@ describe("Pi adapter process-path JSONL decoding", () => {
           ).toHaveLength(1);
           yield* adapter.stopSession(threadId);
         }),
-    );
-  });
+    ),
+  );
 
-  it("publishes a timeout request before its one terminal settlement when abort races it", async () => {
-    await runPiProcessScenario(
-      {
-        ...process.env,
-        T3_PI_CONFORMANCE_UI_TIMEOUT_ONLY: "1",
-        T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE: "1",
-      },
-      ({ adapter, events, threadId, waitFor }) =>
-        Effect.gen(function* () {
-          yield* adapter.startSession(startInput(threadId));
-          const turn = yield* adapter.sendTurn({
-            threadId,
-            input: "Timeout and abort race",
-            attachments: [],
-          });
-          yield* waitFor((event) => event.type === "request.opened");
-          const opened = events.find((event) => event.type === "request.opened")!;
-          yield* adapter.interruptTurn(threadId, turn.turnId);
-          yield* waitFor(
-            (event) => event.type === "request.resolved" && event.requestId === opened.requestId,
-          );
-          const openedIndex = events.findIndex(
-            (event) => event.type === "request.opened" && event.requestId === opened.requestId,
-          );
-          const terminal = events.filter(
-            (event) => event.type === "request.resolved" && event.requestId === opened.requestId,
-          );
-          expect(openedIndex).toBeGreaterThanOrEqual(0);
-          expect(events.indexOf(terminal[0]!)).toBeGreaterThan(openedIndex);
-          expect(terminal).toHaveLength(1);
-          yield* waitFor((event) => event.type === "session.exited");
-        }),
-    );
-  });
+  effectIt.live(
+    "publishes a timeout request before its one terminal settlement when abort races it",
+    () =>
+      runPiProcessScenario(
+        {
+          ...process.env,
+          T3_PI_CONFORMANCE_UI_TIMEOUT_ONLY: "1",
+          T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE: "1",
+        },
+        ({ adapter, events, threadId, waitFor }) =>
+          Effect.gen(function* () {
+            yield* adapter.startSession(startInput(threadId));
+            const turn = yield* adapter.sendTurn({
+              threadId,
+              input: "Timeout and abort race",
+              attachments: [],
+            });
+            yield* waitFor((event) => event.type === "request.opened");
+            const opened = events.find((event) => event.type === "request.opened")!;
+            yield* adapter.interruptTurn(threadId, turn.turnId);
+            yield* waitFor(
+              (event) => event.type === "request.resolved" && event.requestId === opened.requestId,
+            );
+            const openedIndex = events.findIndex(
+              (event) => event.type === "request.opened" && event.requestId === opened.requestId,
+            );
+            const terminal = events.filter(
+              (event) => event.type === "request.resolved" && event.requestId === opened.requestId,
+            );
+            expect(openedIndex).toBeGreaterThanOrEqual(0);
+            expect(events.indexOf(terminal[0]!)).toBeGreaterThan(openedIndex);
+            expect(terminal).toHaveLength(1);
+            yield* waitFor((event) => event.type === "session.exited");
+          }),
+      ),
+  );
 
-  it("fences buffered lifecycle output immediately after interruption", async () => {
-    await runPiProcessScenario(process.env, ({ adapter, events, threadId, waitFor }) =>
+  effectIt.live("fences buffered lifecycle output immediately after interruption", () =>
+    runPiProcessScenario(process.env, ({ adapter, events, threadId, waitFor }) =>
       Effect.gen(function* () {
         yield* adapter.startSession(startInput(threadId));
         const turn = yield* adapter.sendTurn({
@@ -1130,6 +1548,60 @@ describe("Pi adapter process-path JSONL decoding", () => {
           ),
         ).toBe(false);
       }),
-    );
-  });
+    ),
+  );
+
+  effectIt.live("mirrors todo tool updates onto turn.plan.updated", () =>
+    runPiProcessScenario(
+      { ...process.env, T3_PI_CONFORMANCE_TODO: "1" },
+      ({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          const turn = yield* adapter.sendTurn({
+            threadId,
+            input: "Work through the task list",
+            attachments: [],
+          });
+          yield* waitFor((event) => event.type === "turn.plan.updated");
+          yield* waitFor((event) => event.type === "turn.completed");
+          const plans = events.filter((event) => event.type === "turn.plan.updated");
+          expect(plans).toHaveLength(2);
+          for (const plan of plans) {
+            expect(plan.turnId).toBe(turn.turnId);
+          }
+          expect(plans[0]?.payload.plan).toEqual([
+            { step: "Read files", status: "completed" },
+            { step: "Fix Pi todos", status: "inProgress" },
+          ]);
+          expect(plans.at(-1)?.payload.plan).toEqual([
+            { step: "Read files", status: "completed" },
+            { step: "Fix Pi todos", status: "inProgress" },
+            { step: "Run tests", status: "pending" },
+          ]);
+          yield* adapter.stopSession(threadId);
+        }),
+    ),
+  );
+
+  effectIt.live("emits thread.state.changed for Pi auto-compaction with token counts", () =>
+    runPiProcessScenario(process.env, ({ adapter, events, threadId, waitFor }) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession(startInput(threadId));
+        yield* adapter.sendTurn({ threadId, input: "Synthetic only", attachments: [] });
+        yield* waitFor(
+          (event) => event.type === "thread.state.changed" && event.payload.state === "compacted",
+        );
+        yield* waitFor((event) => event.type === "turn.completed");
+        const compacted = events.filter(
+          (event): event is Extract<ProviderRuntimeEvent, { type: "thread.state.changed" }> =>
+            event.type === "thread.state.changed" && event.payload.state === "compacted",
+        );
+        expect(compacted).toHaveLength(1);
+        // Fixture reports tokensBefore 4 and estimatedTokensAfter 2.
+        expect(compacted[0]?.payload.beforeTokens).toBe(4);
+        expect(compacted[0]?.payload.afterTokens).toBe(2);
+        yield* adapter.stopSession(threadId);
+      }),
+    ),
+  );
 });

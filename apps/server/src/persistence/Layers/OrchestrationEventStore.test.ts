@@ -105,6 +105,56 @@ layer("OrchestrationEventStore", (it) => {
     }),
   );
 
+  it.effect("filters replay rows before decoding their payloads", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("filtered-replay-thread");
+      const skipped = yield* eventStore.append(messageEvent(threadId, "filtered-replay-message"));
+      const included = yield* eventStore.append({
+        type: "thread.deleted",
+        eventId: EventId.make("filtered-replay-delete"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        payload: { threadId, deletedAt: now },
+      });
+      yield* eventStore.append({
+        type: "thread.deleted",
+        eventId: EventId.make("filtered-replay-after-bound"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        payload: { threadId, deletedAt: now },
+      });
+      yield* sql`
+        UPDATE orchestration_events SET payload_json = '{'
+        WHERE sequence = ${skipped.sequence}
+      `;
+
+      const replayed = yield* Stream.runCollect(
+        eventStore.readFromSequence(0, Number.MAX_SAFE_INTEGER, {
+          eventTypes: ["thread.deleted"],
+          toSequenceInclusive: included.sequence,
+        }),
+      ).pipe(Effect.map((chunk) => Array.from(chunk)));
+
+      assert.deepEqual(
+        replayed.map((event) => event.eventId),
+        [included.eventId],
+      );
+    }),
+  );
+
   it.effect("fails with PersistenceDecodeError when stored json is invalid", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;

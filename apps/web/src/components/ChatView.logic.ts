@@ -166,6 +166,27 @@ export function shouldOpenProactiveTurnDiff(input: {
   );
 }
 
+// Completion chime gate. Unlike shouldOpenProactiveTurnDiff (which also fires on
+// entry when the previous turn was never observed), the chime requires having
+// actually seen the turn running — otherwise every visit to an already-done
+// thread would ding.
+export function shouldPlayTurnCompleteChime(input: {
+  previousRunningTurnId: TurnId | null | undefined;
+  runningTurnId: TurnId | null;
+  settledTurnId: TurnId | null;
+  turnCompleted: boolean;
+  lastPlayedTurnId: TurnId | null;
+}): boolean {
+  return (
+    input.runningTurnId === null &&
+    input.turnCompleted &&
+    input.settledTurnId !== null &&
+    input.settledTurnId !== input.lastPlayedTurnId &&
+    input.previousRunningTurnId !== undefined &&
+    input.settledTurnId === input.previousRunningTurnId
+  );
+}
+
 export function resolveProactiveTurnDiffAction(input: {
   checkpoint: Pick<TurnDiffSummary, "status" | "files"> | undefined;
   isGitRepo: boolean | undefined;
