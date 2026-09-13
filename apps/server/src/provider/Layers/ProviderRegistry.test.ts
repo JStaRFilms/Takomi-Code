@@ -176,6 +176,12 @@ function mockHandle(result: { stdout: string; stderr: string; code: number }) {
   });
 }
 
+function normalizeMockCommandArgs(args: ReadonlyArray<string>): ReadonlyArray<string> {
+  return args.map((arg) =>
+    arg.startsWith('^"') && arg.endsWith('^"') ? arg.slice(2, -2).replace(/\^(.)/g, "$1") : arg,
+  );
+}
+
 function mockSpawnerLayer(
   handler: (args: ReadonlyArray<string>) => {
     stdout: string;
@@ -187,7 +193,7 @@ function mockSpawnerLayer(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command) => {
       const cmd = command as unknown as { args: ReadonlyArray<string> };
-      return Effect.succeed(mockHandle(handler(cmd.args)));
+      return Effect.succeed(mockHandle(handler(normalizeMockCommandArgs(cmd.args))));
     }),
   );
 }
@@ -212,8 +218,9 @@ function recordingMockSpawnerLayer(
           readonly env?: NodeJS.ProcessEnv;
         };
       };
-      commands.push({ args: cmd.args, env: cmd.options?.env });
-      return Effect.succeed(mockHandle(handler(cmd.args)));
+      const args = normalizeMockCommandArgs(cmd.args);
+      commands.push({ args, env: cmd.options?.env });
+      return Effect.succeed(mockHandle(handler(args)));
     }),
   );
   return { layer, commands };
@@ -232,7 +239,7 @@ function mockCommandSpawnerLayer(
         command: string;
         args: ReadonlyArray<string>;
       };
-      return Effect.succeed(mockHandle(handler(cmd.command, cmd.args)));
+      return Effect.succeed(mockHandle(handler(cmd.command, normalizeMockCommandArgs(cmd.args))));
     }),
   );
 }
@@ -2259,6 +2266,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   cursor: { enabled: false },
                   grok: { enabled: false },
                   opencode: { enabled: false },
+                  pi: { enabled: false },
                 },
                 // `providerInstances` keys are branded `ProviderInstanceId`;
                 // the branded index signature rejects plain string literals
@@ -2371,6 +2379,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                   cursor: { enabled: false },
                   grok: { enabled: false },
                   opencode: { enabled: false },
+                  pi: { enabled: false },
                 },
               }),
             ),
@@ -2631,6 +2640,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 "cursor",
                 "grok",
                 "opencode",
+                "pi",
               ]);
               assert.strictEqual(cursorProvider?.enabled, false);
               assert.strictEqual(cursorProvider?.status, "disabled");
