@@ -1,4 +1,5 @@
 import {
+  USAGE_MERGE_COMPATIBLE_SINCE,
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
   type UsageBucket,
@@ -40,6 +41,8 @@ function summary(
     homePath: string;
     volumeId?: string;
     distinctSessions?: number;
+    status?: "ok" | "missing" | "partial" | "failed";
+    message?: string | null;
   }[],
   contractVersion: number = USAGE_CONTRACT_VERSION,
 ): UsageSummary {
@@ -57,12 +60,12 @@ function summary(
         resolvedHomePath: source.homePath,
         volumeId: source.volumeId ?? `vol-${source.hostId}`,
       },
-      status: "ok" as const,
+      status: source.status ?? "ok",
       scannedFiles: 1,
       skippedFiles: 0,
       malformedRecords: 0,
       distinctSessions: source.distinctSessions ?? 1,
-      message: null,
+      message: source.message ?? null,
     })),
     pricing: { status: "fresh", source: "litellm", fetchedAt: null, knownModels: 10 },
     scanDurationMs: 1,
@@ -158,7 +161,7 @@ describe("mergeUsage", () => {
           summary(
             [bucket()],
             [{ provider: "claude", hostId: "linux", homePath: "/b" }],
-            USAGE_CONTRACT_VERSION - 3,
+            USAGE_MERGE_COMPATIBLE_SINCE - 1,
           ),
         ),
       ],
@@ -405,5 +408,103 @@ describe("mergeUsage", () => {
     ]);
     expect(merged.daily).toHaveLength(1);
     expect(merged.daily[0]?.costUsd).toBe(10);
+  });
+
+  it("preserves distinct sourcePath buckets across environments that each own a different database", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-alice",
+          summary(
+            [
+              bucket({
+                provider: "opencode",
+                model: "glm-5.3",
+                costUsd: 1.5,
+                sourcePath: "/home/alice/opencode.db",
+              }),
+            ],
+            [{ provider: "opencode", hostId: "host", homePath: "/home/alice/opencode.db" }],
+          ),
+        ),
+        environment(
+          "env-bob",
+          summary(
+            [
+              bucket({
+                provider: "opencode",
+                model: "glm-5.3",
+                costUsd: 2.5,
+                sourcePath: "/home/bob/opencode.db",
+              }),
+            ],
+            [{ provider: "opencode", hostId: "host", homePath: "/home/bob/opencode.db" }],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(4);
+    expect(merged.models).toHaveLength(1);
+    expect(merged.models[0]?.costUsd).toBe(4);
+    expect(merged.models[0]?.records).toBe(10);
+  });
+
+  it("drops the second environment's bucket when both claim the same sourcePath", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [bucket({ provider: "opencode", costUsd: 3, sourcePath: "/shared/opencode.db" })],
+            [{ provider: "opencode", hostId: "host", homePath: "/shared/opencode.db" }],
+          ),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ provider: "opencode", costUsd: 5, sourcePath: "/shared/opencode.db" })],
+            [{ provider: "opencode", hostId: "host", homePath: "/shared/opencode.db" }],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(3);
+    expect(merged.duplicateSources).toContain("env-b: /shared/opencode.db");
+  });
+
+  it("lets a successful environment own a source that another environment failed to read", () => {
+    const failed = summary(
+      [],
+      [
+        {
+          provider: "opencode",
+          hostId: "host",
+          homePath: "/shared/opencode.db",
+          status: "failed",
+          message: "OpenCode database could not be read.",
+        },
+      ],
+    );
+
+    const merged = mergeUsage(
+      [
+        environment("env-a", failed),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ provider: "opencode", costUsd: 5, sourcePath: "/shared/opencode.db" })],
+            [{ provider: "opencode", hostId: "host", homePath: "/shared/opencode.db" }],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.costUsd).toBe(5);
+    expect(merged.contributingEnvironments).toEqual(["env-b"]);
   });
 });

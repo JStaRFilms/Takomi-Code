@@ -142,11 +142,15 @@ export const resolvePiSessionRecord = Effect.fn("PiSessionAttach.resolvePiSessio
       try: () => input.lifecycle.resolveSessionHandle(input.handle, lifecycleBinding, now),
       catch: () => catalogError("invalid_cursor", "The Pi session handle is stale or invalid."),
     });
-    const signal = yield* Effect.abortSignal;
-    const inspection = yield* Effect.tryPromise({
-      try: () => inspectPiSessionFile({ file: record.nativeFile }, { signal }),
-      catch: sourceError,
-    });
+    const inspection = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const signal = yield* Effect.abortSignal;
+        return yield* Effect.tryPromise({
+          try: () => inspectPiSessionFile({ file: record.nativeFile }, { signal }),
+          catch: sourceError,
+        });
+      }),
+    );
     if (!sameFileObject(inspection, record.fileIdentity)) {
       return yield* fail(
         "invalid_cursor",
@@ -179,20 +183,24 @@ export const previewPiSessionMessages = Effect.fn("PiSessionAttach.previewPiSess
     input: PiSessionRecordContext & { readonly limit?: number },
   ): Effect.fn.Return<PiSessionPreviewResolution, PiSessionCatalogError, never> {
     const { record } = yield* resolvePiSessionRecord(input);
-    const signal = yield* Effect.abortSignal;
-    const extraction = yield* Effect.tryPromise({
-      try: () =>
-        extractPiHistory(
-          { file: record.nativeFile },
-          {
-            signal,
-            maxMessages: input.limit ?? 100,
-            maxTextBytes: 500,
-            take: "last",
-          },
-        ),
-      catch: () => catalogError("unavailable", "Reading Pi session messages is unavailable."),
-    });
+    const extraction = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const signal = yield* Effect.abortSignal;
+        return yield* Effect.tryPromise({
+          try: () =>
+            extractPiHistory(
+              { file: record.nativeFile },
+              {
+                signal,
+                maxMessages: input.limit ?? 100,
+                maxTextBytes: 500,
+                take: "last",
+              },
+            ),
+          catch: () => catalogError("unavailable", "Reading Pi session messages is unavailable."),
+        });
+      }),
+    );
     return {
       messages: extraction.messages.map((message) => ({
         recordIndex: message.recordIndex,
@@ -245,23 +253,27 @@ export const continuePiSessionInThread = Effect.fn("PiSessionAttach.continuePiSe
       } as const;
     }
     const path = yield* Path.Path;
-    const signal = yield* Effect.abortSignal;
-    const forked = yield* Effect.tryPromise({
-      try: () =>
-        forkPiSessionFile(
-          {
-            sourceFile: record.nativeFile,
-            sessionDir: path.dirname(record.nativeFile),
-            targetCwd: input.workspaceCanonicalPath,
-            ...(input.maxRecords !== undefined ? { maxRecords: input.maxRecords } : {}),
-          },
-          { signal },
-        ),
-      catch: (error) =>
-        error instanceof PiSessionSourceError
-          ? sourceError(error)
-          : catalogError("unavailable", "Forking the Pi session failed."),
-    });
+    const forked = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const signal = yield* Effect.abortSignal;
+        return yield* Effect.tryPromise({
+          try: () =>
+            forkPiSessionFile(
+              {
+                sourceFile: record.nativeFile,
+                sessionDir: path.dirname(record.nativeFile),
+                targetCwd: input.workspaceCanonicalPath,
+                ...(input.maxRecords !== undefined ? { maxRecords: input.maxRecords } : {}),
+              },
+              { signal },
+            ),
+          catch: (error) =>
+            error instanceof PiSessionSourceError
+              ? sourceError(error)
+              : catalogError("unavailable", "Forking the Pi session failed."),
+        });
+      }),
+    );
     const releaseReservation = yield* Effect.try({
       try: () => input.lifecycle.reserveSessionFile(forked.file, input.threadId),
       catch: () =>

@@ -201,4 +201,19 @@ describe("UsageAggregator", () => {
 
     expect(result.buckets).toHaveLength(3);
   });
+
+  it("isolates buckets by sourcePath so databases from different environments never merge", () => {
+    const result = aggregate([
+      record({ provider: "opencode", model: "glm-5.3", sourcePath: "/home/alice/opencode.db" }),
+      record({ provider: "opencode", model: "glm-5.3", sourcePath: "/home/bob/opencode.db" }),
+      record({ provider: "opencode", model: "glm-5.3" }),
+    ]);
+
+    expect(result.buckets).toHaveLength(3);
+    expect(result.buckets.map((b) => b.sourcePath).sort()).toEqual([
+      "/home/alice/opencode.db",
+      "/home/bob/opencode.db",
+      undefined,
+    ]);
+  });
 });

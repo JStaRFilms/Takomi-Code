@@ -2,8 +2,9 @@
  * UsageService - scans provider transcripts and returns priced usage buckets.
  *
  * The scan reads the provider CLIs' own session files (Claude Code, Codex,
- * Grok Build, and Pi) rather than T3 Code's orchestration projections, so usage covers
- * turns driven outside T3 Code too. This is the approach `ccusage` takes.
+ * Grok Build, and Pi) plus OpenCode's SQLite message store, rather than T3
+ * Code's orchestration projections, so usage covers turns driven outside
+ * T3 Code too. This is the approach `ccusage` takes.
  *
  * Transcripts are append-only, so parsed records are memoised per file by
  * `(size, mtime)`. A cold 30-day scan of ~1.4 GB lands around 2-3 seconds; warm
@@ -50,6 +51,7 @@ import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import { listOpenCodeDatabases, readOpenCodeUsage } from "./usageOpenCode.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -442,7 +444,41 @@ export const make = Effect.gen(function* () {
     readonly files:
       | readonly { readonly path: string; readonly records: readonly UsageRecord[] }[]
       | null;
+    /** Set when a usage database exists but could not be read at all. */
+    readonly readError?: string;
+    /** Rows that parsed as JSON but carried no recognisable usage payload. */
+    readonly malformedRecords?: number;
   }
+
+  /**
+   * Resolves every OpenCode database this environment can see: the host's own
+   * `OPENCODE_DB` / XDG data directory, plus each OpenCode provider
+   * instance's. Aliased environments resolve the same file and dedupe here.
+   */
+  const resolveOpenCodeDatabases = Effect.fn("UsageService.resolveOpenCodeDatabases")(function* (
+    settings: ServerSettingsValue,
+  ) {
+    const homeDirectory = NodeOS.homedir();
+    const environments: NodeJS.ProcessEnv[] = [hostEnvironment];
+    for (const instance of Object.values(settings.providerInstances)) {
+      if (instance.driver !== "opencode") continue;
+      environments.push(mergeProviderInstanceEnvironment(instance.environment, hostEnvironment));
+    }
+    const databases = new Set<string>();
+    for (const environment of environments) {
+      const listed = yield* Effect.promise(() =>
+        listOpenCodeDatabases({ environment, homeDirectory }),
+      );
+      for (const database of listed) {
+        // Disabled accounts still have history, exactly like transcript homes.
+        const real = yield* fileSystem
+          .realPath(database)
+          .pipe(Effect.orElseSucceed(() => database));
+        databases.add(real);
+      }
+    }
+    return [...databases];
+  });
 
   const collectDirs = Effect.fn("UsageService.collectDirs")(function* (
     windowStartMs: number,
@@ -472,6 +508,37 @@ export const make = Effect.gen(function* () {
         parsedFiles.push({ path: file.path, records });
       }
       scanned.push({ provider, dir, volumeId, files: parsedFiles });
+    }
+    // OpenCode keeps history in SQLite, so each database is one source whose
+    // records arrive pre-parsed rather than through the file walk.
+    for (const database of yield* resolveOpenCodeDatabases(settings)) {
+      const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(database));
+      const exists = yield* fileSystem
+        .exists(database)
+        .pipe(Effect.catchCause(() => Effect.succeed(false)));
+      if (!exists) {
+        scanned.push({ provider: "opencode", dir: database, volumeId, files: null });
+        continue;
+      }
+      const read = yield* Effect.promise(() => readOpenCodeUsage(database, windowStartMs));
+      if (read === null) {
+        scanned.push({
+          provider: "opencode",
+          dir: database,
+          volumeId,
+          files: null,
+          readError: "OpenCode database could not be read.",
+        });
+        continue;
+      }
+      const records = read.records.map((record) => ({ ...record, sourcePath: database }));
+      scanned.push({
+        provider: "opencode",
+        dir: database,
+        volumeId,
+        files: [{ path: database, records }],
+        malformedRecords: read.malformedRecords,
+      });
     }
     return scanned;
   });
@@ -547,16 +614,20 @@ export const make = Effect.gen(function* () {
     const livePaths = new Set<string>();
     const walkedRoots: string[] = [];
 
-    for (const { provider, dir, volumeId, files } of scannedDirs) {
+    for (const { provider, dir, volumeId, files, readError, malformedRecords } of scannedDirs) {
       if (files === null) {
         sources.push({
           fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
-          status: "missing",
+          status: readError === undefined ? "missing" : "failed",
           scannedFiles: 0,
           skippedFiles: 0,
           malformedRecords: 0,
           distinctSessions: 0,
-          message: "No transcript directory on this environment.",
+          message:
+            readError ??
+            (provider === "opencode"
+              ? "No OpenCode usage database on this environment."
+              : "No transcript directory on this environment."),
         });
         continue;
       }
@@ -586,12 +657,12 @@ export const make = Effect.gen(function* () {
 
       sources.push({
         fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
-        status: "ok",
+        status: (malformedRecords ?? 0) > 0 ? "partial" : "ok",
         scannedFiles,
         skippedFiles,
-        malformedRecords: 0,
+        malformedRecords: malformedRecords ?? 0,
         distinctSessions: sessionIds.size,
-        message: null,
+        message: (malformedRecords ?? 0) > 0 ? "Some usage rows could not be parsed." : null,
       });
     }
 

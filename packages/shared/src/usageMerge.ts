@@ -133,7 +133,7 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
 
   for (const environment of ordered) {
     for (const source of environment.summary.sources) {
-      if (source.status === "missing") continue;
+      if (source.status === "missing" || source.status === "failed") continue;
       const key = fingerprintKey(source.fingerprint);
       if (ownerByFingerprint.has(key)) {
         duplicates.push(`${environment.label}: ${source.fingerprint.resolvedHomePath}`);
@@ -155,13 +155,20 @@ function ownedContribution(
   readonly sessionsByProvider: ReadonlyMap<UsageProviderKind, number>;
 } {
   const ownedProviders = new Set<UsageProviderKind>();
+  // SQLite-backed providers can read several databases per provider; a
+  // bucket from database B must not ride along just because the environment
+  // also owns database A.
+  const ownedSourcePaths = new Map<UsageProviderKind, Set<string>>();
   const sessionsByProvider = new Map<UsageProviderKind, number>();
   for (const source of environment.summary.sources) {
-    if (source.status === "missing") continue;
+    if (source.status === "missing" || source.status === "failed") continue;
     const key = fingerprintKey(source.fingerprint);
     if (ownerByFingerprint.get(key) === environment.environmentId) {
       const provider = source.fingerprint.provider;
       ownedProviders.add(provider);
+      const paths = ownedSourcePaths.get(provider) ?? new Set<string>();
+      paths.add(source.fingerprint.resolvedHomePath);
+      ownedSourcePaths.set(provider, paths);
       // Distinct within a directory. Summing per-bucket session counts instead
       // would count a session once per day and model it spans.
       sessionsByProvider.set(
@@ -171,7 +178,11 @@ function ownedContribution(
     }
   }
   return {
-    buckets: environment.summary.buckets.filter((bucket) => ownedProviders.has(bucket.provider)),
+    buckets: environment.summary.buckets.filter((bucket) =>
+      bucket.sourcePath === undefined
+        ? ownedProviders.has(bucket.provider)
+        : (ownedSourcePaths.get(bucket.provider)?.has(bucket.sourcePath) ?? false),
+    ),
     sessionsByProvider,
   };
 }

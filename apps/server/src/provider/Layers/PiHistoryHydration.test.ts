@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - this integration test seeds real session files.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { CommandId, EventId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";

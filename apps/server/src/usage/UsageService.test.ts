@@ -1,5 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - the suite seeds and grows real
+// @effect-diagnostics preferSchemaOverJson:off - test fixtures use JSON.stringify for SQLite seeding.
 // transcript trees on disk, outside the service's Effect FileSystem.
+import * as NodeSqlite from "node:sqlite";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -118,6 +120,7 @@ const serviceLayers = (input: {
       Layer.succeed(HostProcessEnvironment, {
         GROK_HOME: NodePath.join(input.home, "grok"),
         PI_CODING_AGENT_DIR: NodePath.join(input.home, "pi"),
+        XDG_DATA_HOME: NodePath.join(input.home, "xdg"),
         ...input.environment,
       }),
     ),
@@ -642,6 +645,78 @@ describe("UsageService", () => {
         orphanedAt,
         `interruption left the next matching request pending at scheduler check ${orphanedAt}`,
       );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("seeds an OpenCode SQLite database and reads it as an opencode bucket", () =>
+    Effect.gen(function* () {
+      const home = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "usage-service-opencode-")),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => NodeFSP.rm(home, { recursive: true, force: true })),
+      );
+
+      const opencodeDir = NodePath.join(home, "xdg", "opencode");
+      yield* Effect.promise(() => NodeFSP.mkdir(opencodeDir, { recursive: true }));
+      const dbPath = NodePath.join(opencodeDir, "opencode.db");
+      yield* Effect.sync(() => {
+        const db = new NodeSqlite.DatabaseSync(dbPath);
+        db.exec(`
+          CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+          CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+        `);
+        const insert = db.prepare(
+          "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
+        );
+        insert.run(
+          "msg_1",
+          "ses_1",
+          1785638400000,
+          1785638400000,
+          JSON.stringify({
+            role: "assistant",
+            modelID: "glm-5.3",
+            cost: 0,
+            tokens: {
+              total: 74357,
+              input: 1906,
+              output: 160,
+              reasoning: 99,
+              cache: { read: 72192, write: 0 },
+            },
+            time: { created: 1785638396000, completed: 1785638400000 },
+          }),
+        );
+        db.close();
+      });
+
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-opencode-test",
+            home,
+            settings: {
+              providers: { claudeAgent: { homePath: NodePath.join(home, "claude") } },
+            },
+            environment: { XDG_DATA_HOME: NodePath.join(home, "xdg") },
+          }),
+        ),
+      );
+
+      const summary = yield* service.readSummary(WINDOW);
+      const opencodeBuckets = summary.buckets.filter((b) => b.provider === "opencode");
+      assert.strictEqual(opencodeBuckets.length, 1);
+      const bucket = opencodeBuckets[0]!;
+
+      // glm-5.3 (cost:0 → unpriced): 1906 uncached + 72192 cached + (160+99) output.
+      assert.strictEqual(bucket.totals.uncachedInputTokens, 1906);
+      assert.strictEqual(bucket.totals.cachedInputTokens, 72192);
+      assert.strictEqual(bucket.totals.outputTokens, 259);
+      assert.strictEqual(bucket.totals.reasoningTokens, 99);
+      assert.strictEqual(bucket.records, 1);
+      assert.strictEqual(bucket.costSource, "unpriced");
+      assert.strictEqual(bucket.sourcePath, NodePath.join(home, "xdg", "opencode", "opencode.db"));
     }).pipe(Effect.scoped),
   );
 });

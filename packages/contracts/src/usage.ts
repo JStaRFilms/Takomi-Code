@@ -4,9 +4,11 @@
  * Each environment scans the provider CLIs' own on-disk session transcripts
  * (`~/.claude/projects/**\/*.jsonl`, `~/.codex/sessions/**\/*.jsonl`,
  * `~/.grok/sessions/**\/updates.jsonl`, `~/.pi/agent/sessions/**\/*.jsonl`)
- * rather than relying on T3 Code's own
- * orchestration projections, so usage stays complete even for turns that were
- * never driven through T3 Code. This mirrors the approach `ccusage` takes.
+ * and OpenCode's SQLite message store
+ * (`$XDG_DATA_HOME/opencode/opencode.db`, or `OPENCODE_DB` when set) rather
+ * than relying on T3 Code's own orchestration projections, so usage stays
+ * complete even for turns that were never driven through T3 Code. This
+ * mirrors the approach `ccusage` takes.
  *
  * Environments return pre-aggregated `(day, hourStart?, provider, model)`
  * buckets. Raw transcript records never cross the wire.
@@ -22,18 +24,19 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
  * client renders partial coverage when an environment reports an older version
  * rather than failing the whole page.
  */
-export const USAGE_CONTRACT_VERSION = 6 as const;
+export const USAGE_CONTRACT_VERSION = 7 as const;
 
 /**
  * Oldest {@link UsageSummary} version a current client will still merge.
  *
- * v5 adds `grok` and v6 adds `takomi` to {@link UsageProviderKind}; v4
+ * v5 adds `grok`, v6 adds `takomi`, and v7 adds `opencode` (plus optional
+ * `sourcePath` provenance on buckets) to {@link UsageProviderKind}; v4
  * Claude/Codex buckets remain valid, so mixed-version environments keep their
  * compatible totals instead of treating every older server as stale.
  */
 export const USAGE_MERGE_COMPATIBLE_SINCE = 4 as const;
 
-export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok", "takomi"]);
+export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok", "takomi", "opencode"]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
 /**
@@ -81,8 +84,14 @@ export const UsageTokenTotals = Schema.Struct({
 export type UsageTokenTotals = typeof UsageTokenTotals.Type;
 
 /**
- * One `(day, hourStart?, provider, model)` cell. `hourStart` is the UTC start
- * instant of a rolling bucket and is present only for hourly requests.
+ * One `(day, hourStart?, provider, sourcePath?, model)` cell. `hourStart` is
+ * the UTC start instant of a rolling bucket and is present only for hourly
+ * requests.
+ *
+ * `sourcePath` identifies the physical database a bucket's records came from.
+ * It is set by providers that can read several databases at once (OpenCode's
+ * stable and channel stores) so the client can attribute ownership per
+ * database rather than per provider; transcript providers leave it unset.
  *
  * `costUsd` is the raw API-equivalent cost of these tokens. It is not money
  * spent: subscription plans bill separately. `unpricedRecords` counts records
@@ -93,6 +102,7 @@ export const UsageBucket = Schema.Struct({
   day: UsageDay,
   hourStart: Schema.optional(TrimmedNonEmptyString),
   provider: UsageProviderKind,
+  sourcePath: Schema.optional(TrimmedNonEmptyString),
   model: TrimmedNonEmptyString,
   totals: UsageTokenTotals,
   costUsd: Schema.Number,
@@ -112,7 +122,8 @@ export const UsageBucket = Schema.Struct({
 export type UsageBucket = typeof UsageBucket.Type;
 
 /**
- * Identifies the physical transcript directory a source read from.
+ * Identifies the physical transcript directory or usage database a source
+ * read from.
  *
  * Two environments on the same machine (worktree servers, for example) resolve
  * the same provider home and would otherwise double count. The client drops

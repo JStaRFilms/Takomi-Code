@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - this suite seeds real Pi session files.
+// @effect-diagnostics globalDate:off - fixture timestamps do not exercise the Effect clock.
+// @effect-diagnostics preferSchemaOverJson:off - JSONL fixtures use native JSON serialization.
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,

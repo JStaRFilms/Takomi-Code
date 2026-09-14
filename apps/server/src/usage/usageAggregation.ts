@@ -146,7 +146,7 @@ export class UsageAggregator {
             this.#hourlyWindow.sinceTimeMs +
               Math.floor((record.timestampMs - this.#hourlyWindow.sinceTimeMs) / HOUR_MS) * HOUR_MS,
           ).toISOString();
-    const key = `${day}\u0000${hourStart}\u0000${record.provider}\u0000${record.model}`;
+    const key = `${day}\u0000${hourStart}\u0000${record.provider}\u0000${record.sourcePath ?? ""}\u0000${record.model}`;
     let bucket = this.#buckets.get(key);
     if (bucket === undefined) {
       bucket = {
@@ -187,11 +187,13 @@ export class UsageAggregator {
   finish(): AggregateResult {
     const buckets: UsageBucket[] = [];
     for (const [key, bucket] of this.#buckets) {
-      const [day = "", hourStart = "", provider = "", model = ""] = key.split("\u0000");
+      const [day = "", hourStart = "", provider = "", sourcePath = "", model = ""] =
+        key.split("\u0000");
       buckets.push({
         day: day as UsageDay,
         ...(hourStart === "" ? {} : { hourStart }),
         provider: provider as UsageBucket["provider"],
+        ...(sourcePath === "" ? {} : { sourcePath }),
         model,
         totals: bucket.totals,
         costUsd: bucket.costUsd,

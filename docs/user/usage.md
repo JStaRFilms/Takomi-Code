@@ -2,9 +2,14 @@
 
 ## Understand your usage
 
-**Usage** combines Codex, Claude Code, Grok Build, and Pi session history from your connected
-environments. It shows token use, cache savings, model breakdowns, and estimated API-equivalent
-cost. These estimates are not your subscription bill.
+**Usage** combines Codex, Claude Code, Grok Build, Pi, and OpenCode session history from your
+connected environments. It shows token use, cache savings, model breakdowns, and estimated
+API-equivalent cost. These estimates are not your subscription bill.
+
+OpenCode reads its history from the SQLite database in its data directory, including the channel
+databases beside it. Subscription turns report a recorded cost of zero; Usage treats that as
+unknown and prices those tokens with the model rate table instead, so the estimate reflects
+API-equivalent prices. Models without public rates show as unpriced.
 
 Totals depend on the history available on each server. Grok turns without a saved completed-turn
 record are missing from the totals.

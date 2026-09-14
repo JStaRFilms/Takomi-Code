@@ -20,6 +20,12 @@ export interface UsageRecord {
    * unique and needs no dedup.
    */
   readonly dedupeKey: string | null;
+  /**
+   * Physical database the record was read from. Set by SQLite-backed sources
+   * (OpenCode) so buckets and source ownership can be attributed per
+   * database; transcript records leave it unset.
+   */
+  readonly sourcePath?: string;
 }
 
 const EMPTY_TOTALS: UsageTokenTotals = {

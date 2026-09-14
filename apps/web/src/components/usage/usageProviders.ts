@@ -1,6 +1,6 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 
-import { ClaudeAI, GrokIcon, type Icon, OpenAI, TakomiIcon } from "../Icons";
+import { ClaudeAI, GrokIcon, type Icon, OpenAI, OpenCodeIcon, TakomiIcon } from "../Icons";
 
 type UsageProviderPresentation = {
   readonly label: string;
@@ -34,6 +34,12 @@ export const PROVIDER_PRESENTATION = {
     label: "Takomi",
     color: "#20c7d9",
     mark: TakomiIcon,
+  },
+  opencode: {
+    label: "OpenCode",
+    // Violet: the only hue left once orange, cyan, and the neutrals are taken.
+    color: "#8b5cf6",
+    mark: OpenCodeIcon,
   },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 

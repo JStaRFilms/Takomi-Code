@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - this suite seeds real Pi session files.
 import { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";

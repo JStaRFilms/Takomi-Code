@@ -113,19 +113,23 @@ export const checkPiSessionUpdates = Effect.fn("PiSessionSync.checkPiSessionUpda
     if (snapshot === null || sessionFile === null) {
       return { available: false, newMessages: 0 } as const;
     }
-    const signal = yield* Effect.abortSignal;
     const afterRecordIndex = lastImportedPiRecordIndex(threadId, snapshot);
-    const extraction = yield* Effect.tryPromise({
-      try: () =>
-        extractPiHistory(
-          { file: sessionFile },
-          {
-            signal,
-            ...(afterRecordIndex === undefined ? {} : { afterRecordIndex }),
-          },
-        ),
-      catch: (cause) => cause,
-    });
+    const extraction = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const signal = yield* Effect.abortSignal;
+        return yield* Effect.tryPromise({
+          try: () =>
+            extractPiHistory(
+              { file: sessionFile },
+              {
+                signal,
+                ...(afterRecordIndex === undefined ? {} : { afterRecordIndex }),
+              },
+            ),
+          catch: () => catalogError("unavailable", "Checking the Pi session file failed."),
+        });
+      }),
+    );
     const unseen = selectUnseenPiMessages(snapshot.messages, extraction.messages);
     if (unseen.length === 0) return { available: false, newMessages: 0 } as const;
     const last = unseen[unseen.length - 1]!;
@@ -159,19 +163,23 @@ export const syncPiSessionUpdates = Effect.fn("PiSessionSync.syncPiSessionUpdate
   if (sessionFile === null) {
     return yield* fail("unavailable", "This thread is not continuing a CLI session.");
   }
-  const signal = yield* Effect.abortSignal;
   const afterRecordIndex = lastImportedPiRecordIndex(threadId, snapshot);
-  const extraction = yield* Effect.tryPromise({
-    try: () =>
-      extractPiHistory(
-        { file: sessionFile },
-        {
-          signal,
-          ...(afterRecordIndex === undefined ? {} : { afterRecordIndex }),
-        },
-      ),
-    catch: () => catalogError("invalid_cursor", "The Pi session file is no longer available."),
-  });
+  const extraction = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const signal = yield* Effect.abortSignal;
+      return yield* Effect.tryPromise({
+        try: () =>
+          extractPiHistory(
+            { file: sessionFile },
+            {
+              signal,
+              ...(afterRecordIndex === undefined ? {} : { afterRecordIndex }),
+            },
+          ),
+        catch: () => catalogError("invalid_cursor", "The Pi session file is no longer available."),
+      });
+    }),
+  );
   const unseen = selectUnseenPiMessages(snapshot.messages, extraction.messages);
   if (unseen.length === 0) return { added: 0 };
   yield* deps.appendHistory(threadId, toHistoryImportMessages(threadId, unseen));
