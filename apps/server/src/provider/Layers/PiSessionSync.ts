@@ -66,7 +66,19 @@ export interface PiSyncCheckResult {
  * message (banner after your own send) and re-import it on sync (visible
  * duplicates). Counting duplicates preserves genuine repeats: two identical
  * file texts still need two visible copies to count as seen.
+ *
+ * Text is whitespace-normalized and user echoes also match by containment:
+ * the CLI can reformat an outgoing T3 prompt (line breaks, wrappers) before
+ * appending it to the session file, so the file copy is longer/shorter but
+ * still contains the thread's text. Containment needs a 32-char minimum on
+ * the shorter side so short repeats ("hehe") still count exactly.
  */
+function normalizePiText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+const PI_ECHO_CONTAINMENT_MIN_LENGTH = 32;
+
 export function selectUnseenPiMessages(
   visible: ReadonlyArray<{
     readonly role: string;
@@ -76,17 +88,45 @@ export function selectUnseenPiMessages(
   extracted: ReadonlyArray<PiHistoryMessage>,
 ): ReadonlyArray<PiHistoryMessage> {
   const seen = new Map<string, number>();
+  const visibleUserTexts: Array<string> = [];
   for (const message of visible) {
-    const key = `${message.role}\n${message.text}`;
+    const key = `${message.role}\n${normalizePiText(message.text)}`;
     seen.set(key, (seen.get(key) ?? 0) + 1);
+    if (message.role === "user") visibleUserTexts.push(normalizePiText(message.text));
   }
-  return extracted.filter((message) => {
-    const key = `${message.role}\n${message.text}`;
-    const remaining = seen.get(key) ?? 0;
-    if (remaining === 0) return true;
-    seen.set(key, remaining - 1);
-    return false;
-  });
+  const remaining: Array<PiHistoryMessage> = [];
+  const userLeftovers: Array<PiHistoryMessage> = [];
+  for (const message of extracted) {
+    const key = `${message.role}\n${normalizePiText(message.text)}`;
+    const count = seen.get(key) ?? 0;
+    if (count > 0) {
+      seen.set(key, count - 1);
+      if (message.role === "user") {
+        const index = visibleUserTexts.indexOf(normalizePiText(message.text));
+        if (index !== -1) visibleUserTexts.splice(index, 1);
+      }
+      continue;
+    }
+    if (message.role === "user") {
+      userLeftovers.push(message);
+    } else {
+      remaining.push(message);
+    }
+  }
+  for (const message of userLeftovers) {
+    const normalized = normalizePiText(message.text);
+    const index = visibleUserTexts.findIndex(
+      (candidate) =>
+        Math.min(candidate.length, normalized.length) >= PI_ECHO_CONTAINMENT_MIN_LENGTH &&
+        (candidate.includes(normalized) || normalized.includes(candidate)),
+    );
+    if (index === -1) {
+      remaining.push(message);
+    } else {
+      visibleUserTexts.splice(index, 1);
+    }
+  }
+  return extracted.filter((message) => remaining.includes(message));
 }
 
 function lastImportedPiRecordIndex(

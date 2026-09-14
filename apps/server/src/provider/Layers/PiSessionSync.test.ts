@@ -106,6 +106,39 @@ describe("selectUnseenPiMessages", () => {
     ];
     expect(selectUnseenPiMessages(visible, [...extracted])).toEqual([]);
   });
+
+  it("treats a reformatted T3 user echo as seen but keeps short repeats exact", () => {
+    const longVisible =
+      "Work in: C:/admissions-recovery Branch: recovery/admissions-workflow Goal: Replace direct URLs with an authenticated proxy";
+    const extracted = [
+      {
+        ...message("user", `Role delivery\n${longVisible}\nShow full message`, 2),
+        createdAt: "2026-09-13T19:06:02.000Z",
+      },
+    ];
+    const visible = [
+      {
+        id: "live-turn-1",
+        role: "user",
+        text: longVisible,
+        createdAt: "2026-09-13T19:06:00.000Z",
+      },
+    ];
+    expect(selectUnseenPiMessages(visible, [...extracted])).toEqual([]);
+    // Short substrings must not fuzzy-match: "hehe" is not an echo of "he".
+    const shortExtracted = [message("user", "he", 3)];
+    const shortVisible = [
+      {
+        id: "live-turn-2",
+        role: "user",
+        text: "hehe",
+        createdAt: "2026-09-13T19:06:00.000Z",
+      },
+    ];
+    expect(
+      selectUnseenPiMessages(shortVisible, [...shortExtracted]).map((entry) => entry.recordIndex),
+    ).toEqual([3]);
+  });
 });
 
 describe("piSessionFileFromBinding", () => {
