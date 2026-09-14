@@ -78,6 +78,34 @@ describe("selectUnseenPiMessages", () => {
       1,
     ]);
   });
+
+  it("treats T3-sent turns echoed into the shared session file as seen", () => {
+    const extracted = [
+      { ...message("user", "wink", 2), createdAt: "2026-09-13T19:06:02.000Z" },
+      { ...message("assistant", "wink right back.", 3), createdAt: "2026-09-13T19:06:03.000Z" },
+    ];
+    const visible = [
+      {
+        id: "import:pi:thread-sync:r0",
+        role: "user",
+        text: "first",
+        createdAt: "2026-09-13T19:00:01.000Z",
+      },
+      {
+        id: "live-turn-1",
+        role: "user",
+        text: "wink",
+        createdAt: "2026-09-13T19:06:00.000Z",
+      },
+      {
+        id: "live-turn-2",
+        role: "assistant",
+        text: "wink right back.",
+        createdAt: "2026-09-13T19:06:01.000Z",
+      },
+    ];
+    expect(selectUnseenPiMessages(visible, [...extracted])).toEqual([]);
+  });
 });
 
 describe("piSessionFileFromBinding", () => {

@@ -58,9 +58,14 @@ export interface PiSyncCheckResult {
 }
 
 /**
- * Messages in the file the thread has not shown yet, by content triple.
- * Content comparison (not ids) keeps sync idempotent across id schemes and
- * retries: re-running a sync never duplicates visible history.
+ * Messages in the file the thread has not shown yet, by role + text.
+ * Timestamps are deliberately ignored: a continued thread shares its session
+ * file with the CLI, so a message sent from T3 lands in the file with the
+ * file's own timestamp while the thread holds the same text with T3's
+ * timestamp. Matching the full triple would mistake that echo for a new CLI
+ * message (banner after your own send) and re-import it on sync (visible
+ * duplicates). Counting duplicates preserves genuine repeats: two identical
+ * file texts still need two visible copies to count as seen.
  */
 export function selectUnseenPiMessages(
   visible: ReadonlyArray<{
@@ -72,11 +77,11 @@ export function selectUnseenPiMessages(
 ): ReadonlyArray<PiHistoryMessage> {
   const seen = new Map<string, number>();
   for (const message of visible) {
-    const key = `${message.role}\n${message.text}\n${message.createdAt}`;
+    const key = `${message.role}\n${message.text}`;
     seen.set(key, (seen.get(key) ?? 0) + 1);
   }
   return extracted.filter((message) => {
-    const key = `${message.role}\n${message.text}\n${message.createdAt}`;
+    const key = `${message.role}\n${message.text}`;
     const remaining = seen.get(key) ?? 0;
     if (remaining === 0) return true;
     seen.set(key, remaining - 1);

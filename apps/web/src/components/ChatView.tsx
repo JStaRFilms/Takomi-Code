@@ -6054,6 +6054,15 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
       const added = result.value.added;
+      // Drop the banner optimistically: the poll only refreshes every 20s,
+      // and a stale banner invites a second Sync that re-reads the same
+      // updateKey. Dismiss the current key as well so a gate re-run on
+      // cached data cannot restore it; a genuinely new updateKey still
+      // re-shows the banner.
+      if (piSyncUpdate && activeThread) {
+        setDismissedPiSyncKey(buildPiSyncBannerId(activeThread.id, piSyncUpdate.updateKey));
+      }
+      setPiSyncUpdate(null);
       if (added > 0) {
         toastManager.add(
           stackedThreadToast({
@@ -6066,7 +6075,7 @@ export default function ChatView(props: ChatViewProps) {
     } finally {
       setIsSyncingPiUpdates(false);
     }
-  }, [piSyncEligibleTarget, isSyncingPiUpdates, syncPiUpdates]);
+  }, [piSyncEligibleTarget, isSyncingPiUpdates, syncPiUpdates, piSyncUpdate, activeThread]);
   const piSyncBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
     if (!piSyncUpdate || piSyncUpdate.newMessages === 0 || !activeThread) return null;
     const key = buildPiSyncBannerId(activeThread.id, piSyncUpdate.updateKey);
