@@ -8,6 +8,7 @@ import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled"
  */
 export type ThreadActionMenuId =
   | "new-thread-on-branch"
+  | "release-pi-session"
   | "project-settings"
   | "pin"
   | "unpin"
@@ -35,6 +36,12 @@ export interface ThreadActionMenuState {
   readonly isRegeneratingTitle: boolean;
   /** Archive rejects a thread with an active turn, so disable it here rather than let the action fail. */
   readonly isRunning: boolean;
+  /**
+   * The thread runs on Pi with a live provider session. Releasing stops the
+   * session so the same file is safe in a terminal; the next T3 message
+   * re-attaches and picks up CLI changes.
+   */
+  readonly canReleasePiSession: boolean;
   readonly supports: {
     readonly settlement: boolean;
     readonly snooze: boolean;
@@ -59,6 +66,15 @@ export function buildThreadActionMenuItems(
             id: "new-thread-on-branch" as const,
             label: `New thread on ${state.branch}`,
             icon: "message-square-plus",
+          },
+        ]
+      : []),
+    ...(state.canReleasePiSession
+      ? [
+          {
+            id: "release-pi-session" as const,
+            label: "Release Pi session to CLI",
+            icon: "square-terminal",
           },
         ]
       : []),

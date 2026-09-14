@@ -42,6 +42,8 @@ export interface PiSessionHandleRecord {
   readonly nativeSessionId: string;
   readonly nativeFile: string;
   readonly fileIdentity: PiSessionFileIdentity;
+  /** Public catalog display captured at list time; safe to return to clients. */
+  readonly display: PiSessionCatalogEntry;
 }
 
 export interface VerifiedPiClonedChildProvenance {
@@ -146,6 +148,7 @@ export class PiSessionLifecycle {
   readonly #cursors = new Map<string, CursorRecord>();
   readonly #handles = new Map<string, PiSessionHandleRecord>();
   readonly #leases = new Map<string, LeaseRecord>();
+  readonly #sessionFileReservations = new Map<string, string>();
 
   #randomHandle(): string {
     return NodeCrypto.randomBytes(24).toString("base64url");
@@ -180,6 +183,21 @@ export class PiSessionLifecycle {
       if (this.#leases.size < 1_000) return;
     }
     throw new Error("Pi cloned-child lease capacity reached.");
+  }
+
+  reserveSessionFile(file: string, threadId: string): () => void {
+    const normalized = file.replaceAll("\\", "/");
+    const key = /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
+    const current = this.#sessionFileReservations.get(key);
+    if (current !== undefined && current !== threadId) {
+      throw new Error("Pi session file is already being continued by another thread.");
+    }
+    this.#sessionFileReservations.set(key, threadId);
+    return () => {
+      if (this.#sessionFileReservations.get(key) === threadId) {
+        this.#sessionFileReservations.delete(key);
+      }
+    };
   }
 
   #deleteSnapshot(snapshotId: string): void {
@@ -221,13 +239,15 @@ export class PiSessionLifecycle {
     const entries = scan.entries.map((entry) => {
       const id = this.#randomHandle();
       handleIds.push(id);
+      const display = publicEntry(entry, id);
       this.#handles.set(id, {
         binding,
         nativeSessionId: entry.nativeSessionId,
         nativeFile: entry.nativeFile,
         fileIdentity: entry.fileIdentity,
+        display,
       });
-      return publicEntry(entry, id);
+      return display;
     });
     this.#snapshots.set(snapshotId, {
       binding,

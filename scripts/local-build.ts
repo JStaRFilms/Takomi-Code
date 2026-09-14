@@ -367,7 +367,7 @@ function buildAndroid(root: string, dryRun: boolean): void {
       "[local-build] Would run: APP_VARIANT=preview vp exec expo prebuild --clean --platform android",
     );
     log(
-      "[local-build] Would run: android\\gradlew.bat app:assembleRelease -x lint -x test --configure-on-demand --build-cache -PreactNativeArchitectures=arm64-v8a",
+      "[local-build] Would generate Expo Updates resources serially, then run app:assembleRelease.",
     );
     return;
   }
@@ -382,6 +382,7 @@ function buildAndroid(root: string, dryRun: boolean): void {
     APP_VARIANT: "preview",
     EXPO_NO_GIT_STATUS: "1",
     NODE_ENV: "production",
+    NODE_OPTIONS: "--max-old-space-size=4096",
     T3CODE_MOBILE_PNPM_STORE: localVirtualStore,
   };
   run("vp", ["install", "--filter=@t3tools/mobile..."], worktree, { env: buildEnv });
@@ -390,8 +391,13 @@ function buildAndroid(root: string, dryRun: boolean): void {
     env: buildEnv,
   });
   writeAndroidLocalProperties(worktree);
+  const androidRoot = Path.join(mobileRoot, "android");
+  const gradle = Path.join(androidRoot, "gradlew.bat");
+  run(gradle, ["app:createReleaseUpdatesResources", "--max-workers=1"], androidRoot, {
+    env: buildEnv,
+  });
   run(
-    Path.join(mobileRoot, "android", "gradlew.bat"),
+    gradle,
     [
       "app:assembleRelease",
       "-x",
@@ -402,7 +408,7 @@ function buildAndroid(root: string, dryRun: boolean): void {
       "--build-cache",
       "-PreactNativeArchitectures=arm64-v8a",
     ],
-    Path.join(mobileRoot, "android"),
+    androidRoot,
     { env: buildEnv },
   );
 

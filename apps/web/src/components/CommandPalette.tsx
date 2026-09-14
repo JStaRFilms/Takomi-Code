@@ -52,6 +52,7 @@ import {
   PaletteIcon,
   SettingsIcon,
   SquarePenIcon,
+  SquareTerminalIcon,
   TextSearchIcon,
 } from "lucide-react";
 import {
@@ -166,6 +167,8 @@ import {
 import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
 import { primaryServerKeybindingsAtom, primaryServerProvidersAtom } from "../state/server";
 import { deriveProviderInstanceEntries, type ProviderInstanceEntry } from "../providerInstances";
+import { openPiContinueDialog } from "./piContinue/PiContinueDialog";
+import { resolvePiContinueTarget } from "./piContinue/piContinue.logic";
 import { resolveShortcutCommand, threadJumpIndexFromCommand } from "../keybindings";
 import { CommandDialog, CommandDialogPopup, CommandFooterAction } from "./ui/command";
 import { Button } from "./ui/button";
@@ -1643,6 +1646,35 @@ function OpenCommandPaletteDialog(props: {
 
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
 
+  // "Continue Pi session" for the project in context. Hidden unless a Pi
+  // instance there advertises session attach, so the dialog never opens
+  // onto a flow the server would refuse.
+  const piContinueTarget = useMemo(() => {
+    if (!currentProjectEnvironmentId || !currentProjectId) return null;
+    const environment = environments.find(
+      (candidate) => candidate.environmentId === currentProjectEnvironmentId,
+    );
+    const environmentProviders =
+      environment?.serverConfig?.providers ??
+      (currentProjectEnvironmentId === primaryEnvironmentId ? providers : []);
+    const target = resolvePiContinueTarget(environmentProviders);
+    if (!target) return null;
+    return {
+      environmentId: currentProjectEnvironmentId,
+      projectId: currentProjectId,
+      providerInstanceId: target.providerInstanceId,
+      model: target.modelSelection.model,
+      providerDisplayName: target.displayName,
+      canFork: target.canFork,
+    };
+  }, [
+    currentProjectEnvironmentId,
+    currentProjectId,
+    environments,
+    primaryEnvironmentId,
+    providers,
+  ]);
+
   if (projects.length > 0) {
     const activeProjectTitle =
       projectPickerEntries.find((entry) => entry.isPreferred)?.group.displayName ??
@@ -1680,6 +1712,24 @@ function OpenCommandPaletteDialog(props: {
       addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
       groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
     });
+
+    if (piContinueTarget && activeProjectTitle) {
+      const piContinueDialogTarget = piContinueTarget;
+      actionItems.push({
+        kind: "action",
+        value: "action:continue-pi-session",
+        searchTerms: ["continue", "pi", "takomi", "cli", "terminal", "session", "fork", "resume"],
+        title: (
+          <>
+            Continue CLI session in <span className="font-semibold">{activeProjectTitle}</span>
+          </>
+        ),
+        icon: <SquareTerminalIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          openPiContinueDialog(piContinueDialogTarget);
+        },
+      });
+    }
   }
 
   if (activeThreadReferenceCopyTarget !== null) {

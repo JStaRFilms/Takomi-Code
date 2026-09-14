@@ -1897,6 +1897,72 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return events;
     }
 
+    case "thread.history.append": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.deletedAt !== null || thread.archivedAt !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' must be active before history can be appended.`,
+        });
+      }
+      if (thread.latestTurn !== null && thread.latestTurn.state === "running") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' has a running turn; sync after it settles.`,
+        });
+      }
+      if (openRequests(thread).size > 0) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' has open requests; sync after they resolve.`,
+        });
+      }
+      for (const message of command.messages) {
+        if (!isImportedAgentSessionMessageId(message.messageId)) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Message id '${message.messageId}' must use the reserved imported-session namespace.`,
+          });
+        }
+        if (thread.messages.some((existing) => existing.id === message.messageId)) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Message id '${message.messageId}' is already present in thread '${command.threadId}'.`,
+          });
+        }
+      }
+      // No settled event: appended backfill must not regress settlement, and
+      // the message-sent events project through the existing path untouched.
+      const appended: Array<PlannedOrchestrationEvent> = [];
+      for (const message of command.messages) {
+        appended.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: message.createdAt,
+            commandId: command.commandId,
+            metadata: { historyImport: true },
+          })),
+          type: "thread.message-sent",
+          payload: {
+            threadId: command.threadId,
+            messageId: message.messageId,
+            role: message.role,
+            text: message.text,
+            turnId: null,
+            streaming: false,
+            createdAt: message.createdAt,
+            updatedAt: message.createdAt,
+          },
+        });
+      }
+      return appended;
+    }
+
     case "thread.proposed-plan.upsert": {
       yield* requireThread({
         readModel,

@@ -5,8 +5,15 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 export const PI_CATALOG_VERSION = "0.84.4";
+/**
+ * Pi releases whose session storage and catalog conventions are verified.
+ * Deliberately an allowlist, not a range: each new Pi release must prove
+ * header version, filename convention, and fork layout before joining it.
+ */
+export const PI_CATALOG_VERSIONS: ReadonlyArray<string> = ["0.84.4", "0.85.1"];
 export const PI_CATALOG_HARD_CEILING = 2_000;
 const MAX_FILE_PREFIX_BYTES = 1024 * 1024;
+const MAX_FILE_TAIL_BYTES = 64 * 1024;
 const MAX_RECORD_BYTES = 64 * 1024;
 const MAX_SESSION_RECORDS = 4_096;
 const MAX_DIRECTORY_NAME_BYTES = 512;
@@ -93,6 +100,25 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+/**
+ * First user message text, mirroring Pi's session-selector fallback
+ * (display name, else first message). String content is used verbatim;
+ * block content joins its text blocks. Empty extraction keeps scanning.
+ */
+function extractUserMessageText(message: unknown): string | undefined {
+  if (!isRecord(message) || message.role !== "user") return undefined;
+  const content = message.content;
+  if (typeof content === "string") return readString(content);
+  if (!Array.isArray(content)) return undefined;
+  const text = content
+    .filter(isRecord)
+    .filter((block) => block.type === "text")
+    .map((block) => readString(block.text) ?? "")
+    .filter((part) => part.length > 0)
+    .join(" ");
+  return text.length > 0 ? text : undefined;
+}
+
 function safeLabel(value: string | undefined, fallback: string): string {
   const compact = (value ?? fallback).replaceAll(/[\r\n\t]/g, " ").trim() || fallback;
   if (Buffer.byteLength(compact) <= MAX_LABEL_BYTES) return compact;
@@ -137,6 +163,58 @@ function identity(stat: NodeFS.Stats): PiSessionFileIdentity {
     size: stat.size,
     modifiedMs: stat.mtimeMs,
   };
+}
+
+/**
+ * Latest session_info name from the file tail, mirroring Pi's getSessionName
+ * (latest wins, blank clears). Best-effort: undefined means "keep the prefix
+ * name". Skips the chunk's first (possibly partial) line and any line that
+ * does not parse, so a concurrently-appended partial record is ignored.
+ */
+async function readTailSessionName(
+  handle: NodeFSP.FileHandle,
+  fileSize: number,
+  signal: AbortSignal,
+): Promise<{ readonly found: boolean; readonly name: string | undefined } | undefined> {
+  try {
+    abortIfRequested(signal);
+    const tailLength = Math.min(fileSize, MAX_FILE_TAIL_BYTES);
+    if (tailLength <= 0) return undefined;
+    const buffer = Buffer.alloc(tailLength);
+    let offset = 0;
+    while (offset < tailLength) {
+      abortIfRequested(signal);
+      const read = await handle.read(
+        buffer,
+        offset,
+        tailLength - offset,
+        fileSize - tailLength + offset,
+      );
+      if (read.bytesRead === 0) break;
+      offset += read.bytesRead;
+    }
+    abortIfRequested(signal);
+    const text = buffer.subarray(0, offset).toString("utf8");
+    const firstNewline = text.indexOf("\n");
+    if (firstNewline === -1) return undefined;
+    const lines = text.slice(firstNewline + 1).split("\n");
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index];
+      if (line === undefined || line.length === 0) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (isRecord(parsed) && parsed.type === "session_info") {
+        return { found: true, name: readString(parsed.name) };
+      }
+    }
+    return { found: false, name: undefined };
+  } catch {
+    return undefined;
+  }
 }
 
 function sameIdentity(left: NodeFS.Stats, right: NodeFS.Stats): boolean {
@@ -284,9 +362,12 @@ async function resolveSessionDirectory(
   if (
     !isRecord(packageJson) ||
     packageJson.name !== "@earendil-works/pi-coding-agent" ||
-    packageJson.version !== PI_CATALOG_VERSION
+    typeof packageJson.version !== "string" ||
+    !PI_CATALOG_VERSIONS.includes(packageJson.version)
   ) {
-    throw new Error(`Pi catalog requires verified Pi ${PI_CATALOG_VERSION}.`);
+    throw new Error(
+      `Pi catalog requires a verified Pi release (${PI_CATALOG_VERSIONS.join(", ")}).`,
+    );
   }
   const configured =
     launchSessionDirectory(input.launchArgs) ??
@@ -366,7 +447,8 @@ async function readSession(
         : {}),
       ...(parentSession ? { parentSession } : {}),
     };
-    let name: string | undefined;
+    let infoName: string | undefined;
+    let firstMessage: string | undefined;
     let model: string | undefined;
     let thinking: string | undefined;
     let entryCount = 0;
@@ -385,7 +467,13 @@ async function readSession(
           break;
         }
         entryCount += 1;
-        if (entry.type === "session_info") name = readString(entry.name) ?? name;
+        // Latest session_info wins, blank clears — exactly Pi's getSessionName.
+        if (entry.type === "session_info") {
+          infoName = readString(entry.name);
+        }
+        if (entry.type === "message" && firstMessage === undefined) {
+          firstMessage = extractUserMessageText(entry.message) ?? undefined;
+        }
         if (entry.type === "model_change") {
           const provider = readString(entry.provider);
           const modelId = readString(entry.modelId);
@@ -407,11 +495,24 @@ async function readSession(
           : header.version === undefined || header.version < 3
             ? "legacy"
             : "unknown";
+    if (truncated) {
+      // Pi appends renames (session_info) at the END of the file, so a
+      // truncated prefix can miss the current name. Mirror Pi's
+      // getSessionName (latest session_info wins, blank clears) with a
+      // bounded tail read; any read trouble keeps the prefix name.
+      const tail = await readTailSessionName(handle, opened.size, signal);
+      if (tail !== undefined && tail.found) {
+        infoName = tail.name;
+      }
+    }
+    // Pi's selector shows the name, else the first user message. A blank
+    // rename clears back to undefined, which falls through to the message.
+    const displayName = infoName ?? firstMessage;
     return {
       nativeSessionId: header.id,
       nativeFile: realFile,
       fileIdentity: identity(opened),
-      name: safeLabel(name, "Untitled Pi session"),
+      name: safeLabel(displayName, "Untitled Pi session"),
       createdAt: header.timestamp,
       modifiedAt: new Date(opened.mtimeMs).toISOString(),
       ...(model ? { model: safeLabel(model, "Unknown model") } : {}),

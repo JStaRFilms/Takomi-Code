@@ -6,7 +6,10 @@
   },
   "type": "module",
   "exports": {
-    "./sessionCatalog": "./src/sessionCatalog.ts"
+    "./sessionCatalog": "./src/sessionCatalog.ts",
+    "./sessionFork": "./src/sessionFork.ts",
+    "./sessionHistory": "./src/sessionHistory.ts",
+    "./sessionInspect": "./src/sessionInspect.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

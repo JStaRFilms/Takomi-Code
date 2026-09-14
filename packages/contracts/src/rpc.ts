@@ -102,9 +102,18 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   PiChildSessionLeaseDiagnostics,
   PiChildSessionLeaseDiagnosticsInput,
+  PiSessionAttachInput,
   PiSessionCatalogError,
   PiSessionCatalogInput,
   PiSessionCatalogPage,
+  PiSessionCheckUpdatesInput,
+  PiSessionCheckUpdatesResult,
+  PiSessionContinueResult,
+  PiSessionForkInput,
+  PiSessionMessagePreviewInput,
+  PiSessionMessagePreviewResult,
+  PiSessionSyncUpdatesInput,
+  PiSessionSyncUpdatesResult,
 } from "./piSessionCatalog.ts";
 import {
   PullRequestActionInput,
@@ -298,6 +307,11 @@ export const WS_METHODS = {
   providerInstallSubscribe: "provider.install.subscribe",
   providerInstallRemove: "provider.install.remove",
   providerListPiSessions: "provider.listPiSessions",
+  providerAttachPiSession: "provider.attachPiSession",
+  providerForkPiSession: "provider.forkPiSession",
+  providerListPiSessionMessages: "provider.listPiSessionMessages",
+  providerCheckPiSessionUpdates: "provider.checkPiSessionUpdates",
+  providerSyncPiSessionUpdates: "provider.syncPiSessionUpdates",
   providerGetPiChildLeaseDiagnostics: "provider.getPiChildLeaseDiagnostics",
 
   // VCS methods
@@ -946,6 +960,36 @@ const WsProviderGetPiChildLeaseDiagnosticsRpc = Rpc.make(
   },
 );
 
+const WsProviderAttachPiSessionRpc = Rpc.make(WS_METHODS.providerAttachPiSession, {
+  payload: PiSessionAttachInput,
+  success: PiSessionContinueResult,
+  error: Schema.Union([PiSessionCatalogError, EnvironmentAuthorizationError]),
+});
+
+const WsProviderForkPiSessionRpc = Rpc.make(WS_METHODS.providerForkPiSession, {
+  payload: PiSessionForkInput,
+  success: PiSessionContinueResult,
+  error: Schema.Union([PiSessionCatalogError, EnvironmentAuthorizationError]),
+});
+
+const WsProviderListPiSessionMessagesRpc = Rpc.make(WS_METHODS.providerListPiSessionMessages, {
+  payload: PiSessionMessagePreviewInput,
+  success: PiSessionMessagePreviewResult,
+  error: Schema.Union([PiSessionCatalogError, EnvironmentAuthorizationError]),
+});
+
+const WsProviderCheckPiSessionUpdatesRpc = Rpc.make(WS_METHODS.providerCheckPiSessionUpdates, {
+  payload: PiSessionCheckUpdatesInput,
+  success: PiSessionCheckUpdatesResult,
+  error: Schema.Union([PiSessionCatalogError, EnvironmentAuthorizationError]),
+});
+
+const WsProviderSyncPiSessionUpdatesRpc = Rpc.make(WS_METHODS.providerSyncPiSessionUpdates, {
+  payload: PiSessionSyncUpdatesInput,
+  success: PiSessionSyncUpdatesResult,
+  error: Schema.Union([PiSessionCatalogError, EnvironmentAuthorizationError]),
+});
+
 const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
   payload: VcsStatusInput,
   success: VcsStatusStreamEvent,
@@ -1397,6 +1441,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsDeleteRpc,
   WsProviderUploadFeedbackRpc,
   WsProviderListPiSessionsRpc,
+  WsProviderAttachPiSessionRpc,
+  WsProviderForkPiSessionRpc,
+  WsProviderListPiSessionMessagesRpc,
+  WsProviderCheckPiSessionUpdatesRpc,
+  WsProviderSyncPiSessionUpdatesRpc,
   WsProviderGetPiChildLeaseDiagnosticsRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,

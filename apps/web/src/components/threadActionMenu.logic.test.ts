@@ -10,6 +10,7 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
+  canReleasePiSession: false,
   supports: { settlement: true, snooze: true, pinning: true, titleRegeneration: true },
   snoozePresets: [
     { id: "hour", label: "In 1 hour", whenLabel: "3:00 PM", snoozedUntil: "2026-08-07T15:00:00Z" },
@@ -53,6 +54,11 @@ describe("buildThreadActionMenuItems", () => {
     expect(withBranch).toContain("copy-branch");
     expect(allIds(baseState)).not.toContain("new-thread-on-branch");
     expect(allIds(baseState)).not.toContain("copy-branch");
+  });
+
+  it("offers Pi release only for live Pi sessions", () => {
+    expect(allIds({ ...baseState, canReleasePiSession: true })).toContain("release-pi-session");
+    expect(allIds(baseState)).not.toContain("release-pi-session");
   });
 
   it("flips lifecycle labels with thread state", () => {

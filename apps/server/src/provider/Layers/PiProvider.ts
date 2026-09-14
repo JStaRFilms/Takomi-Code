@@ -55,7 +55,8 @@ const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
 const decodeUnknownJsonString = Schema.decodeUnknownSync(UnknownFromJsonString);
 const encodeUnknownJsonString = Schema.encodeUnknownSync(UnknownFromJsonString);
 
-export const piSessionCatalogSupported = (version: string): boolean => version === "0.84.4";
+export const piSessionCatalogSupported = (version: string): boolean =>
+  version === "0.84.4" || version === "0.85.1";
 
 const piCapabilities = (resourcesAvailable: boolean, sessionCatalogAvailable: boolean) =>
   ({
@@ -68,8 +69,8 @@ const piCapabilities = (resourcesAvailable: boolean, sessionCatalogAvailable: bo
     workspaceSnapshotFreshness: true,
     sessions: {
       list: sessionCatalogAvailable,
-      clone: false,
-      attach: false,
+      clone: sessionCatalogAvailable,
+      attach: sessionCatalogAvailable,
     },
   }) satisfies ServerProviderCapabilities;
 

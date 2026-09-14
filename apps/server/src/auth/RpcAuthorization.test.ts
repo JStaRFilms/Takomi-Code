@@ -61,6 +61,30 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("requires operate scope to attach or fork a Pi session into a thread", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerAttachPiSession)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerForkPiSession)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
+  it("treats Pi message previews as scoped reads", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerListPiSessionMessages)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
+  it("checks Pi updates as a read and syncs them as an operate", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerCheckPiSessionUpdates)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerSyncPiSessionUpdates)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("reads the reviewer menu under the same scope as the pull request it belongs to", () => {
     // The candidate list is a read like the detail beside it, and asking somebody for a review is
     // a write like every other pull request operation.

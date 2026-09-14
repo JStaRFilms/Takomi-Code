@@ -1426,6 +1426,26 @@ const ThreadHistoryImportCommand = Schema.Struct({
   ).check(Schema.isNonEmpty()),
 });
 
+const ThreadHistoryAppendMessage = Schema.Struct({
+  messageId: MessageId,
+  role: Schema.Literals(["user", "assistant"]),
+  text: Schema.String,
+  createdAt: IsoDateTime,
+});
+export type ThreadHistoryAppendMessage = typeof ThreadHistoryAppendMessage.Type;
+
+/**
+ * Append backfilled history to a NON-empty thread (the sync half of
+ * thread.history.import, which only accepts empty threads). Server-only:
+ * message ids must use the reserved imported-session namespace.
+ */
+const ThreadHistoryAppendCommand = Schema.Struct({
+  type: Schema.Literal("thread.history.append"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messages: Schema.Array(ThreadHistoryAppendMessage).check(Schema.isNonEmpty()),
+});
+
 const ThreadProposedPlanUpsertCommand = Schema.Struct({
   type: Schema.Literal("thread.proposed-plan.upsert"),
   commandId: CommandId,
@@ -1506,6 +1526,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadHistoryImportCommand,
+  ThreadHistoryAppendCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,

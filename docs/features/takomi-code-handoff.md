@@ -28,8 +28,12 @@ implementation or release guidance.
   interruption, and persistent session resumption are bridged into the provider runtime.
 - Project-scoped Pi slash commands, prompt templates, and skills are discovered for web and mobile
   command menus, with trust and freshness reported through provider capabilities.
-- Pi 0.84.4 session catalogs can be listed with bounded pagination and ownership diagnostics.
-  Attaching, cloning, and importing those sessions into T3 threads remain unavailable.
+- Pi session catalogs (verified releases: 0.84.4, 0.85.1) can be listed with bounded pagination and ownership diagnostics.
+  Attaching a catalog session to a fresh, empty T3 thread (bind the live file) and forking it
+  (clone into a new session file with the source as parent, then bind the fork) are supported
+  through `provider.attachPiSession` / `provider.forkPiSession`. Continuing backfills visible
+  CLI history (user/assistant text); importing terminal sessions any other way remains
+  unavailable.
 - Core Takomi tool calls use bounded semantic inline cards and an optional synchronized web/desktop
   inspector. Board, Todo, and subagent state persist through updates and completion.
 - Windows desktop identity and state paths are separate from upstream T3 Code.
@@ -41,14 +45,19 @@ implementation or release guidance.
 
 - Pi supports only T3's `full-access` runtime mode.
 - Pi utility text generation for titles and Git/PR text is not implemented.
-- Pi session listing currently requires the supported Pi 0.84.4 catalog boundary; session attach,
-  clone, native-history hydration, and automatic terminal-session import are not implemented.
+- Pi session listing currently requires the supported Pi catalog boundary (verified releases: 0.84.4, 0.85.1).
+  Attach/fork continuation is implemented with visible CLI history hydration (user/assistant
+  text); tool-call history hydration and automatic terminal-session import are not.
+- Hydrated history is deliberately messages-only: tool calls stay model context because
+  rendering them as visible history would look re-runnable while being frozen, for no
+  model benefit (the full context, tools included, is already bound).
 - Rich and multi-question UI fidelity remains partial.
 - Unknown tools intentionally use generic T3 work-log cards.
 - Takomi runtime extensions and skills are not bundled as an installable managed runtime with the
   desktop application. Users still need a compatible Pi/Takomi installation or a suite-root
   override.
 - Mobile has no native Takomi semantic tool cards or inspector.
+- Mobile does not yet expose the Pi session catalog or CLI continuation flow.
 - Mobile visible names and icons are Takomi-branded, but package, scheme, Expo/EAS, update, and Clerk
   infrastructure identifiers remain upstream-compatible pending migration.
 - The local Android preview APK is debug-signed and cannot be uploaded to the Play Store.
@@ -103,8 +112,8 @@ Choose one bounded objective:
 
 1. **Mobile distribution identity:** migrate package IDs, schemes, Expo/EAS/update ownership,
    Clerk/OAuth configuration, and release signing.
-2. **Pi session interoperability:** add safe attach/clone/import and native-history hydration on top
-   of the catalog boundary.
+2. **Pi session interoperability round 2:** richer point-split UX (forking from a message
+   deeper than the preview window carries).
 3. **Pi interaction fidelity:** preserve richer question descriptions, previews, and multi-select
    semantics.
 4. **Portable desktop distribution:** define, package, and version a managed Pi/Takomi runtime and

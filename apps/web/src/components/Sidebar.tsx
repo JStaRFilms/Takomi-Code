@@ -147,6 +147,10 @@ import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
 import { buildThreadActionMenuItems } from "./threadActionMenu.logic";
 import {
+  canReleasePiSession as canReleasePiSessionFor,
+  isPiModelSelection,
+} from "./piContinue/piContinue.logic";
+import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
   buildBulkTitleRegenerationContextMenuItem,
@@ -2138,6 +2142,9 @@ export default function Sidebar() {
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
+    reportFailure: false,
+  });
   const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
     onCopy: ({ path }) => {
       toastManager.add({
@@ -3994,6 +4001,14 @@ export default function Sidebar() {
         const isPinned = thread.pinnedAt != null;
         // Presets resolve at menu-open time (same as the popover).
         const snoozePresets = resolveSnoozePresets(new Date(), timestampFormat);
+        const menuProviders = providerEntriesByEnvironment.get(thread.environmentId);
+        const canReleasePiSession = canReleasePiSessionFor({
+          isPiThread: isPiModelSelection(
+            menuProviders ? [...menuProviders.values()].map((entry) => entry.snapshot) : [],
+            thread.modelSelection,
+          ),
+          sessionStatus: thread.session?.status ?? null,
+        });
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
@@ -4005,6 +4020,7 @@ export default function Sidebar() {
               isRegeneratingTitle,
               isRunning:
                 thread.session?.status === "running" && thread.session.activeTurnId != null,
+              canReleasePiSession,
               supports: {
                 settlement: supportsSettlement,
                 snooze: supportsSnooze,
@@ -4057,6 +4073,34 @@ export default function Sidebar() {
                 }),
               );
             }
+            return;
+          }
+          case "release-pi-session": {
+            const result = await stopThreadSession({
+              environmentId: threadRef.environmentId,
+              input: { threadId: threadRef.threadId },
+            });
+            if (result._tag === "Failure") {
+              if (!isAtomCommandInterrupted(result)) {
+                const error = squashAtomCommandFailure(result);
+                toastManager.add(
+                  stackedThreadToast({
+                    type: "error",
+                    title: "Failed to release Pi session",
+                    description: error instanceof Error ? error.message : "An error occurred.",
+                  }),
+                );
+              }
+              return;
+            }
+            toastManager.add(
+              stackedThreadToast({
+                type: "success",
+                title: "Pi session released",
+                description:
+                  "Safe to continue in a terminal. Your next message here re-attaches and picks up CLI changes.",
+              }),
+            );
             return;
           }
           case "settle":
@@ -4197,8 +4241,10 @@ export default function Sidebar() {
       markThreadUnread,
       openProjectSettings,
       projectByKey,
+      providerEntriesByEnvironment,
       serverConfigs,
       startThreadRename,
+      stopThreadSession,
       updateThreadMetadata,
       timestampFormat,
     ],

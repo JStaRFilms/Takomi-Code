@@ -210,6 +210,14 @@ import { RightPanelTabs } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
 import { TakomiInspector } from "./chat/TakomiInspector";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
+import { PiContinueDialogHost } from "./piContinue/PiContinueDialog";
+import { PiSyncCheckGate, type PiSyncUpdate } from "./piContinue/PiSyncGate";
+import {
+  buildPiSyncBannerId,
+  isPiModelSelection,
+  shouldCheckPiSessionUpdates,
+} from "./piContinue/piContinue.logic";
+import { piSessionSyncUpdates } from "~/state/piSessions";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import { useDeviceState } from "~/state/device";
 import { DeviceSetup } from "./device/DeviceSetup";
@@ -224,6 +232,7 @@ import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings"
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import {
   AlarmClockIcon,
+  ArrowDownIcon,
   CheckCircle2Icon,
   ChevronDownIcon,
   GitBranchIcon,
@@ -5999,6 +6008,89 @@ export default function ChatView(props: ChatViewProps) {
   const [dismissedResumeCompactionKeys, setDismissedResumeCompactionKeys] = useState<
     ReadonlySet<string>
   >(new Set());
+  // Pi CLI continuity: a continued thread whose session file advanced in a
+  // terminal offers one-click Sync above the composer.
+  const [piSyncUpdate, setPiSyncUpdate] = useState<PiSyncUpdate | null>(null);
+  const [dismissedPiSyncKey, setDismissedPiSyncKey] = useState<string | null>(null);
+  const [isSyncingPiUpdates, setIsSyncingPiUpdates] = useState(false);
+  const syncPiUpdates = useAtomCommand(piSessionSyncUpdates, { reportFailure: false });
+  const piSyncEligibleTarget = useMemo(() => {
+    if (!activeThread || !isServerThread) return null;
+    if (
+      !shouldCheckPiSessionUpdates({
+        isPiThread: isPiModelSelection(
+          providerInstanceEntries.map((entry) => entry.snapshot),
+          activeThread.modelSelection,
+        ),
+        hasSession: activeThread.session !== null,
+      })
+    )
+      return null;
+    return { environmentId: activeThread.environmentId, threadId: activeThread.id };
+  }, [activeThread, isServerThread, providerInstanceEntries]);
+  useEffect(() => {
+    setPiSyncUpdate(null);
+    setDismissedPiSyncKey(null);
+  }, [activeThread?.id]);
+  const handlePiSyncUpdates = useCallback(async () => {
+    if (!piSyncEligibleTarget || isSyncingPiUpdates) return;
+    setIsSyncingPiUpdates(true);
+    try {
+      const result = await syncPiUpdates({
+        environmentId: piSyncEligibleTarget.environmentId,
+        input: { threadId: piSyncEligibleTarget.threadId },
+      });
+      if (result._tag === "Failure") {
+        if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Failed to sync CLI messages",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+        }
+        return;
+      }
+      const added = result.value.added;
+      if (added > 0) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "success",
+            title: `Synced ${added} CLI message${added === 1 ? "" : "s"}`,
+            description: "The thread now shows everything up to date.",
+          }),
+        );
+      }
+    } finally {
+      setIsSyncingPiUpdates(false);
+    }
+  }, [piSyncEligibleTarget, isSyncingPiUpdates, syncPiUpdates]);
+  const piSyncBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
+    if (!piSyncUpdate || piSyncUpdate.newMessages === 0 || !activeThread) return null;
+    const key = buildPiSyncBannerId(activeThread.id, piSyncUpdate.updateKey);
+    if (dismissedPiSyncKey === key) return null;
+    return {
+      id: key,
+      variant: "info",
+      icon: <ArrowDownIcon />,
+      title: `${piSyncUpdate.newMessages} new CLI message${piSyncUpdate.newMessages === 1 ? "" : "s"}`,
+      description: "Sync to show them here — sending works either way",
+      actions: (
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={isSyncingPiUpdates}
+          onClick={() => void handlePiSyncUpdates()}
+        >
+          {isSyncingPiUpdates ? "Syncing..." : "Sync"}
+        </Button>
+      ),
+      dismissLabel: "Dismiss CLI sync notice",
+      onDismiss: () => setDismissedPiSyncKey(key),
+    };
+  }, [piSyncUpdate, dismissedPiSyncKey, activeThread, isSyncingPiUpdates, handlePiSyncUpdates]);
   const resumeCompactionKey =
     activeThread && activeContextWindow
       ? `${activeThread.id}:${activeContextWindow.updatedAt}`
@@ -6125,6 +6217,7 @@ export default function ChatView(props: ChatViewProps) {
       resumeCompactionBannerItem === null ? [] : [resumeCompactionBannerItem];
     const wokeThreadItems = wokeThreadBannerItem === null ? [] : [wokeThreadBannerItem];
     const parkedThreadItems = parkedThreadBannerItem === null ? [] : [parkedThreadBannerItem];
+    const piSyncItems = piSyncBannerItem === null ? [] : [piSyncBannerItem];
     // The user asked for this one, so it leads the notice tier instead of trailing it.
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {
@@ -6136,6 +6229,7 @@ export default function ChatView(props: ChatViewProps) {
         ...resumeCompactionItems,
         ...wokeThreadItems,
         ...parkedThreadItems,
+        ...piSyncItems,
       ];
     }
     return [
@@ -6184,6 +6278,7 @@ export default function ChatView(props: ChatViewProps) {
         },
       },
       ...parkedThreadItems,
+      ...piSyncItems,
     ];
   }, [
     activeBranchMismatchKey,
@@ -6193,6 +6288,7 @@ export default function ChatView(props: ChatViewProps) {
     isRestoringThreadBranch,
     localCheckoutBranchMismatch,
     parkedThreadBannerItem,
+    piSyncBannerItem,
     resumeCompactionBannerItem,
     showBranchMismatchBanner,
     systemComposerBannerItems,
@@ -9328,6 +9424,15 @@ export default function ChatView(props: ChatViewProps) {
         </AlertDialogPopup>
       </AlertDialog>
       <LinkPullRequestDialogHost />
+      <PiContinueDialogHost />
+      {piSyncEligibleTarget ? (
+        <PiSyncCheckGate
+          key={`${piSyncEligibleTarget.environmentId}:${piSyncEligibleTarget.threadId}`}
+          environmentId={piSyncEligibleTarget.environmentId}
+          threadId={piSyncEligibleTarget.threadId}
+          onUpdate={setPiSyncUpdate}
+        />
+      ) : null}
       {expandedImage && (
         <ExpandedImageDialog
           key={expandedImageKey(expandedImage)}

@@ -241,6 +241,127 @@ NodeTest.test("rejects the documented convention for an unverified Pi version", 
   );
 });
 
+NodeTest.test("accepts each verified Pi release in the allowlist", async (t) => {
+  for (const version of ["0.84.4", "0.85.1"]) {
+    const value = await fixture();
+    t.after(() => NodeFSP.rm(value.root, { recursive: true, force: true }));
+    await NodeFSP.writeFile(
+      NodePath.join(value.packageRoot, "package.json"),
+      JSON.stringify({ name: "@earendil-works/pi-coding-agent", version }),
+    );
+    await writeSession({ directory: value.directory, fileName: "one.jsonl", cwd: value.workspace });
+    const result = await scanPiSessionCatalog(request(value), {
+      signal: new AbortController().signal,
+    });
+    NodeAssert.equal(result.entries.length, 1);
+  }
+});
+
+NodeTest.test("finds trailing renames past the prefix bound, like Pi itself", async (t) => {
+  const value = await fixture();
+  t.after(() => NodeFSP.rm(value.root, { recursive: true, force: true }));
+  const file = await writeSession({
+    directory: value.directory,
+    fileName: "big.jsonl",
+    cwd: value.workspace,
+  });
+  const filler = Array.from({ length: 1100 }, (_, index) =>
+    JSON.stringify({
+      type: "message",
+      id: `filler-${index}`,
+      parentId: null,
+      pad: "x".repeat(1000),
+    }),
+  );
+  await NodeFSP.appendFile(
+    file,
+    `${filler.join("\n")}\n${JSON.stringify({ type: "session_info", id: "rename", parentId: null, timestamp: "2026-09-13T20:00:00.000Z", name: "Tail Rename" })}\n`,
+  );
+  const result = await scanPiSessionCatalog(request(value), {
+    signal: new AbortController().signal,
+  });
+  NodeAssert.equal(result.entries.length, 1);
+  NodeAssert.equal(result.entries[0]!.compatibility, "truncated");
+  NodeAssert.equal(result.entries[0]!.name, "Tail Rename");
+});
+
+NodeTest.test("a blank trailing rename clears the name, like Pi itself", async (t) => {
+  const value = await fixture();
+  t.after(() => NodeFSP.rm(value.root, { recursive: true, force: true }));
+  const file = await writeSession({
+    directory: value.directory,
+    fileName: "big.jsonl",
+    cwd: value.workspace,
+  });
+  const filler = Array.from({ length: 1100 }, (_, index) =>
+    JSON.stringify({
+      type: "message",
+      id: `filler-${index}`,
+      parentId: null,
+      pad: "x".repeat(1000),
+    }),
+  );
+  await NodeFSP.appendFile(
+    file,
+    `${filler.join("\n")}\n${JSON.stringify({ type: "session_info", id: "rename", parentId: null, timestamp: "2026-09-13T20:00:00.000Z", name: "   " })}\n`,
+  );
+  const result = await scanPiSessionCatalog(request(value), {
+    signal: new AbortController().signal,
+  });
+  NodeAssert.equal(result.entries[0]!.name, "Untitled Pi session");
+});
+
+NodeTest.test("falls back to the first user message, like Pi itself", async (t) => {
+  const value = await fixture();
+  t.after(() => NodeFSP.rm(value.root, { recursive: true, force: true }));
+  const file = NodePath.join(value.directory, "plain.jsonl");
+  await NodeFSP.writeFile(
+    file,
+    `${JSON.stringify({ type: "session", version: 3, id: "plain", timestamp: "2026-09-13T20:00:00.000Z", cwd: value.workspace })}\n${JSON.stringify({ type: "message", id: "m1", parentId: null, timestamp: "2026-09-13T20:00:01.000Z", message: { role: "user", content: "go review this app for launch" } })}\n${JSON.stringify({ type: "message", id: "m2", parentId: "m1", timestamp: "2026-09-13T20:00:02.000Z", message: { role: "assistant", content: [{ type: "text", text: "on it" }] } })}\n`,
+  );
+  const result = await scanPiSessionCatalog(request(value), {
+    signal: new AbortController().signal,
+  });
+  NodeAssert.equal(result.entries[0]!.name, "go review this app for launch");
+});
+
+NodeTest.test(
+  "prefers an explicit name over the first message and reads block content",
+  async (t) => {
+    const value = await fixture();
+    t.after(() => NodeFSP.rm(value.root, { recursive: true, force: true }));
+    const named = NodePath.join(value.directory, "named.jsonl");
+    await NodeFSP.writeFile(
+      named,
+      `${JSON.stringify({ type: "session", version: 3, id: "named", timestamp: "2026-09-13T20:00:00.000Z", cwd: value.workspace })}\n${JSON.stringify({ type: "message", id: "m1", parentId: null, timestamp: "2026-09-13T20:00:01.000Z", message: { role: "user", content: "first words" } })}\n${JSON.stringify({ type: "session_info", id: "s1", parentId: "m1", timestamp: "2026-09-13T20:00:02.000Z", name: "Chosen Name" })}\n`,
+    );
+    const blocks = NodePath.join(value.directory, "blocks.jsonl");
+    await NodeFSP.writeFile(
+      blocks,
+      `${JSON.stringify({ type: "session", version: 3, id: "blocks", timestamp: "2026-09-13T20:00:00.000Z", cwd: value.workspace })}\n${JSON.stringify(
+        {
+          type: "message",
+          id: "m1",
+          parentId: null,
+          timestamp: "2026-09-13T20:00:01.000Z",
+          message: {
+            role: "user",
+            content: [
+              { type: "text", text: "block words" },
+              { type: "image", data: "x", mimeType: "image/png" },
+            ],
+          },
+        },
+      )}\n`,
+    );
+    const result = await scanPiSessionCatalog(request(value), {
+      signal: new AbortController().signal,
+    });
+    const names = result.entries.map((entry) => entry.name).sort();
+    NodeAssert.deepEqual(names, ["Chosen Name", "block words"]);
+  },
+);
+
 NodeTest.test("reports a distinct hard cap only after the explicit ceiling", async (t) => {
   const value = await fixture();
   t.after(() => NodeFSP.rm(value.root, { recursive: true, force: true }));

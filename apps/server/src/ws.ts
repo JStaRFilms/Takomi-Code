@@ -51,6 +51,7 @@ import {
   type ProjectFileFailure,
   type ProjectFileOperation,
   ProjectListEntriesError,
+  type ProviderInstanceId,
   ProjectReadFileError,
   ProjectSearchContentsError,
   ProjectSearchEntriesError,
@@ -114,6 +115,19 @@ import {
   listBoundedPiSessions,
   validatePiSessionProvider,
 } from "./provider/Layers/PiSessionCatalog.ts";
+import {
+  continuePiSessionInThread,
+  previewPiSessionMessages,
+  toHistoryImportMessages,
+} from "./provider/Layers/PiSessionAttach.ts";
+import {
+  checkPiSessionUpdates,
+  hasActivePiSessionFile,
+  piSessionFileFromBinding,
+  syncPiSessionUpdates,
+  type PiSyncDeps,
+} from "./provider/Layers/PiSessionSync.ts";
+import { extractPiHistory } from "@t3tools/takomi-pi-host/sessionHistory";
 import { PiSessionLifecycle } from "./provider/PiSessionLifecycle.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
@@ -1023,6 +1037,284 @@ const makeWsRpcLayer = (
             }),
           ),
         );
+      // Mirrors the reactor's provider-session status mapping so a continued
+      // Pi session binds to the thread exactly like a reactor-started one.
+      const mapContinuedPiSessionStatus = (
+        status: "connecting" | "ready" | "running" | "error" | "closed",
+      ): "starting" | "ready" | "running" | "error" | "stopped" => {
+        switch (status) {
+          case "connecting":
+            return "starting";
+          case "running":
+            return "running";
+          case "error":
+            return "error";
+          case "closed":
+            return "stopped";
+          case "ready":
+          default:
+            return "ready";
+        }
+      };
+      // CLI -> T3 continuation: resolve a catalog handle to a verified session
+      // file (or its fork) and start the thread's provider session from it.
+      // The raw session path never leaves the server; the client only sees
+      // the opaque handle and the display summary in the result.
+      //
+      // Best-effort visible history: extracted CLI messages are imported as
+      // inert backfill before the provider session starts. Any failure here
+      // only skips the backfill — the continuation itself still succeeds.
+      //
+      // Sync-back dependencies: read-only thread/binding snapshots plus one
+      // history-append dispatch. No paths cross into results.
+      const piSyncDeps: PiSyncDeps = {
+        readThread: (threadId) =>
+          projectionSnapshotQuery.getThreadDetailById(threadId).pipe(
+            Effect.mapError(
+              () =>
+                new PiSessionCatalogError({
+                  reason: "unavailable",
+                  message: "The thread is unavailable.",
+                }),
+            ),
+            Effect.map((detailOption) => {
+              const detail = Option.getOrNull(detailOption);
+              if (detail === null) return null;
+              return {
+                messages: detail.messages.map((message) => ({
+                  id: message.id,
+                  role: message.role,
+                  text: message.text,
+                  createdAt: message.createdAt,
+                })),
+              };
+            }),
+          ),
+        readSessionFile: (threadId) =>
+          providerSessionDirectory.getBinding(threadId).pipe(
+            Effect.mapError(
+              () =>
+                new PiSessionCatalogError({
+                  reason: "unavailable",
+                  message: "Provider state is unavailable.",
+                }),
+            ),
+            Effect.map((binding) => piSessionFileFromBinding(Option.getOrUndefined(binding))),
+          ),
+        appendHistory: (threadId, messages) =>
+          Effect.gen(function* () {
+            yield* dispatchFromClient({
+              type: "thread.history.append",
+              commandId: yield* serverCommandId("pi-session-sync"),
+              threadId,
+              messages: [...messages],
+            });
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new PiSessionCatalogError({
+                  reason: "unavailable",
+                  message:
+                    cause instanceof Error && cause.message.trim() !== ""
+                      ? cause.message
+                      : "Syncing CLI messages failed.",
+                }),
+            ),
+          ),
+      };
+      const hydratePiSessionHistory = (threadId: ThreadId, sessionFile: string) =>
+        Effect.gen(function* () {
+          const signal = yield* Effect.abortSignal;
+          const extraction = yield* Effect.tryPromise({
+            try: () => extractPiHistory({ file: sessionFile }, { signal }),
+            catch: () =>
+              new PiSessionCatalogError({
+                reason: "unavailable",
+                message: "Pi history hydration is unavailable.",
+              }),
+          });
+          if (extraction.messages.length === 0) return 0;
+          yield* dispatchFromClient({
+            type: "thread.history.import",
+            commandId: yield* serverCommandId("pi-session-hydrate"),
+            threadId,
+            messages: toHistoryImportMessages(threadId, extraction.messages),
+          });
+          return extraction.messages.length;
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Pi history hydration skipped; continuing without visible history.", {
+              threadId,
+              cause: cause instanceof Error ? cause.message : String(cause),
+            }).pipe(Effect.as(0)),
+          ),
+        );
+      const continuePiSessionForThread = (
+        input: {
+          readonly providerInstanceId: ProviderInstanceId;
+          readonly projectId: ProjectId;
+          readonly threadId: ThreadId;
+          readonly sessionHandle: string;
+          readonly maxRecords?: number | undefined;
+        },
+        mode: "attach" | "fork",
+      ) =>
+        Effect.gen(function* () {
+          const settings = yield* serverSettings.getSettings.pipe(
+            Effect.mapError(
+              () =>
+                new PiSessionCatalogError({
+                  reason: "unavailable",
+                  message: "Pi session discovery is unavailable.",
+                }),
+            ),
+          );
+          const shell = yield* projectionSnapshotQuery.getThreadShellById(input.threadId).pipe(
+            Effect.mapError(
+              () =>
+                new PiSessionCatalogError({
+                  reason: "unavailable",
+                  message: "The thread is unavailable.",
+                }),
+            ),
+            Effect.flatMap(
+              Option.match({
+                onNone: () =>
+                  Effect.fail(
+                    new PiSessionCatalogError({
+                      reason: "unavailable",
+                      message: "The thread is unavailable.",
+                    }),
+                  ),
+                onSome: Effect.succeed,
+              }),
+            ),
+          );
+          if (shell.modelSelection.instanceId !== input.providerInstanceId) {
+            return yield* Effect.fail(
+              new PiSessionCatalogError({
+                reason: "unavailable",
+                message: "The thread uses a different provider instance.",
+              }),
+            );
+          }
+          const workspaceCanonicalPath = yield* resolvePiCatalogWorkspace(input.projectId);
+          const persisted = yield* providerSessionDirectory.getBinding(input.threadId).pipe(
+            Effect.mapError(
+              () =>
+                new PiSessionCatalogError({
+                  reason: "unavailable",
+                  message: "Provider state is unavailable.",
+                }),
+            ),
+          );
+          const resolution = yield* continuePiSessionInThread({
+            handle: input.sessionHandle,
+            threadId: input.threadId,
+            mode,
+            ...(input.maxRecords !== undefined ? { maxRecords: input.maxRecords } : {}),
+            serverSettings: settings,
+            providerInstanceId: input.providerInstanceId,
+            projectId: input.projectId,
+            threadProjectId: shell.projectId,
+            threadHasSession: shell.session !== null,
+            threadHasTurns: shell.latestTurn !== null || shell.latestUserMessageAt !== null,
+            hasPersistedBinding: Option.isSome(persisted),
+            workspaceCanonicalPath,
+            environmentId: (yield* serverEnvironment.getDescriptor).environmentId,
+            serverGeneration: `${piSessionLifecycle.serverGeneration}:${piCatalogConnectionGeneration}`,
+            expiresAt: piCatalogTokenExpiresAt,
+            lifecycle: piSessionLifecycle,
+          });
+          const start = Effect.gen(function* () {
+            const bindings = yield* providerSessionDirectory.listBindings().pipe(
+              Effect.mapError(
+                () =>
+                  new PiSessionCatalogError({
+                    reason: "unavailable",
+                    message: "Provider state is unavailable.",
+                  }),
+              ),
+            );
+            if (hasActivePiSessionFile(bindings, input.threadId, resolution.sessionFile)) {
+              return yield* new PiSessionCatalogError({
+                reason: "unavailable",
+                message: "This Pi session is already active in another thread.",
+              });
+            }
+            const session = yield* providerService
+              .startSession(input.threadId, {
+                threadId: input.threadId,
+                providerInstanceId: input.providerInstanceId,
+                cwd: workspaceCanonicalPath,
+                modelSelection: shell.modelSelection,
+                resumeCursor: { schemaVersion: 1, sessionFile: resolution.sessionFile },
+                runtimeMode: shell.runtimeMode,
+              })
+              .pipe(
+                Effect.mapError(
+                  () =>
+                    new PiSessionCatalogError({
+                      reason: "unavailable",
+                      message: "Starting the continued Pi session failed.",
+                    }),
+                ),
+              );
+            // Start first so a provider failure leaves the fresh thread retryable.
+            // Session startup does not add turns, so history import still sees
+            // the empty thread required by the decider.
+            const hydratedMessages = yield* hydratePiSessionHistory(
+              input.threadId,
+              resolution.sessionFile,
+            );
+            const createdAt = DateTime.formatIso(yield* DateTime.now);
+            const commandId = yield* serverCommandId("pi-session-continue").pipe(
+              Effect.mapError(
+                () =>
+                  new PiSessionCatalogError({
+                    reason: "unavailable",
+                    message: "Starting the continued Pi session failed.",
+                  }),
+              ),
+            );
+            yield* dispatchFromClient({
+              type: "thread.session.set",
+              commandId,
+              threadId: input.threadId,
+              session: {
+                threadId: input.threadId,
+                status: mapContinuedPiSessionStatus(session.status),
+                providerName: session.provider,
+                providerInstanceId: session.providerInstanceId ?? input.providerInstanceId,
+                runtimeMode: shell.runtimeMode,
+                activeTurnId: null,
+                lastError: session.lastError ?? null,
+                updatedAt: session.updatedAt,
+              },
+              createdAt,
+            }).pipe(
+              Effect.mapError(
+                () =>
+                  new PiSessionCatalogError({
+                    reason: "unavailable",
+                    message: "Starting the continued Pi session failed.",
+                  }),
+              ),
+            );
+            const display = resolution.display;
+            return {
+              mode: mode === "attach" ? ("attached" as const) : ("forked" as const),
+              name: display.name,
+              modifiedAt: display.modifiedAt,
+              entryCount: display.entryCount,
+              entryCountExact: display.entryCountExact,
+              ...(display.model !== undefined ? { model: display.model } : {}),
+              source: "pi-jsonl" as const,
+              hydratedMessages,
+            };
+          }).pipe(Effect.ensuring(Effect.sync(resolution.releaseReservation)));
+          return yield* start;
+        });
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
           message: `The authenticated token is missing required scope: ${requiredScope}.`,
@@ -2298,6 +2590,65 @@ const makeWsRpcLayer = (
                 },
                 yield* Clock.currentTimeMillis,
               );
+            }),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerAttachPiSession]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerAttachPiSession,
+            continuePiSessionForThread(input, "attach"),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerForkPiSession]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerForkPiSession,
+            continuePiSessionForThread(input, "fork"),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerListPiSessionMessages]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerListPiSessionMessages,
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  () =>
+                    new PiSessionCatalogError({
+                      reason: "unavailable",
+                      message: "Pi session discovery is unavailable.",
+                    }),
+                ),
+              );
+              const preview = yield* previewPiSessionMessages({
+                handle: input.sessionHandle,
+                serverSettings: settings,
+                providerInstanceId: input.providerInstanceId,
+                projectId: input.projectId,
+                workspaceCanonicalPath: yield* resolvePiCatalogWorkspace(input.projectId),
+                environmentId: (yield* serverEnvironment.getDescriptor).environmentId,
+                serverGeneration: `${piSessionLifecycle.serverGeneration}:${piCatalogConnectionGeneration}`,
+                expiresAt: piCatalogTokenExpiresAt,
+                lifecycle: piSessionLifecycle,
+                ...(input.limit !== undefined ? { limit: input.limit } : {}),
+              });
+              return { ...preview, source: "pi-jsonl" as const };
+            }),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerCheckPiSessionUpdates]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerCheckPiSessionUpdates,
+            Effect.gen(function* () {
+              const checked = yield* checkPiSessionUpdates(input.threadId, piSyncDeps);
+              return { ...checked, source: "pi-jsonl" as const };
+            }),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerSyncPiSessionUpdates]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerSyncPiSessionUpdates,
+            Effect.gen(function* () {
+              const synced = yield* syncPiSessionUpdates(input.threadId, piSyncDeps);
+              return { added: synced.added, source: "pi-jsonl" as const };
             }),
             { "rpc.aggregate": "provider" },
           ),

@@ -142,14 +142,21 @@ Resource snapshots are isolated by environment, provider instance, and exact pro
 
 ## Session catalog
 
-For the supported Pi 0.84.4 protocol boundary, web and mobile can request a bounded, paginated list
+For the supported Pi protocol boundary (verified releases: 0.84.4, 0.85.1), web and desktop can request a bounded, paginated list
 of Pi sessions for the selected provider instance and workspace. Catalog cursors are scoped to the
 environment, provider instance, exact workspace, server generation, and expiry. The server also
-tracks ownership diagnostics so an active session file is not presented as safely available to a
-second owner.
+rejects continuation when another active T3 thread already holds the same session file.
 
-This is discovery only. Provider capabilities still report session attach and clone as unavailable,
-and catalog entries cannot yet be hydrated into T3 thread history.
+This is discovery plus continuation. Catalog entries hydrate into T3 threads through
+`provider.attachPiSession` (bind the live CLI session file) and `provider.forkPiSession`
+(clone into a new file with the source recorded as parent, then bind the fork), both gated to
+fresh threads without turns or provider state. Provider capabilities report session attach and
+clone as available when the catalog boundary is supported. Continuing backfills visible CLI
+history (user/assistant text via `thread.history.import`, up to bounds); tool traffic stays
+model-only context without becoming visible messages. Open threads poll for CLI advances
+(`provider.checkPiSessionUpdates`) and offer one-click Sync above the composer
+(`provider.syncPiSessionUpdates`, appended via `thread.history.append` with the same
+import namespace, idempotent by content).
 
 ## Runtime constraints
 
@@ -172,19 +179,27 @@ pi --session "C:\path\to\session.jsonl"
 ```
 
 Do not open the same session file in terminal Pi while Takomi Code is actively writing it.
+Attached threads hold the live file: stop the thread's provider session (releasing it to the
+CLI) before working the same file in a terminal, then send the next T3 message to pick up the
+CLI's appended records through the normal session-recovery path.
 
-Compatible terminal Pi sessions can be listed in the Pi session catalog, but automatic import or
-attachment to a Takomi Code thread is not implemented.
+Compatible terminal Pi sessions can be listed in the Pi session catalog and continued in
+Takomi Code: attach binds the live file, fork clones it first so the two sides diverge cleanly.
+Forks accept a record limit for point-splits (clone up to a chosen message). Message previews
+are read-only and bounded. All three require a fresh thread with no turns for the bind step;
+the next message continues with full CLI context.
 
 ## Known limitations
 
 - utility text generation (thread titles, branch names, commit messages, and PR text) is not implemented by the Pi driver
 - only `full-access` is supported
-- Pi session attach, clone, native-history hydration, and terminal-to-T3 import are not supported
-- session catalog listing is version-gated to the supported Pi 0.84.4 boundary
+- Pi session attach, full-file fork, point-split fork, message preview, and visible CLI
+  history hydration are supported into fresh threads
+- session catalog listing is version-gated to verified Pi releases (0.84.4, 0.85.1)
 - unknown extension UI methods are ignored
 - richer question metadata is reduced to T3's current canonical shape
 - Takomi runtime assets are not bundled into the desktop installer; global installation or a suite root is still required
+- the mobile client does not yet expose session discovery or continuation
 
 ## Verification history
 

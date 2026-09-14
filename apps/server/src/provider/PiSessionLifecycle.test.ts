@@ -39,6 +39,15 @@ function scan(count: number) {
 }
 
 describe("Pi server-lifetime session lifecycle", () => {
+  it("reserves a session file for only one thread at a time", () => {
+    const lifecycle = new PiSessionLifecycle();
+    const release = lifecycle.reserveSessionFile("C:\\sessions\\one.jsonl", "thread-a");
+    expect(() => lifecycle.reserveSessionFile("c:\\sessions\\one.jsonl", "thread-b")).toThrow();
+    release();
+    const releaseAgain = lifecycle.reserveSessionFile("C:\\sessions\\one.jsonl", "thread-b");
+    releaseAgain();
+  });
+
   it("pages every entry beyond 250 with random single-use cursors and no path disclosure", () => {
     const lifecycle = new PiSessionLifecycle();
     let page = lifecycle.createCatalogPage(scan(301), binding(), 50, 1);
