@@ -1,7 +1,12 @@
 import { ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
-import { PiSessionLifecycle, type PiLifecycleBinding } from "./PiSessionLifecycle.ts";
+import {
+  PI_CATALOG_GENERATION_TTL_MS,
+  PiSessionLifecycle,
+  renewPiCatalogGeneration,
+  type PiLifecycleBinding,
+} from "./PiSessionLifecycle.ts";
 
 const identity = { device: "1", inode: "2", size: 10, modifiedMs: 20 };
 const binding = (overrides: Partial<PiLifecycleBinding> = {}): PiLifecycleBinding => ({
@@ -39,6 +44,28 @@ function scan(count: number) {
 }
 
 describe("Pi server-lifetime session lifecycle", () => {
+  it("renews an expired connection catalog without accepting old handles", () => {
+    const lifecycle = new PiSessionLifecycle();
+    const initial = { epoch: 0, expiresAt: 10_000 };
+    const oldBinding = binding({ serverGeneration: "server-a:connection-a:0" });
+    const oldPage = lifecycle.createCatalogPage(scan(1), oldBinding, 1, 1);
+
+    expect(renewPiCatalogGeneration(initial, 9_999)).toBe(initial);
+    const renewed = renewPiCatalogGeneration(initial, 10_000);
+    expect(renewed).toEqual({ epoch: 1, expiresAt: 10_000 + PI_CATALOG_GENERATION_TTL_MS });
+    const freshBinding = binding({
+      serverGeneration: `server-a:connection-a:${renewed.epoch}`,
+      expiresAt: renewed.expiresAt,
+    });
+    const freshPage = lifecycle.createCatalogPage(scan(1), freshBinding, 1, 10_000);
+    expect(() =>
+      lifecycle.resolveSessionHandle(oldPage.entries[0]!.id, freshBinding, 10_000),
+    ).toThrow();
+    expect(
+      lifecycle.resolveSessionHandle(freshPage.entries[0]!.id, freshBinding, 10_000)
+        .nativeSessionId,
+    ).toBe("native-0");
+  });
   it("reserves a session file for only one thread at a time", () => {
     const lifecycle = new PiSessionLifecycle();
     const release = lifecycle.reserveSessionFile("C:\\sessions\\one.jsonl", "thread-a");

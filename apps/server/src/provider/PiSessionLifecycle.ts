@@ -14,6 +14,22 @@ import type {
   PiSessionFileIdentity,
 } from "@t3tools/takomi-pi-host/sessionCatalog";
 
+export const PI_CATALOG_GENERATION_TTL_MS = 30 * 60 * 1000;
+
+export interface PiCatalogGeneration {
+  readonly epoch: number;
+  readonly expiresAt: number;
+}
+
+export function renewPiCatalogGeneration(
+  generation: PiCatalogGeneration,
+  now: number,
+): PiCatalogGeneration {
+  return generation.expiresAt > now
+    ? generation
+    : { epoch: generation.epoch + 1, expiresAt: now + PI_CATALOG_GENERATION_TTL_MS };
+}
+
 export interface PiLifecycleBinding {
   readonly environmentId: string;
   readonly providerInstanceId: ProviderInstanceId;

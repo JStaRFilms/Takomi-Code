@@ -133,7 +133,11 @@ import {
   type PiSyncDeps,
 } from "./provider/Layers/PiSessionSync.ts";
 import { extractPiHistory } from "@t3tools/takomi-pi-host/sessionHistory";
-import { PiSessionLifecycle } from "./provider/PiSessionLifecycle.ts";
+import {
+  PI_CATALOG_GENERATION_TTL_MS,
+  PiSessionLifecycle,
+  renewPiCatalogGeneration,
+} from "./provider/PiSessionLifecycle.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
@@ -849,7 +853,17 @@ const makeWsRpcLayer = (
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
       const piCatalogConnectionGeneration = yield* crypto.randomUUIDv4;
-      const piCatalogTokenExpiresAt = (yield* Clock.currentTimeMillis) + 30 * 60 * 1000;
+      const piCatalogGeneration = yield* Ref.make({
+        epoch: 0,
+        expiresAt: (yield* Clock.currentTimeMillis) + PI_CATALOG_GENERATION_TTL_MS,
+      });
+      const currentPiCatalogGeneration = Clock.currentTimeMillis.pipe(
+        Effect.flatMap((now) =>
+          Ref.updateAndGet(piCatalogGeneration, (current) =>
+            renewPiCatalogGeneration(current, now),
+          ),
+        ),
+      );
       const fileSystem = yield* FileSystem.FileSystem;
       const sql = yield* SqlClient.SqlClient;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
@@ -1232,6 +1246,7 @@ const makeWsRpcLayer = (
                 }),
             ),
           );
+          const catalogGeneration = yield* currentPiCatalogGeneration;
           const resolution = yield* continuePiSessionInThread({
             handle: input.sessionHandle,
             threadId: input.threadId,
@@ -1246,8 +1261,8 @@ const makeWsRpcLayer = (
             hasPersistedBinding: Option.isSome(persisted),
             workspaceCanonicalPath,
             environmentId: (yield* serverEnvironment.getDescriptor).environmentId,
-            serverGeneration: `${piSessionLifecycle.serverGeneration}:${piCatalogConnectionGeneration}`,
-            expiresAt: piCatalogTokenExpiresAt,
+            serverGeneration: `${piSessionLifecycle.serverGeneration}:${piCatalogConnectionGeneration}:${catalogGeneration.epoch}`,
+            expiresAt: catalogGeneration.expiresAt,
             lifecycle: piSessionLifecycle,
           });
           const start = Effect.gen(function* () {
@@ -3065,13 +3080,14 @@ const makeWsRpcLayer = (
                     }),
                 ),
               );
+              const catalogGeneration = yield* currentPiCatalogGeneration;
               return yield* listBoundedPiSessions({
                 catalog: input,
                 serverSettings: settings,
                 workspaceCanonicalPath: yield* resolvePiCatalogWorkspace(input.projectId),
                 environmentId: (yield* serverEnvironment.getDescriptor).environmentId,
-                serverGeneration: `${piSessionLifecycle.serverGeneration}:${piCatalogConnectionGeneration}`,
-                expiresAt: piCatalogTokenExpiresAt,
+                serverGeneration: `${piSessionLifecycle.serverGeneration}:${piCatalogConnectionGeneration}:${catalogGeneration.epoch}`,
+                expiresAt: catalogGeneration.expiresAt,
                 lifecycle: piSessionLifecycle,
               });
             }),
@@ -3093,14 +3109,15 @@ const makeWsRpcLayer = (
               yield* validatePiSessionProvider(settings, input.providerInstanceId);
               const workspaceCanonicalPath = yield* resolvePiCatalogWorkspace(input.projectId);
               const environmentId = (yield* serverEnvironment.getDescriptor).environmentId;
+              const catalogGeneration = yield* currentPiCatalogGeneration;
               return piSessionLifecycle.diagnostics(
                 {
                   environmentId,
                   providerInstanceId: input.providerInstanceId,
                   projectId: input.projectId,
                   workspaceCanonicalPath,
-                  serverGeneration: `${piSessionLifecycle.serverGeneration}:${piCatalogConnectionGeneration}`,
-                  expiresAt: piCatalogTokenExpiresAt,
+                  serverGeneration: `${piSessionLifecycle.serverGeneration}:${piCatalogConnectionGeneration}:${catalogGeneration.epoch}`,
+                  expiresAt: catalogGeneration.expiresAt,
                 },
                 yield* Clock.currentTimeMillis,
               );
@@ -3132,6 +3149,7 @@ const makeWsRpcLayer = (
                     }),
                 ),
               );
+              const catalogGeneration = yield* currentPiCatalogGeneration;
               const preview = yield* previewPiSessionMessages({
                 handle: input.sessionHandle,
                 serverSettings: settings,
@@ -3139,8 +3157,8 @@ const makeWsRpcLayer = (
                 projectId: input.projectId,
                 workspaceCanonicalPath: yield* resolvePiCatalogWorkspace(input.projectId),
                 environmentId: (yield* serverEnvironment.getDescriptor).environmentId,
-                serverGeneration: `${piSessionLifecycle.serverGeneration}:${piCatalogConnectionGeneration}`,
-                expiresAt: piCatalogTokenExpiresAt,
+                serverGeneration: `${piSessionLifecycle.serverGeneration}:${piCatalogConnectionGeneration}:${catalogGeneration.epoch}`,
+                expiresAt: catalogGeneration.expiresAt,
                 lifecycle: piSessionLifecycle,
                 ...(input.limit !== undefined ? { limit: input.limit } : {}),
               });
