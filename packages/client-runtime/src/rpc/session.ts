@@ -175,7 +175,7 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
     const trackedWebSocketConstructor: typeof webSocketConstructor = (url, protocols) => {
       const socket = webSocketConstructor(url, protocols);
       socket.addEventListener("close", (event) => {
-        closeMetadata = { code: event.code, reason: event.reason };
+        closeMetadata = { code: event.code ?? 1006, reason: event.reason ?? "" };
       });
       return socket;
     };

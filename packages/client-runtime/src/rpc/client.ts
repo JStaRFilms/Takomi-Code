@@ -249,7 +249,13 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                         tag === WS_METHODS.previewAutomationConnect
                           ? stream.pipe(Stream.repeat(Schedule.spaced("1 second")))
                           : stream
-                      ).pipe(Stream.ensuring(completeObservation));
+                      ).pipe(
+                        Stream.onFirst(() => onUnestablished.pipe(Effect.andThen(onEstablished))),
+                        Stream.ensuring(completeObservation),
+                        // This finalizer belongs to one request attempt, so a
+                        // failed restoration releases its permit before retrying.
+                        Stream.ensuring(onUnestablished),
+                      );
                     }),
                   ).pipe(
                     Stream.tapCause((cause) =>

@@ -10,52 +10,68 @@ import {
   withWebSocketBackpressure,
 } from "./wsTransportBackpressure.ts";
 
-const makeSocketHarness = Effect.fn("TestWebSocketHarness.make")(function* (
-  bufferedAmount: number,
-  failWrites = false,
-) {
+const makeSocketHarness = Effect.fn("TestWebSocketHarness.make")(function* (options?: {
+  readonly hangWrites?: boolean;
+  readonly failWrites?: boolean;
+}) {
   const writes: Array<Uint8Array | string | Socket.CloseEvent> = [];
   const opened = yield* Deferred.make<void>();
-  const rawSocket = { bufferedAmount } as unknown as globalThis.WebSocket;
+  const writeStarted = yield* Deferred.make<void>();
   const socket = Socket.make({
-    runRaw: (handler, options) => {
-      const handled = handler(new Uint8Array());
-      return (options?.onOpen ?? Effect.void).pipe(
-        Effect.andThen(Effect.isEffect(handled) ? handled : Effect.void),
-        Effect.provideService(Socket.WebSocket, rawSocket),
-        Effect.andThen(Deferred.succeed(opened, undefined)),
-        Effect.andThen(Effect.never),
-      );
-    },
-    writer: Effect.succeed((frame) =>
-      Effect.sync(() => {
-        writes.push(frame);
-        if (failWrites) throw new Error("writer failed");
-      }),
-    ),
+    reader: Effect.acquireRelease(
+      Deferred.succeed(opened, undefined).pipe(
+        Effect.as({
+          pull: () => Effect.never,
+          upgrade: () => Effect.void,
+        }),
+      ),
+      () => Effect.void,
+    ).pipe(Effect.andThen(() => Effect.never)),
+    writer: Effect.succeed({
+      write: (frame) =>
+        options?.hangWrites && !Socket.isCloseEvent(frame)
+          ? Deferred.succeed(writeStarted, undefined).pipe(Effect.andThen(Effect.never))
+          : Effect.sync(() => {
+              writes.push(frame);
+              if (options?.failWrites) throw new Error("writer failed");
+            }),
+      writeAll: (frames) =>
+        options?.hangWrites
+          ? Deferred.succeed(writeStarted, undefined).pipe(Effect.andThen(Effect.never))
+          : Effect.forEach(frames, (frame) =>
+              Effect.sync(() => {
+                writes.push(frame);
+                if (options?.failWrites) throw new Error("writer failed");
+              }),
+            ).pipe(Effect.asVoid),
+    }),
   });
-  return { socket, writes, opened };
+  return { socket, writes, opened, writeStarted };
 });
 
 describe("websocket transport backpressure", () => {
   it.effect("closes a blocked writer without affecting a fast writer", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const blocked = yield* makeSocketHarness(90);
-        const fast = yield* makeSocketHarness(0);
+        const blocked = yield* makeSocketHarness({ hangWrites: true });
+        const fast = yield* makeSocketHarness();
         const blockedSocket = withWebSocketBackpressure(blocked.socket, {
           bufferedBytesLimit: 100,
         });
         const fastSocket = withWebSocketBackpressure(fast.socket, { bufferedBytesLimit: 100 });
-        const blockedRun = yield* blockedSocket.runRaw(() => undefined).pipe(Effect.forkChild);
-        const fastRun = yield* fastSocket.runRaw(() => undefined).pipe(Effect.forkChild);
+        const blockedRun = yield* blockedSocket.reader.pipe(Effect.forkScoped);
+        const fastRun = yield* fastSocket.reader.pipe(Effect.forkScoped);
         yield* Deferred.await(blocked.opened);
         yield* Deferred.await(fast.opened);
-        const blockedWrite = yield* blockedSocket.writer;
-        const fastWrite = yield* fastSocket.writer;
+        const blockedWriter = yield* blockedSocket.writer;
+        const fastWriter = yield* fastSocket.writer;
 
-        yield* blockedWrite("12345678901");
-        yield* fastWrite("12345678901");
+        // Fill the blocked socket's in-flight budget with a write that never
+        // acks, then verify the next frame closes only that connection.
+        const hanging = yield* blockedWriter.write(new Uint8Array(90)).pipe(Effect.forkScoped);
+        yield* Deferred.await(blocked.writeStarted);
+        yield* blockedWriter.write("12345678901");
+        yield* fastWriter.write("12345678901");
 
         expect(blocked.writes).toHaveLength(1);
         expect(blocked.writes[0]).toBeInstanceOf(Socket.CloseEvent);
@@ -64,6 +80,7 @@ describe("websocket transport backpressure", () => {
           reason: WS_BACKPRESSURE_CLOSE_REASON,
         });
         expect(fast.writes).toEqual(["12345678901"]);
+        yield* Fiber.interrupt(hanging);
         yield* Fiber.interrupt(blockedRun);
         yield* Fiber.interrupt(fastRun);
       }),
@@ -78,38 +95,39 @@ describe("websocket transport backpressure", () => {
           readonly bufferedBytesHighWater: number;
           readonly lastSuccessfulFrameAtMs: number | null;
         }> = [];
-        const successful = yield* makeSocketHarness(5);
+        const successful = yield* makeSocketHarness();
         const socket = withWebSocketBackpressure(successful.socket, {
           bufferedBytesLimit: 100,
           onSummary: (summary) => summaries.push(summary),
         });
-        const run = yield* socket.runRaw(() => undefined).pipe(Effect.forkChild);
+        const run = yield* socket.reader.pipe(Effect.forkScoped);
         yield* Deferred.await(successful.opened);
-        const write = yield* socket.writer;
-        yield* write("é");
+        const writer = yield* socket.writer;
+        yield* writer.write("é");
         yield* Fiber.interrupt(run);
 
         expect(summaries.at(-1)).toMatchObject({
           acceptedFrameBytes: 2,
-          bufferedBytesHighWater: 7,
+          bufferedBytesHighWater: 2,
         });
         expect(summaries.at(-1)?.lastSuccessfulFrameAtMs).toBeTypeOf("number");
 
         const failedSummaries: typeof summaries = [];
-        const failed = yield* makeSocketHarness(0, true);
+        const failed = yield* makeSocketHarness({ failWrites: true });
         const failedSocket = withWebSocketBackpressure(failed.socket, {
           bufferedBytesLimit: 100,
           onSummary: (summary) => failedSummaries.push(summary),
         });
-        const failedRun = yield* failedSocket.runRaw(() => undefined).pipe(Effect.forkChild);
+        const failedRun = yield* failedSocket.reader.pipe(Effect.forkScoped);
         yield* Deferred.await(failed.opened);
-        const failedWrite = yield* failedSocket.writer;
-        yield* Effect.exit(failedWrite("not accepted"));
+        const failedWriter = yield* failedSocket.writer;
+        yield* Effect.exit(failedWriter.write("not accepted"));
         yield* Fiber.interrupt(failedRun);
 
+        // The failed frame still occupied the budget while attempted.
         expect(failedSummaries.at(-1)).toMatchObject({
           acceptedFrameBytes: 0,
-          bufferedBytesHighWater: 0,
+          bufferedBytesHighWater: 12,
           lastSuccessfulFrameAtMs: null,
         });
       }),

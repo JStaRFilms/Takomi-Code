@@ -343,7 +343,6 @@ export const make = Effect.gen(function* () {
           directory = path.resolve(home, "sessions");
         }
         // Account aliases and Codex auth overlays can share the same history.
-        const directory = path.resolve(home, provider === "claude" ? "projects" : "sessions");
         const sourceKey = provider + "\0" + directory;
         const previous = sourceCache.get(sourceKey);
         // Keep canonical paths and source fingerprints stable after root cleanup,

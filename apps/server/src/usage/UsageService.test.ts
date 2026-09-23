@@ -238,7 +238,9 @@ describe("UsageService", () => {
         ),
       );
       const summary = yield* service.readSummary(WINDOW);
-      assert.strictEqual(totalOutputTokens(summary), 59);
+      // claude 5 + 7, codex 11 + 12 + 11 (occurrence-keyed A-B-A), grok 13,
+      // pi 17 (pi-alias shares pi's canonical dir and dedupes).
+      assert.strictEqual(totalOutputTokens(summary), 76);
       yield* Effect.promise(() =>
         NodeFSP.rename(
           NodePath.join(codexHome, "sessions", "rollout.jsonl"),

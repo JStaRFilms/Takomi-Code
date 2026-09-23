@@ -6,6 +6,7 @@ import type {
   TerminalSummary,
   WorktreeCleanupRules,
 } from "@t3tools/contracts";
+import { TerminalSubscriptionOverflowError } from "@t3tools/contracts";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
@@ -118,6 +119,10 @@ export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const liveTerminals = new Map<string, Map<string, TerminalSummary>>();
+  // Set when the metadata subscription overflows: without tracking data every
+  // worktree is treated as potentially live so cleanup never deletes one
+  // backing a running terminal.
+  let terminalMetadataUnavailable = false;
   const noteTerminal = (terminal: TerminalSummary) => {
     const threadTerminals =
       liveTerminals.get(terminal.threadId) ?? new Map<string, TerminalSummary>();
@@ -135,6 +140,7 @@ export const make = Effect.gen(function* () {
     );
   };
   const hasTerminal = (worktreePath: string) =>
+    terminalMetadataUnavailable ||
     [...liveTerminals.values()]
       .flatMap((entries) => [...entries.values()])
       .some((terminal) => {
@@ -428,20 +434,38 @@ export const make = Effect.gen(function* () {
   );
 
   const start = Effect.fn("StorageCleanup.start")(function* () {
-    const unsubscribe = yield* terminals.subscribeMetadata((event) =>
-      Effect.sync(() => {
-        if (event.type === "snapshot") {
-          liveTerminals.clear();
-          for (const terminal of event.terminals) noteTerminal(terminal);
-        } else if (event.type === "upsert") {
-          noteTerminal(event.terminal);
-        } else {
-          const threadTerminals = liveTerminals.get(event.threadId);
-          threadTerminals?.delete(event.terminalId);
-          if (threadTerminals?.size === 0) liveTerminals.delete(event.threadId);
-        }
-      }),
-    );
+    const unsubscribe = yield* terminals
+      .subscribeMetadata((event) =>
+        Effect.sync(() => {
+          if (event.type === "snapshot") {
+            liveTerminals.clear();
+            for (const terminal of event.terminals) noteTerminal(terminal);
+          } else if (event.type === "upsert") {
+            noteTerminal(event.terminal);
+          } else {
+            const threadTerminals = liveTerminals.get(event.threadId);
+            threadTerminals?.delete(event.terminalId);
+            if (threadTerminals?.size === 0) liveTerminals.delete(event.threadId);
+          }
+        }),
+      )
+      .pipe(
+        // Takomi's metadata subscription is bounded: on overflow fall back to
+        // treating every worktree as live rather than deleting blindly.
+        Effect.catchTag("TerminalSubscriptionOverflowError", (error) =>
+          Effect.logWarning(
+            "terminal metadata subscription overflowed; storage cleanup will not delete worktrees",
+            { error },
+          ).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                terminalMetadataUnavailable = true;
+              }),
+            ),
+            Effect.as(() => {}),
+          ),
+        ),
+      );
     yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
     const changes = yield* settingsService.subscribeChanges;
     const events = yield* engine.subscribeDomainEvents;
