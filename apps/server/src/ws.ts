@@ -1124,6 +1124,18 @@ const makeWsRpcLayer = (
                   role: message.role,
                   text: message.text,
                   createdAt: message.createdAt,
+                  ...(message.attachments
+                    ? {
+                        attachments: message.attachments.map((attachment) => ({
+                          type: attachment.type,
+                          name: attachment.name,
+                          isPastedText:
+                            attachment.type === "file" &&
+                            "source" in attachment &&
+                            attachment.source?._tag === "pasted-text",
+                        })),
+                      }
+                    : {}),
                 })),
               };
             }),

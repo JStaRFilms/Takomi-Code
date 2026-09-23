@@ -107,6 +107,66 @@ describe("selectUnseenPiMessages", () => {
     expect(selectUnseenPiMessages(visible, [...extracted])).toEqual([]);
   });
 
+  it("does not re-import UI prompts with image paths or expanded skill references", () => {
+    const visible = [
+      {
+        role: "user",
+        text: "I choose option 1",
+        createdAt: "2026-09-13T19:06:00.000Z",
+        attachments: [{ type: "image", name: "image.png" }],
+      },
+      {
+        role: "user",
+        text: "$release check this",
+        createdAt: "2026-09-13T19:07:00.000Z",
+        attachments: [{ type: "image", name: "screen.png" }],
+      },
+      {
+        role: "user",
+        text: "",
+        createdAt: "2026-09-13T19:08:00.000Z",
+        attachments: [{ type: "image", name: "only-image.png" }],
+      },
+      {
+        role: "user",
+        text: "Review this",
+        createdAt: "2026-09-13T19:09:00.000Z",
+        attachments: [{ type: "file", name: "notes.txt", isPastedText: true }],
+      },
+    ];
+    const extracted = [
+      message(
+        "user",
+        'I choose option 1\n\n[Attached image "image.png" is saved at: C:\\attachments\\one.png]',
+        1,
+      ),
+      message(
+        "user",
+        '/skill:release check this\n\n[Attached image "screen.png" is saved at: C:\\attachments\\two.png]',
+        2,
+      ),
+      message(
+        "user",
+        '[Attached image "only-image.png" is saved at: C:\\attachments\\three.png]',
+        3,
+      ),
+      message(
+        "user",
+        'Review this\n\n[Pasted text "notes.txt" is saved at: C:\\attachments\\notes.txt. Inspect it as needed.]',
+        4,
+      ),
+      message("user", "A new message from the CLI", 5),
+      message(
+        "user",
+        'I choose option 1\n\n[Attached image "other.png" is saved at: C:\\attachments\\other.png]',
+        6,
+      ),
+    ];
+    expect(selectUnseenPiMessages(visible, extracted).map((entry) => entry.recordIndex)).toEqual([
+      5, 6,
+    ]);
+  });
+
   it("treats a reformatted T3 user echo as seen but keeps short repeats exact", () => {
     const longVisible =
       "Work in: C:/admissions-recovery Branch: recovery/admissions-workflow Goal: Replace direct URLs with an authenticated proxy";
@@ -259,6 +319,103 @@ describe("check and sync with stub deps", () => {
         expect(checked.updateKey).toContain("1:");
         const synced = yield* syncPiSessionUpdates(threadId, deps);
         expect(synced.added).toBe(1);
+      }).pipe(
+        Effect.ensuring(
+          Effect.tryPromise(() => NodeFSP.rm(root, { recursive: true, force: true })).pipe(
+            Effect.ignore,
+          ),
+        ),
+      );
+    }),
+  );
+
+  it.effect("ignores UI image echoes in both check and sync while keeping CLI updates", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.tryPromise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "takomi-sync-image-")),
+      );
+      yield* Effect.gen(function* () {
+        const file = NodePath.join(root, "session.jsonl");
+        const entries: Array<Record<string, unknown>> = [
+          {
+            type: "session",
+            version: 3,
+            id: "sync-source",
+            timestamp: "2026-09-13T19:00:00.000Z",
+            cwd: root,
+          },
+          {
+            type: "message",
+            id: "m1",
+            parentId: null,
+            timestamp: "2026-09-13T19:00:01.000Z",
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: 'I choose option 1\n\n[Attached image "image.png" is saved at: C:\\attachments\\one.png]',
+                },
+                { type: "image", data: "x", mimeType: "image/png" },
+              ],
+            },
+          },
+          {
+            type: "message",
+            id: "m2",
+            parentId: "m1",
+            timestamp: "2026-09-13T19:00:02.000Z",
+            message: { role: "assistant", content: [{ type: "text", text: "Reply" }] },
+          },
+        ];
+        yield* Effect.tryPromise(() =>
+          NodeFSP.writeFile(file, entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")),
+        );
+        const appended: Array<string> = [];
+        const deps = depsFor({
+          readThread: () =>
+            Effect.succeed({
+              messages: [
+                {
+                  id: "live-user",
+                  role: "user",
+                  text: "I choose option 1",
+                  createdAt: "2026-09-13T19:00:00.000Z",
+                  attachments: [{ type: "image", name: "image.png" }],
+                },
+                {
+                  id: "live-assistant",
+                  role: "assistant",
+                  text: "Reply",
+                  createdAt: "2026-09-13T19:00:03.000Z",
+                },
+              ],
+            }),
+          readSessionFile: () => Effect.succeed(file),
+          appendHistory: (_threadId, messages) =>
+            Effect.sync(() => {
+              appended.push(...messages.map((entry) => entry.text));
+            }),
+        });
+        expect(yield* checkPiSessionUpdates(threadId, deps)).toEqual({
+          available: false,
+          newMessages: 0,
+        });
+        expect(yield* syncPiSessionUpdates(threadId, deps)).toEqual({ added: 0 });
+        expect(appended).toEqual([]);
+        entries.push({
+          type: "message",
+          id: "m3",
+          parentId: "m2",
+          timestamp: "2026-09-13T19:00:04.000Z",
+          message: { role: "user", content: "From the CLI" },
+        });
+        yield* Effect.tryPromise(() =>
+          NodeFSP.writeFile(file, entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")),
+        );
+        expect((yield* checkPiSessionUpdates(threadId, deps)).newMessages).toBe(1);
+        expect(yield* syncPiSessionUpdates(threadId, deps)).toEqual({ added: 1 });
+        expect(appended).toEqual(["From the CLI"]);
       }).pipe(
         Effect.ensuring(
           Effect.tryPromise(() => NodeFSP.rm(root, { recursive: true, force: true })).pipe(

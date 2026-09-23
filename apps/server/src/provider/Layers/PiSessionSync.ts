@@ -3,6 +3,7 @@ import { extractPiHistory, type PiHistoryMessage } from "@t3tools/takomi-pi-host
 import * as Effect from "effect/Effect";
 
 import { toHistoryImportMessages } from "./PiSessionAttach.ts";
+import { expandPiSkillReferences } from "./PiResources.ts";
 
 const PI_DRIVER = ProviderDriverKind.make("pi");
 
@@ -33,6 +34,11 @@ export interface PiSyncThreadSnapshot {
     readonly role: string;
     readonly text: string;
     readonly createdAt: string;
+    readonly attachments?: ReadonlyArray<{
+      readonly type: string;
+      readonly name: string;
+      readonly isPastedText?: boolean;
+    }>;
   }>;
 }
 
@@ -79,20 +85,58 @@ function normalizePiText(text: string): string {
 
 const PI_ECHO_CONTAINMENT_MIN_LENGTH = 32;
 
+type VisiblePiMessage = Omit<PiSyncThreadSnapshot["messages"][number], "id">;
+
+function stripPiAttachmentContext(
+  text: string,
+  attachments: VisiblePiMessage["attachments"],
+): string {
+  if (!attachments?.length) return text;
+  let remaining = text;
+  for (const attachment of attachments.toReversed()) {
+    if (!remaining.endsWith("]")) return text;
+    const prefix = attachment.isPastedText
+      ? `[Pasted text "${attachment.name}" is saved at: `
+      : `[Attached ${attachment.type} "${attachment.name}" is saved at: `;
+    const start = remaining.lastIndexOf(prefix);
+    if (start < 0 || (start > 0 && remaining[start - 1] !== " ")) return text;
+    const path = remaining.slice(start + prefix.length, -1);
+    if (path.trim().length === 0) return text;
+    remaining = remaining.slice(0, start).trimEnd();
+  }
+  return remaining;
+}
+
+function matchesPiUserEcho(visible: VisiblePiMessage, extracted: PiHistoryMessage): boolean {
+  const text = normalizePiText(visible.text);
+  const echo = stripPiAttachmentContext(normalizePiText(extracted.text), visible.attachments);
+  if (text === echo) return true;
+  let expanded = text;
+  if (visible.text.includes("$") && echo.includes("/skill:")) {
+    const skillNames = new Set(
+      [...echo.matchAll(/(?:^|\s)\/skill:([^\s]+)/g)].flatMap((match) =>
+        match[1] ? [match[1]] : [],
+      ),
+    );
+    expanded = normalizePiText(expandPiSkillReferences(visible.text, skillNames));
+    if (expanded === echo) return true;
+  }
+  return (
+    Math.min(expanded.length, echo.length) >= PI_ECHO_CONTAINMENT_MIN_LENGTH &&
+    (expanded.includes(echo) || echo.includes(expanded))
+  );
+}
+
 export function selectUnseenPiMessages(
-  visible: ReadonlyArray<{
-    readonly role: string;
-    readonly text: string;
-    readonly createdAt: string;
-  }>,
+  visible: ReadonlyArray<VisiblePiMessage>,
   extracted: ReadonlyArray<PiHistoryMessage>,
 ): ReadonlyArray<PiHistoryMessage> {
   const seen = new Map<string, number>();
-  const visibleUserTexts: Array<string> = [];
+  const visibleUserMessages: Array<VisiblePiMessage> = [];
   for (const message of visible) {
     const key = `${message.role}\n${normalizePiText(message.text)}`;
     seen.set(key, (seen.get(key) ?? 0) + 1);
-    if (message.role === "user") visibleUserTexts.push(normalizePiText(message.text));
+    if (message.role === "user") visibleUserMessages.push(message);
   }
   const remaining: Array<PiHistoryMessage> = [];
   const userLeftovers: Array<PiHistoryMessage> = [];
@@ -102,8 +146,10 @@ export function selectUnseenPiMessages(
     if (count > 0) {
       seen.set(key, count - 1);
       if (message.role === "user") {
-        const index = visibleUserTexts.indexOf(normalizePiText(message.text));
-        if (index !== -1) visibleUserTexts.splice(index, 1);
+        const index = visibleUserMessages.findIndex(
+          (candidate) => normalizePiText(candidate.text) === normalizePiText(message.text),
+        );
+        if (index !== -1) visibleUserMessages.splice(index, 1);
       }
       continue;
     }
@@ -114,16 +160,13 @@ export function selectUnseenPiMessages(
     }
   }
   for (const message of userLeftovers) {
-    const normalized = normalizePiText(message.text);
-    const index = visibleUserTexts.findIndex(
-      (candidate) =>
-        Math.min(candidate.length, normalized.length) >= PI_ECHO_CONTAINMENT_MIN_LENGTH &&
-        (candidate.includes(normalized) || normalized.includes(candidate)),
+    const index = visibleUserMessages.findIndex((candidate) =>
+      matchesPiUserEcho(candidate, message),
     );
     if (index === -1) {
       remaining.push(message);
     } else {
-      visibleUserTexts.splice(index, 1);
+      visibleUserMessages.splice(index, 1);
     }
   }
   return extracted.filter((message) => remaining.includes(message));
