@@ -16,8 +16,9 @@ builds `Takomi Code Preview` (`com.t3tools.t3code.preview`) in a managed short-p
 `C:\takomi-local-build`, with a short pnpm virtual store at `C:\tp`. These paths avoid
 the React Native/CMake path-length and mixed-drive failures that affected the normal checkout. The
 script overlays your tracked working-tree changes and copies root `.env` and `.env.local` when
-present. The resulting arm64 APK is standalone, internal, and debug-signed for direct installation.
-It is **not** Play Store uploadable.
+present. The resulting arm64 APK is standalone and debug-signed for direct installation. It is
+**not** Play Store uploadable. The [current public preview](https://github.com/JStaRFilms/Takomi-Code/releases/tag/takomi-v0.1.0-preview.1)
+is available alongside the Windows installer on GitHub Releases.
 
 The command refuses to touch an existing short-path directory unless its ownership marker and Git
 worktree registration identify it as this checkout's managed local-build worktree.

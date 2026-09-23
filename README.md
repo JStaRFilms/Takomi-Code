@@ -2,7 +2,7 @@
 
 > **Fork of [T3 Code](https://github.com/pingdotgg/t3code)** by [JStaRFilms](https://github.com/JStaRFilms).
 
-Takomi Code tracks upstream T3 Code and adds the Pi/Takomi provider, Takomi tool-call surfaces, and separate desktop/mobile branding. The fork is currently built from source; the upstream installation and release commands below install T3 Code, not Takomi Code.
+Takomi Code tracks upstream T3 Code and adds the Pi/Takomi provider, Takomi tool-call surfaces, and separate desktop/mobile branding. [Download the first Takomi preview](https://github.com/JStaRFilms/Takomi-Code/releases/tag/takomi-v0.1.0-preview.1) for Windows x64 or Android arm64. The Android APK is debug-signed for sideloading, not for the Play Store. The upstream installation and release commands below install T3 Code, not Takomi Code.
 
 - [Takomi / Pi provider](./docs/features/takomi-pi-provider.md)
 - [Takomi desktop and Android builds](./docs/features/takomi-desktop-and-android.md)
@@ -16,7 +16,7 @@ vp run dist:local
 ```
 
 Use `vp run dist:local:desktop` or `vp run dist:local:android` for one target. See the
-[local release guide](./release/README.md) for current versions, artifact names, prerequisites, and
+[local release guide](./release/README.md) for release notes, artifact names, prerequisites, and
 limitations.
 
 ---
