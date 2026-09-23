@@ -40,15 +40,15 @@ platform assets remain alongside their platform targets.
 
 The current source versions are:
 
-- desktop: `0.0.40` from `apps/desktop/package.json`;
-- mobile: `1.1.1` from `apps/mobile/app.config.ts`.
+- desktop: `0.0.42` from `apps/desktop/package.json`;
+- mobile: `1.2.1` from `apps/mobile/app.config.ts`.
 
 The maintained local workflow writes artifacts to `release/`:
 
 ```text
-release\Takomi-Code-0.0.40-x64.exe
-release\Takomi-Code-0.0.40-x64.exe.blockmap
-release\Takomi-Code-Preview-1.1.1-<sha>[-dirty].apk
+release\Takomi-Code-0.0.42-x64.exe
+release\Takomi-Code-0.0.42-x64.exe.blockmap
+release\Takomi-Code-Preview-1.2.1-<sha>[-dirty].apk
 ```
 
 The APK commit suffix comes from the current eight-character Git SHA. `-dirty` is appended when

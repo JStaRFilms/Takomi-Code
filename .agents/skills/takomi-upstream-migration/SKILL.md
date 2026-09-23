@@ -136,7 +136,7 @@ vp run dist:local
 vp run dist:local:desktop
 ```
 
-The desktop version comes from `apps/desktop/package.json` (currently `0.0.40`). Expected output:
+The desktop version comes from `apps/desktop/package.json` (currently `0.0.42`). Expected output:
 
 ```text
 release\Takomi-Code-<desktop-version>-x64.exe
@@ -150,7 +150,7 @@ Report the warning if no WSL `node-pty` prebuild is supplied: normal Windows ope
 vp run dist:local:android
 ```
 
-The mobile version comes from `apps/mobile/app.config.ts` (currently `1.1.1`). Expected output:
+The mobile version comes from `apps/mobile/app.config.ts` (currently `1.2.1`). Expected output:
 
 ```text
 release\Takomi-Code-Preview-<mobile-version>-<sha>[-dirty].apk
