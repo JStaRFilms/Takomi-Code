@@ -20,6 +20,7 @@ import type {
   MessageId,
   ModelSelection,
   OrchestrationThreadShell,
+  OrchestrationThreadActivity,
   ProviderApprovalDecision,
   ProviderInteractionMode,
   RuntimeMode,
@@ -107,6 +108,8 @@ import {
   ThreadComposer,
 } from "./ThreadComposer";
 import { ThreadFeed } from "./ThreadFeed";
+import { ThreadTasks } from "./ThreadTasks";
+import { activeThreadTasks } from "./thread-task-progress";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
 
@@ -121,6 +124,7 @@ export interface ThreadDetailScreenProps {
   readonly feedbackSubmissions: ReadonlyArray<CodexFeedbackSubmission>;
   readonly onDismissFeedback: (id: MessageId) => void;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
+  readonly selectedThreadActivities: ReadonlyArray<OrchestrationThreadActivity>;
   readonly activeWorkStartedAt: string | null;
   readonly isCompacting: boolean;
   /**
@@ -416,6 +420,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       (entry) => "acknowledged" in entry && entry.acknowledged === true,
     );
   const selectedThreadFeed = props.selectedThreadFeed;
+  const activeTasks = useMemo(
+    () => activeThreadTasks(props.selectedThread, props.selectedThreadActivities),
+    [props.selectedThread, props.selectedThreadActivities],
+  );
   const hasCompactableConversation =
     selectedThreadFeed.some(
       (entry) =>
@@ -427,6 +435,18 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     (Boolean(props.loadEarlier) && props.selectedThread.latestUserMessageAt !== null);
   const composerChrome = composerExpanded ? COMPOSER_EXPANDED_CHROME : COMPOSER_COLLAPSED_CHROME;
   const composerOverlapHeight = composerChrome + composerBottomInset;
+  const taskListMaxHeight = Math.max(
+    0,
+    Math.min(
+      windowHeight * 0.35,
+      windowHeight -
+        Math.max(0, liveKeyboardHeight) -
+        navigationHeaderHeight -
+        composerOverlapHeight -
+        (showFloatingStatus ? FLOATING_WORKING_CONTROL_COVERAGE : 0) -
+        60,
+    ),
+  );
   // While a user-input request is pending, the questionnaire owns the
   // composer slot outright: expanded it is the full card, collapsed it is a
   // composer-style bar in the same place (with its own stop control). The
@@ -965,6 +985,19 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onScrollToEnd={handleScrollToEnd}
               />
               <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
+                {activeTasks &&
+                !props.activePendingApproval &&
+                !props.activePendingUserInput &&
+                !usageLimitsReport &&
+                props.creationState?.kind !== "failed" ? (
+                  <View className="px-4 pb-3">
+                    <ThreadTasks
+                      steps={activeTasks.steps}
+                      turnId={activeTasks.turnId}
+                      maxListHeight={taskListMaxHeight}
+                    />
+                  </View>
+                ) : null}
                 {props.feedbackSubmissions.map((submission) => (
                   <ComposerFeedback
                     key={submission.id}
