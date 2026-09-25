@@ -117,6 +117,19 @@ export const ProviderRespondToUserInputInput = Schema.Struct({
 });
 export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputInput.Type;
 
+export const ProviderRespondPiSecretInput = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  value: Schema.optional(Schema.String),
+  cancelled: Schema.optional(Schema.Boolean),
+});
+export type ProviderRespondPiSecretInput = typeof ProviderRespondPiSecretInput.Type;
+
+export class ProviderPiSecretInputError extends Schema.TaggedError<ProviderPiSecretInputError>()(
+  "ProviderPiSecretInputError",
+  { message: Schema.String },
+) {}
+
 export const ProviderUploadFeedbackInput = Schema.Struct({
   threadId: ThreadId,
   reason: Schema.optional(TrimmedNonEmptyString),

@@ -1371,6 +1371,7 @@ export interface ChatComposerProps {
   activePendingApproval: PendingApproval | null;
   pendingApprovals: PendingApproval[];
   pendingUserInputs: PendingUserInput[];
+  secretEnvironmentUnavailable: boolean;
   activePendingProgress: {
     questionIndex: number;
     isLastQuestion: boolean;
@@ -1457,6 +1458,10 @@ export interface ChatComposerProps {
   onSelectActivePendingUserInputOption: (questionId: string, optionValue: string) => void;
   onAdvanceActivePendingUserInput: () => void;
   onDismissActivePendingUserInput: (requestId: ApprovalRequestId) => void;
+  onRespondPiSecret: (
+    requestId: ApprovalRequestId,
+    response: { value: string } | { cancelled: true },
+  ) => Promise<boolean>;
   onPreviousActivePendingUserInputQuestion: () => void;
   onChangeActivePendingUserInputCustomAnswer: (
     questionId: string,
@@ -1520,6 +1525,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activePendingApproval,
     pendingApprovals,
     pendingUserInputs,
+    secretEnvironmentUnavailable,
     activePendingProgress,
     activePendingResolvedAnswers,
     activePendingIsResponding,
@@ -1570,6 +1576,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onSelectActivePendingUserInputOption,
     onAdvanceActivePendingUserInput,
     onDismissActivePendingUserInput,
+    onRespondPiSecret,
     onPreviousActivePendingUserInputQuestion,
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
@@ -2541,7 +2548,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const isComposerApprovalState = activePendingApproval !== null;
   const activePendingUserInput = pendingUserInputs[0] ?? null;
+  const isSensitivePendingQuestion =
+    activePendingUserInput?.questions.some((question) => question.sensitive === true) ?? false;
   const isChoiceOnlyPendingQuestion =
+    isSensitivePendingQuestion ||
     activePendingProgress?.activeQuestion?.allowCustomAnswer === false;
   const showComposerTopDrawer =
     isComposerApprovalState ||
@@ -2550,6 +2560,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const showCollapsedMobilePromptRow =
     isComposerCollapsedMobile && !isComposerApprovalState && pendingUserInputs.length === 0;
   const showComposerAttachAction =
+    !isSensitivePendingQuestion &&
     fileStagingLimit !== null &&
     (!activePendingProgress ||
       (supportsQuestionAttachments &&
@@ -2683,17 +2694,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             questionIndex: activePendingProgress.questionIndex,
             isLastQuestion: activePendingProgress.isLastQuestion,
             canAdvance:
+              !isSensitivePendingQuestion &&
               activePendingProgress.canAdvance &&
               !attachmentBlockReason &&
               !(questionPreparations[attachmentTargetKey] ?? 0),
             isResponding: activePendingIsResponding,
-            isComplete: Boolean(activePendingResolvedAnswers),
+            isComplete: !isSensitivePendingQuestion && Boolean(activePendingResolvedAnswers),
           }
         : null,
     [
       activePendingIsResponding,
       activePendingProgress,
       activePendingResolvedAnswers,
+      isSensitivePendingQuestion,
       attachmentBlockReason,
       questionPreparations,
       attachmentTargetKey,
@@ -2710,7 +2723,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     !composerSendState.hasSendableContent;
   const collapsedComposerPrimaryActionLabel = "Send message";
   const showMobilePendingAnswerActions =
-    isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
+    isMobileViewport &&
+    !isComposerCollapsedMobile &&
+    !isSensitivePendingQuestion &&
+    pendingPrimaryAction !== null;
 
   // ------------------------------------------------------------------
   // Prompt helpers
@@ -3352,7 +3368,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ) => {
       expandComposerForEditorChange();
       if (activePendingProgress?.activeQuestion && pendingUserInputs.length > 0) {
-        if (activePendingProgress.activeQuestion.allowCustomAnswer === false) return;
+        if (
+          isSensitivePendingQuestion ||
+          activePendingProgress.activeQuestion.allowCustomAnswer === false
+        )
+          return;
         setComposerCursor(nextCursor);
         setComposerTrigger(
           cursorAdjacentToMention ? null : detectComposerTrigger(nextPrompt, expandedCursor),
@@ -3451,7 +3471,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       );
     },
     [
-      activePendingProgress?.activeQuestion,
+      activePendingProgress,
+      isSensitivePendingQuestion,
       expandComposerForEditorChange,
       pendingUserInputs.length,
       onChangeActivePendingUserInputCustomAnswer,
@@ -3493,7 +3514,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ): boolean => {
       if (
         activePendingUserInput &&
-        activePendingProgress?.activeQuestion?.allowCustomAnswer === false
+        (isSensitivePendingQuestion ||
+          activePendingProgress?.activeQuestion?.allowCustomAnswer === false)
       ) {
         return false;
       }
@@ -3548,8 +3570,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return true;
     },
     [
-      activePendingProgress?.activeQuestion,
+      activePendingProgress,
       activePendingUserInput,
+      isSensitivePendingQuestion,
       onChangeActivePendingUserInputCustomAnswer,
       promptRef,
       setPrompt,
@@ -3797,7 +3820,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const submitComposer = useCallback(
     (event?: { preventDefault: () => void }, intent: ComposerSubmissionIntent = "foreground") => {
-      if (noProviderAvailable || isSendDisabled) {
+      if (isSensitivePendingQuestion || noProviderAvailable || isSendDisabled) {
         event?.preventDefault();
         return;
       }
@@ -3852,6 +3875,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       attachmentTargetKey,
       blurMobileComposerAfterSend,
       isSendDisabled,
+      isSensitivePendingQuestion,
       noProviderAvailable,
       onSend,
       promptRef,
@@ -5291,7 +5315,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (!activeThreadId || files.length === 0 || isRevertingCheckpointRef.current) return false;
     if (
       pendingUserInputs.length > 0 &&
-      (!supportsQuestionAttachments ||
+      (isSensitivePendingQuestion ||
+        !supportsQuestionAttachments ||
         activePendingProgress?.activeQuestion?.allowCustomAnswer === false ||
         activePendingIsResponding)
     ) {
@@ -5558,7 +5583,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ): boolean => {
     const questionCanAttach =
       pendingUserInputs.length === 0 ||
-      (supportsQuestionAttachments &&
+      (!isSensitivePendingQuestion &&
+        supportsQuestionAttachments &&
         activePendingProgress?.activeQuestion?.allowCustomAnswer !== false &&
         !activePendingIsResponding);
     const hasAttachmentSlot = countReservedAttachments() < PROVIDER_SEND_TURN_MAX_ATTACHMENTS;
@@ -6255,6 +6281,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     onToggleOption={onSelectActivePendingUserInputOption}
                     onAdvance={onAdvanceActivePendingUserInput}
                     onDismiss={onDismissActivePendingUserInput}
+                    onRespondPiSecret={onRespondPiSecret}
+                    environmentUnavailable={secretEnvironmentUnavailable || isConnecting}
+                    secretScope={JSON.stringify([environmentId, activeThreadId])}
                   />
                 ) : !isComposerCollapsedMobile && showPlanFollowUpPrompt && activeProposedPlan ? (
                   <ComposerPlanFollowUpBanner
@@ -6275,9 +6304,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       onToggleOption={onSelectActivePendingUserInputOption}
                       onAdvance={onAdvanceActivePendingUserInput}
                       onDismiss={onDismissActivePendingUserInput}
+                      onRespondPiSecret={onRespondPiSecret}
+                      environmentUnavailable={secretEnvironmentUnavailable || isConnecting}
+                      secretScope={JSON.stringify([environmentId, activeThreadId])}
                     />
-                    {!isChoiceOnlyPendingQuestion ||
-                    activePendingProgress?.activeQuestion?.multiSelect ? (
+                    {!isSensitivePendingQuestion &&
+                    (!isChoiceOnlyPendingQuestion ||
+                      activePendingProgress?.activeQuestion?.multiSelect) ? (
                       <ComposerBanner.Body>
                         <div
                           data-chat-composer-mobile-pending-compact="true"
@@ -6908,7 +6941,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         ? "Resolve this approval request to continue"
                         : activePendingProgress
                           ? isChoiceOnlyPendingQuestion
-                            ? "Choose an option above"
+                            ? isSensitivePendingQuestion
+                              ? "Enter the credential above"
+                              : "Choose an option above"
                             : "Type your own answer, or leave this blank to use the selected option"
                           : showPlanFollowUpPrompt && activeProposedPlan
                             ? "Add feedback to refine the plan, or leave this blank to implement it"
@@ -6925,6 +6960,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       isComposerApprovalState ||
                       projectSelectionRequired ||
                       isChoiceOnlyPendingQuestion ||
+                      isSensitivePendingQuestion ||
                       activePendingIsResponding
                     }
                   />
@@ -7037,39 +7073,43 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       </Tooltip>
                     </>
                   ) : null}
-                  <ComposerFooterPrimaryActions
-                    compact={isComposerResting || isComposerPrimaryActionsCompact}
-                    activeContextWindow={
-                      settings.contextWindowMeterEnabled ? activeContextWindow : null
-                    }
-                    reserveContextWindowMeter={reserveContextWindowMeter}
-                    activeThreadModelDisplayName={activeThreadModelDisplayName}
-                    pendingAction={pendingPrimaryAction}
-                    isRunning={phase === "running"}
-                    showPlanFollowUpPrompt={
-                      pendingUserInputs.length === 0 && showPlanFollowUpPrompt
-                    }
-                    promptHasText={prompt.trim().length > 0}
-                    isSendBusy={isSendBusy}
-                    sendDisabledReason={sendDisabledReason}
-                    isConnecting={isConnecting}
-                    isEnvironmentUnavailable={
-                      environmentUnavailable !== null ||
-                      noProviderAvailable ||
-                      projectSelectionRequired
-                    }
-                    isPreparingWorktree={isPreparingWorktree}
-                    hasSendableContent={composerSendState.hasSendableContent}
-                    preserveComposerFocusOnPointerDown={isMobileViewport || isComposerResting}
-                    onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
-                    onInterrupt={handleInterruptPrimaryAction}
-                    onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
-                    compactDisabled={
-                      compactDisabled || noProviderAvailable || isSendBusy || isConnecting
-                    }
-                    compactDisabledReason={resolvedCompactDisabledReason}
-                    {...(compactCommandAvailable ? { onCompactContext: compactThreadContext } : {})}
-                  />
+                  {isSensitivePendingQuestion ? null : (
+                    <ComposerFooterPrimaryActions
+                      compact={isComposerResting || isComposerPrimaryActionsCompact}
+                      activeContextWindow={
+                        settings.contextWindowMeterEnabled ? activeContextWindow : null
+                      }
+                      reserveContextWindowMeter={reserveContextWindowMeter}
+                      activeThreadModelDisplayName={activeThreadModelDisplayName}
+                      pendingAction={pendingPrimaryAction}
+                      isRunning={phase === "running"}
+                      showPlanFollowUpPrompt={
+                        pendingUserInputs.length === 0 && showPlanFollowUpPrompt
+                      }
+                      promptHasText={prompt.trim().length > 0}
+                      isSendBusy={isSendBusy}
+                      sendDisabledReason={sendDisabledReason}
+                      isConnecting={isConnecting}
+                      isEnvironmentUnavailable={
+                        environmentUnavailable !== null ||
+                        noProviderAvailable ||
+                        projectSelectionRequired
+                      }
+                      isPreparingWorktree={isPreparingWorktree}
+                      hasSendableContent={composerSendState.hasSendableContent}
+                      preserveComposerFocusOnPointerDown={isMobileViewport || isComposerResting}
+                      onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
+                      onInterrupt={handleInterruptPrimaryAction}
+                      onImplementPlanInNewThread={handleImplementPlanInNewThreadPrimaryAction}
+                      compactDisabled={
+                        compactDisabled || noProviderAvailable || isSendBusy || isConnecting
+                      }
+                      compactDisabledReason={resolvedCompactDisabledReason}
+                      {...(compactCommandAvailable
+                        ? { onCompactContext: compactThreadContext }
+                        : {})}
+                    />
+                  )}
                 </div>
               </div>
             )}

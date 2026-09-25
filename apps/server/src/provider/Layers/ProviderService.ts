@@ -17,6 +17,7 @@ import {
   ProviderInterruptTurnInput,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
+  type ProviderRespondPiSecretInput,
   RuntimeRequestId,
   ProviderSendTurnInput,
   type ChatImageAttachment,
@@ -2029,6 +2030,35 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const respondPiSecretInput: ProviderServiceMethod<"respondPiSecretInput"> = Effect.fnUntraced(
+    function* (input: ProviderRespondPiSecretInput) {
+      if (
+        (input.cancelled === true) === (input.value !== undefined) ||
+        (input.value !== undefined && new TextEncoder().encode(input.value).byteLength > 16 * 1024)
+      ) {
+        return yield* toValidationError("respondPiSecretInput", "Invalid secret response.");
+      }
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "respondPiSecretInput",
+        allowRecovery: false,
+      });
+      if (
+        routed.adapter.provider !== "pi" ||
+        !routed.isActive ||
+        !routed.adapter.respondPiSecretInput
+      ) {
+        return yield* toValidationError("respondPiSecretInput", "No live Pi secret request.");
+      }
+      yield* routed.adapter.respondPiSecretInput(
+        routed.threadId,
+        input.requestId,
+        input.value,
+        input.cancelled === true,
+      );
+    },
+  );
+
   const stopSession: ProviderServiceMethod<"stopSession"> = Effect.fn("stopSession")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -2405,6 +2435,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     interruptTurn,
     respondToRequest,
     respondToUserInput,
+    respondPiSecretInput,
     stopSession,
     listSessions,
     getCapabilities,

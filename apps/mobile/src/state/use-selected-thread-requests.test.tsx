@@ -6,6 +6,9 @@ const fixture = vi.hoisted(() => ({
   uploads: {} as Record<string, unknown>,
   preparations: {} as Record<string, number>,
   preparationAtom: Symbol("preparation"),
+  sensitive: false,
+  commands: [] as Array<{ command: unknown; input: unknown }>,
+  activeCommand: Symbol("Pi secret RPC"),
 }));
 vi.mock("react-native", () => ({ Alert: { alert: vi.fn() } }));
 vi.mock("@effect/atom-react", () => ({
@@ -48,7 +51,16 @@ vi.mock("./entities", () => ({
     ]),
 }));
 vi.mock("./threads", () => ({ threadEnvironment: {} }));
-vi.mock("./use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
+vi.mock("./use-atom-command", () => ({
+  useAtomCommand: (command: unknown) => (input: unknown) => {
+    fixture.commands.push({ command, input });
+    return Promise.resolve({ _tag: "Success" });
+  },
+}));
+vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+  createEnvironmentRpcCommand: () => fixture.activeCommand,
+}));
+vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: {} }));
 vi.mock("./use-thread-selection", () => ({
   useThreadSelection: () => ({
     selectedThread: { environmentId: "environment-1", id: "thread-1" },
@@ -69,6 +81,7 @@ vi.mock("./use-thread-detail", () => ({
             question: `Attach ${id} file`,
             options: [],
             allowCustomAnswer: true,
+            ...(fixture.sensitive ? { sensitive: true } : {}),
           })),
         },
       },
@@ -79,6 +92,17 @@ vi.mock("./use-thread-detail", () => ({
 import { ApprovalRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { questionAttachmentDraftKey } from "./question-attachments";
 import { useSelectedThreadRequests } from "./use-selected-thread-requests";
+
+function handlers() {
+  const holder: { current?: ReturnType<typeof useSelectedThreadRequests> } = {};
+  function Probe() {
+    holder.current = useSelectedThreadRequests();
+    return null;
+  }
+  renderToStaticMarkup(<Probe />);
+  if (!holder.current) throw new Error("Request handlers were not rendered");
+  return holder.current;
+}
 
 const environmentId = EnvironmentId.make("environment-1");
 const key = (question: string) =>
@@ -97,6 +121,8 @@ function submitButtonMarkup() {
 }
 beforeEach(() => {
   fixture.preparations = {};
+  fixture.sensitive = false;
+  fixture.commands = [];
   fixture.drafts = Object.fromEntries(
     ["first", "second"].map((id) => [
       key(id),
@@ -116,6 +142,59 @@ beforeEach(() => {
   );
   fixture.uploads = { "environment-1:first": { status: "ready" } };
 });
+describe("sensitive user input", () => {
+  it("routes the credential only through the Pi RPC and blocks ordinary submission", async () => {
+    fixture.sensitive = true;
+    const requests = handlers();
+    const question = requests.activePendingUserInput?.questions[0];
+    if (!question) throw new Error("Expected a pending question");
+    requests.onSelectUserInputOption(ApprovalRequestId.make("request-1"), question, "option");
+    requests.onChangeUserInputCustomAnswer(
+      ApprovalRequestId.make("request-1"),
+      "first",
+      "credential",
+    );
+    await requests.onSubmitUserInput();
+    await requests.onDismissUserInput();
+    expect(fixture.commands).toEqual([]);
+    expect(
+      await requests.onRespondPiSecret(ApprovalRequestId.make("request-1"), {
+        value: "credential",
+      }),
+    ).toBe(true);
+    expect(fixture.commands).toEqual([
+      {
+        command: fixture.activeCommand,
+        input: {
+          environmentId,
+          input: {
+            threadId: ThreadId.make("thread-1"),
+            requestId: ApprovalRequestId.make("request-1"),
+            value: "credential",
+          },
+        },
+      },
+    ]);
+    fixture.commands = [];
+    await requests.onRespondPiSecret(ApprovalRequestId.make("other"), { cancelled: true });
+    expect(fixture.commands).toEqual([]);
+    await requests.onRespondPiSecret(ApprovalRequestId.make("request-1"), { cancelled: true });
+    expect(fixture.commands).toEqual([
+      {
+        command: fixture.activeCommand,
+        input: {
+          environmentId,
+          input: {
+            threadId: ThreadId.make("thread-1"),
+            requestId: ApprovalRequestId.make("request-1"),
+            cancelled: true,
+          },
+        },
+      },
+    ]);
+  });
+});
+
 describe("question attachment submission readiness", () => {
   it.each([
     undefined,

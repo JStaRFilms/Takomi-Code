@@ -7,6 +7,7 @@ import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hos
 import {
   type DeviceServiceState,
   AuthAccessTokenType,
+  ApprovalRequestId,
   AuthStandardClientScopes,
   AuthEnvironmentBootstrapTokenType,
   AuthTokenExchangeGrantType,
@@ -5958,6 +5959,44 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         failureMessage.includes("Unauthorized") ||
           failureMessage.includes("An error occurred during Open"),
       );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("requires operate scope for private Pi secret responses", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            respondPiSecretInput: () =>
+              Effect.sync(() => {
+                calls += 1;
+              }),
+          },
+        },
+      });
+      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "orchestration:read",
+      });
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+      });
+      const { ticket } = yield* responseJsonEffect<{ readonly ticket: string }>(ticketResponse);
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket)}`;
+      const error = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.providerRespondPiSecretInput]({
+            threadId: ThreadId.make("thread-secret"),
+            requestId: ApprovalRequestId.make("pi-ui-1-input-vault"),
+            value: "private-value",
+          }).pipe(Effect.flip),
+        ),
+      );
+      assert.equal(error._tag, "EnvironmentAuthorizationError");
+      if (error._tag === "EnvironmentAuthorizationError") {
+        assert.equal(error.requiredScope, "orchestration:operate");
+      }
+      assert.equal(calls, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

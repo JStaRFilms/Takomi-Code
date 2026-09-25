@@ -101,6 +101,8 @@ import {
 } from "./orchestration.ts";
 import {
   ProviderUploadFeedbackError,
+  ProviderPiSecretInputError,
+  ProviderRespondPiSecretInput,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
 } from "./provider.ts";
@@ -313,6 +315,7 @@ export const WS_METHODS = {
 
   // Provider methods
   providerUploadFeedback: "provider.uploadFeedback",
+  providerRespondPiSecretInput: "provider.respondPiSecretInput",
   providerAuthStart: "provider.auth.start",
   providerConsumeResetCredit: "provider.consumeResetCredit",
   providerAuthComplete: "provider.auth.complete",
@@ -1020,6 +1023,11 @@ const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, 
   error: Schema.Union([ProviderUploadFeedbackError, EnvironmentAuthorizationError]),
 });
 
+const WsProviderRespondPiSecretInputRpc = Rpc.make(WS_METHODS.providerRespondPiSecretInput, {
+  payload: ProviderRespondPiSecretInput,
+  error: Schema.Union([ProviderPiSecretInputError, EnvironmentAuthorizationError]),
+});
+
 const WsProviderListPiSessionsRpc = Rpc.make(WS_METHODS.providerListPiSessions, {
   payload: PiSessionCatalogInput,
   success: PiSessionCatalogPage,
@@ -1535,6 +1543,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,
   WsProviderUploadFeedbackRpc,
+  WsProviderRespondPiSecretInputRpc,
   WsProviderListPiSessionsRpc,
   WsProviderAttachPiSessionRpc,
   WsProviderForkPiSessionRpc,

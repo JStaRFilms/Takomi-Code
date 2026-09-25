@@ -107,6 +107,22 @@ it.layer(NodeServices.layer)("question attachment answers", (it) => {
       });
     }),
   );
+  it.effect("rejects normal answers for a sensitive question before creating events", () =>
+    Effect.gen(function* () {
+      const result = yield* decideOrchestrationCommand({
+        readModel,
+        command: { ...command, answers: { q: "secret-value" } },
+        userInputActivity: {
+          ...request,
+          payload: {
+            ...request.payload,
+            questions: [{ ...request.payload.questions[0]!, sensitive: true }],
+          },
+        },
+      }).pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+    }),
+  );
   it.effect("rejects attachments for a resolved or unknown request", () =>
     Effect.gen(function* () {
       const result = yield* decideOrchestrationCommand({ readModel, command }).pipe(Effect.result);

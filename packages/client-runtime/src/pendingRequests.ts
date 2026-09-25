@@ -78,6 +78,7 @@ function parseQuestions(value: unknown): UserInputQuestion[] {
       question: question.question,
       options,
       multiSelect: question.multiSelect === true,
+      ...(question.sensitive === true ? { sensitive: true } : {}),
       ...(typeof question.allowCustomAnswer === "boolean"
         ? { allowCustomAnswer: question.allowCustomAnswer }
         : {}),

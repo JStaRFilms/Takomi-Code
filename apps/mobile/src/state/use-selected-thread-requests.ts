@@ -1,4 +1,7 @@
 import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
+import { createEnvironmentRpcCommand } from "@t3tools/client-runtime/state/runtime";
+import { WS_METHODS } from "@t3tools/contracts";
+import { connectionAtomRuntime } from "../connection/runtime";
 import { useServerConfigs } from "./entities";
 import { Alert } from "react-native";
 import {
@@ -34,6 +37,11 @@ import { appAtomRegistry } from "./atom-registry";
 import { useSelectedThreadDetail } from "./use-thread-detail";
 import { useThreadSelection } from "./use-thread-selection";
 import { useAtomCommand } from "./use-atom-command";
+
+const piSecretInputResponse = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "environment-data:pi-secret-input:respond",
+  tag: WS_METHODS.providerRespondPiSecretInput,
+});
 
 const userInputDraftsByRequestKeyAtom = Atom.make<
   Record<string, Record<string, PendingUserInputDraftAnswer>>
@@ -90,6 +98,11 @@ export function useSelectedThreadRequests() {
     threadEnvironment.dismissUserInput,
     "thread user input dismissal",
   );
+  // Command failures may include the RPC payload. Never report credentials.
+  const respondPiSecret = useAtomCommand(piSecretInputResponse, {
+    reportFailure: false,
+    reportDefect: false,
+  });
   const { selectedThread: selectedThreadShell } = useThreadSelection();
   const selectedThread = useSelectedThreadDetail();
   const userInputDraftsByRequestKey = useAtomValue(userInputDraftsByRequestKeyAtom);
@@ -187,14 +200,19 @@ export function useSelectedThreadRequests() {
 
   const onSelectUserInputOption = useCallback(
     (requestId: ApprovalRequestId, question: UserInputQuestion, value: string) => {
-      if (!selectedThreadShell) {
+      if (
+        !selectedThreadShell ||
+        activePendingUserInputs.some(
+          (request) =>
+            request.requestId === requestId && request.questions.some((q) => q.sensitive === true),
+        )
+      )
         return;
-      }
 
       const requestKey = scopedRequestKey(selectedThreadShell.environmentId, requestId);
       setUserInputDraftOption(requestKey, question, value);
     },
-    [selectedThreadShell],
+    [activePendingUserInputs, selectedThreadShell],
   );
 
   const onChangeUserInputCustomAnswer = useCallback(
@@ -202,7 +220,15 @@ export function useSelectedThreadRequests() {
       const question = activePendingUserInputs
         .find((request) => request.requestId === requestId)
         ?.questions.find((entry) => entry.id === questionId);
-      if (!selectedThreadShell || !question) {
+      if (
+        !selectedThreadShell ||
+        !question ||
+        question.sensitive === true ||
+        activePendingUserInputs.some(
+          (request) =>
+            request.requestId === requestId && request.questions.some((q) => q.sensitive === true),
+        )
+      ) {
         return;
       }
 
@@ -234,7 +260,12 @@ export function useSelectedThreadRequests() {
   );
 
   const onSubmitUserInput = useCallback(async () => {
-    if (!selectedThreadShell || !activePendingUserInput || !activePendingUserInputAnswers) {
+    if (
+      !selectedThreadShell ||
+      !activePendingUserInput ||
+      !activePendingUserInputAnswers ||
+      activePendingUserInput.questions.some((question) => question.sensitive === true)
+    ) {
       return;
     }
 
@@ -310,7 +341,11 @@ export function useSelectedThreadRequests() {
 
   // Closes an async question without messaging the agent.
   const onDismissUserInput = useCallback(async () => {
-    if (!selectedThreadShell || !activePendingUserInput) {
+    if (
+      !selectedThreadShell ||
+      !activePendingUserInput ||
+      activePendingUserInput.questions.some((question) => question.sensitive === true)
+    ) {
       return;
     }
 
@@ -328,6 +363,23 @@ export function useSelectedThreadRequests() {
     return result;
   }, [activePendingUserInput, dismissUserInput, selectedThreadShell]);
 
+  const onRespondPiSecret = useCallback(
+    async (requestId: ApprovalRequestId, response: { value: string } | { cancelled: true }) => {
+      if (
+        !selectedThreadShell ||
+        activePendingUserInput?.requestId !== requestId ||
+        !activePendingUserInput.questions.some((question) => question.sensitive === true)
+      )
+        return false;
+      const result = await respondPiSecret({
+        environmentId: selectedThreadShell.environmentId,
+        input: { threadId: selectedThreadShell.id, requestId, ...response },
+      });
+      return result._tag === "Success";
+    },
+    [activePendingUserInput, respondPiSecret, selectedThreadShell],
+  );
+
   return {
     activePendingApproval,
     activePendingUserInput,
@@ -340,5 +392,6 @@ export function useSelectedThreadRequests() {
     onChangeUserInputCustomAnswer,
     onSubmitUserInput,
     onDismissUserInput,
+    onRespondPiSecret,
   };
 }

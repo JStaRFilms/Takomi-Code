@@ -16,6 +16,7 @@ import type {
   ProviderInstanceId,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
+  ProviderRespondPiSecretInput,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
@@ -84,6 +85,10 @@ export interface ProviderServiceShape {
   /**
    * Stop a provider session.
    */
+  readonly respondPiSecretInput: (
+    input: ProviderRespondPiSecretInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
   readonly stopSession: (
     input: ProviderStopSessionInput,
   ) => Effect.Effect<void, ProviderServiceError>;

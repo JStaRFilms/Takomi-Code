@@ -226,7 +226,7 @@ import {
   isPiModelSelection,
   shouldCheckPiSessionUpdates,
 } from "./piContinue/piContinue.logic";
-import { piSessionSyncUpdates } from "~/state/piSessions";
+import { piSecretInputResponse, piSessionSyncUpdates } from "~/state/piSessions";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import { useDeviceState } from "~/state/device";
 import { DeviceSetup } from "./device/DeviceSetup";
@@ -1544,6 +1544,11 @@ export default function ChatView(props: ChatViewProps) {
   });
   const dismissThreadUserInput = useAtomCommand(threadEnvironment.dismissUserInput, {
     reportFailure: false,
+  });
+  // A failed command must not report its input (which contains the credential).
+  const respondPiSecret = useAtomCommand(piSecretInputResponse, {
+    reportFailure: false,
+    reportDefect: false,
   });
   const revertThreadCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
     reportFailure: false,
@@ -2962,14 +2967,16 @@ export default function ChatView(props: ChatViewProps) {
     () =>
       activeThreadId
         ? pendingUserInputs.flatMap((request) =>
-            request.questions.map((question) =>
-              questionAttachmentDraftId(
-                environmentId,
-                activeThreadId,
-                request.requestId,
-                question.id,
+            request.questions
+              .filter((question) => question.sensitive !== true)
+              .map((question) =>
+                questionAttachmentDraftId(
+                  environmentId,
+                  activeThreadId,
+                  request.requestId,
+                  question.id,
+                ),
               ),
-            ),
           )
         : [],
     [activeThreadId, environmentId, pendingUserInputs],
@@ -3010,14 +3017,16 @@ export default function ChatView(props: ChatViewProps) {
     const prefix = questionAttachmentDraftPrefix(environmentId, questionThread.id);
     const retained = new Set(
       currentRequests.flatMap((request) =>
-        request.questions.map((question) =>
-          questionAttachmentDraftId(
-            environmentId,
-            questionThread.id,
-            request.requestId,
-            question.id,
+        request.questions
+          .filter((question) => question.sensitive !== true)
+          .map((question) =>
+            questionAttachmentDraftId(
+              environmentId,
+              questionThread.id,
+              request.requestId,
+              question.id,
+            ),
           ),
-        ),
       ),
     );
     const keys = new Set([
@@ -3032,27 +3041,29 @@ export default function ChatView(props: ChatViewProps) {
   const activePendingDraftAnswers = useMemo(() => {
     if (!activePendingUserInput || !activeThreadId) return EMPTY_PENDING_USER_INPUT_ANSWERS;
     return Object.fromEntries(
-      activePendingUserInput.questions.map((question) => {
-        const key = questionAttachmentDraftId(
-          environmentId,
-          activeThreadId,
-          activePendingUserInput.requestId,
-          question.id,
-        );
-        const draft = questionComposerDrafts[key];
-        const attachments = draft ? [...draft.images, ...draft.files] : [];
-        return [
-          question.id,
-          {
-            ...pendingUserInputAnswersByRequestId[activePendingRequestKey]?.[question.id],
-            attachmentCount: attachments.length,
-            attachmentsBlocked:
-              (attachments.length > 0 && !supportsQuestionAttachments) ||
-              (questionPreparations[key] ?? 0) > 0 ||
-              questionUploadsBlocked[key] === true,
-          },
-        ];
-      }),
+      activePendingUserInput.questions
+        .filter((question) => question.sensitive !== true)
+        .map((question) => {
+          const key = questionAttachmentDraftId(
+            environmentId,
+            activeThreadId,
+            activePendingUserInput.requestId,
+            question.id,
+          );
+          const draft = questionComposerDrafts[key];
+          const attachments = draft ? [...draft.images, ...draft.files] : [];
+          return [
+            question.id,
+            {
+              ...pendingUserInputAnswersByRequestId[activePendingRequestKey]?.[question.id],
+              attachmentCount: attachments.length,
+              attachmentsBlocked:
+                (attachments.length > 0 && !supportsQuestionAttachments) ||
+                (questionPreparations[key] ?? 0) > 0 ||
+                questionUploadsBlocked[key] === true,
+            },
+          ];
+        }),
     );
   }, [
     activePendingUserInput,
@@ -7477,6 +7488,9 @@ export default function ChatView(props: ChatViewProps) {
       });
       return;
     }
+    if (activePendingUserInput?.questions.some((question) => question.sensitive === true)) {
+      return;
+    }
     if (activePendingProgress) {
       // A queued message waits until the question is answered; it must not
       // be submitted as the answer.
@@ -8829,7 +8843,14 @@ export default function ChatView(props: ChatViewProps) {
 
   const onRespondToUserInput = useCallback(
     async (requestId: ApprovalRequestId, answers: Record<string, unknown>) => {
-      if (!activeThreadId || !activePendingUserInput || activePendingIsResponding) return;
+      if (
+        !activeThreadId ||
+        !activePendingUserInput ||
+        activePendingUserInput.requestId !== requestId ||
+        activePendingUserInput.questions.some((question) => question.sensitive === true) ||
+        activePendingIsResponding
+      )
+        return;
       const responseKey = JSON.stringify([environmentId, activeThreadId, requestId]);
       if (userInputResponsesInFlight.current.has(responseKey)) return;
       const attachmentsByQuestionId = new Map<
@@ -8896,6 +8917,30 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
+  const onRespondPiSecret = useCallback(
+    async (requestId: ApprovalRequestId, response: { value: string } | { cancelled: true }) => {
+      if (
+        !activeThreadId ||
+        activeEnvironmentUnavailable ||
+        activePendingUserInput?.requestId !== requestId ||
+        !activePendingUserInput.questions.some((question) => question.sensitive === true)
+      )
+        return false;
+      const result = await respondPiSecret({
+        environmentId,
+        input: { threadId: activeThreadId, requestId, ...response },
+      });
+      return result._tag === "Success";
+    },
+    [
+      activeThreadId,
+      activeEnvironmentUnavailable,
+      activePendingUserInput,
+      environmentId,
+      respondPiSecret,
+    ],
+  );
+
   // Closes an async question without messaging the agent. The server records
   // the dismissal so every client releases the composer.
   const onDismissUserInput = useCallback(
@@ -8937,7 +8982,10 @@ export default function ChatView(props: ChatViewProps) {
 
   const onSelectActivePendingUserInputOption = useCallback(
     (questionId: string, optionValue: string) => {
-      if (!activePendingUserInput) {
+      if (
+        !activePendingUserInput ||
+        activePendingUserInput.questions.some((question) => question.sensitive === true)
+      ) {
         return;
       }
       // The option replaces the custom answer. Anything typed there is the
@@ -8994,7 +9042,10 @@ export default function ChatView(props: ChatViewProps) {
       expandedCursor: number,
       _cursorAdjacentToMention: boolean,
     ) => {
-      if (!activePendingUserInput) {
+      if (
+        !activePendingUserInput ||
+        activePendingUserInput.questions.some((question) => question.sensitive === true)
+      ) {
         return;
       }
       const question = activePendingUserInput.questions.find((entry) => entry.id === questionId);
@@ -9029,6 +9080,7 @@ export default function ChatView(props: ChatViewProps) {
       !activePendingUserInput ||
       !activePendingProgress ||
       !activePendingProgress.canAdvance ||
+      activePendingUserInput.questions.some((question) => question.sensitive === true) ||
       activePendingIsResponding
     ) {
       return;
@@ -10235,6 +10287,7 @@ export default function ChatView(props: ChatViewProps) {
                             activePendingApproval={activePendingApproval}
                             pendingApprovals={pendingApprovals}
                             pendingUserInputs={pendingUserInputs}
+                            secretEnvironmentUnavailable={activeEnvironmentUnavailable}
                             activePendingProgress={activePendingProgress}
                             activePendingResolvedAnswers={activePendingResolvedAnswers}
                             activePendingIsResponding={activePendingIsResponding}
@@ -10295,6 +10348,7 @@ export default function ChatView(props: ChatViewProps) {
                             }
                             onAdvanceActivePendingUserInput={onAdvanceActivePendingUserInput}
                             onDismissActivePendingUserInput={onDismissUserInput}
+                            onRespondPiSecret={onRespondPiSecret}
                             onPreviousActivePendingUserInputQuestion={
                               onPreviousActivePendingUserInputQuestion
                             }

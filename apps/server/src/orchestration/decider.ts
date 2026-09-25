@@ -1598,20 +1598,35 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       const request = userInputActivity;
+      if (request?.kind !== "user-input.requested") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail:
+            request?.kind === "user-input.resolved"
+              ? "This question has already been answered."
+              : "This question is no longer pending.",
+        });
+      }
+      if (
+        Predicate.isObject(request.payload) &&
+        Array.isArray(request.payload.questions) &&
+        request.payload.questions.some(
+          (question) => Predicate.isObject(question) && question.sensitive === true,
+        )
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Sensitive input must use the private Pi response channel.",
+        });
+      }
       const attachments = Object.values(command.attachmentsByQuestionId ?? {}).flat();
       let questionTextById: Record<string, string> = {};
       if (attachments.length > 0) {
-        const payload =
-          request?.kind === "user-input.requested"
-            ? decodeUserInputRequestedPayload(request.payload)
-            : Option.none();
+        const payload = decodeUserInputRequestedPayload(request.payload);
         if (Option.isNone(payload)) {
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
-            detail:
-              request?.kind === "user-input.resolved"
-                ? "This question has already been answered."
-                : "This question is no longer pending.",
+            detail: "This question is no longer pending.",
           });
         }
         questionTextById = Object.fromEntries(

@@ -43,6 +43,18 @@ function emitTimeoutRequest() {
 }
 
 function emitFixtureEvents() {
+  if (
+    process.env.T3_PI_CONFORMANCE_VAULT_SECRET === "1" &&
+    process.env.T3_TAKOMI_VAULT_SECRET_UI === "1"
+  ) {
+    emit({
+      type: "extension_ui_request",
+      id: "vault-secret",
+      method: "input",
+      title: "[takomi-vault-secret] API token",
+      placeholder: "Do not persist this hint",
+    });
+  }
   if (process.env.T3_PI_CONFORMANCE_UI_TIMEOUT === "1") emitTimeoutRequest();
   if (process.env.T3_PI_CONFORMANCE_INVALID_UI_ID === "1") {
     emit({

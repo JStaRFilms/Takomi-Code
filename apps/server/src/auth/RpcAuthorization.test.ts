@@ -42,6 +42,9 @@ describe("RPC authorization scopes", () => {
   });
 
   it("requires permission to operate on a thread before uploading feedback", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerRespondPiSecretInput)).toBe(
+      AuthOrchestrationOperateScope,
+    );
     expect(requiredScopeForRpcMethod(WS_METHODS.providerUploadFeedback)).toBe(
       AuthOrchestrationOperateScope,
     );

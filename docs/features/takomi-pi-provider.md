@@ -85,7 +85,9 @@ Pi `extension_ui_request` messages are mapped as follows:
 | `confirm` | `request.opened` approval UI | `extension_ui_response.confirmed` |
 | `notify`  | `runtime.warning`            | none                              |
 
-This is why Takomi's question-asking flow appears in the existing T3 question UI. It was implemented deliberately.
+This also carries Takomi's `ask_user_question` RPC fallback. It presents questions one at a time through Pi's `select` and `input` dialogs.
+
+Takomi Vault secret input is the exception. When the vault extension requests an `input` whose title starts with `[takomi-vault-secret] `, the adapter publishes only a pending question marked `sensitive`. Web, desktop, and mobile collect its value in a masked field and call `provider.respondPiSecretInput` directly on the owning environment. The authenticated server checks the live Pi request and sends a one-use `extension_ui_response` to that process. It records a resolution with empty answers, never the value. Ordinary `thread.user-input.respond` commands cannot answer a sensitive question. Stopping or replacing the Pi process invalidates its pending request. The Pi host opts into this protocol through `T3_TAKOMI_VAULT_SECRET_UI`; other RPC hosts keep the vault's TUI-only secret entry. The environment host and its authorized connected clients are trusted with transport access; this is not end-to-end encryption from the server.
 
 Current fidelity limitations:
 
@@ -197,6 +199,7 @@ the next message continues with full CLI context.
   history hydration are supported into fresh threads
 - session catalog listing is version-gated to verified Pi releases (0.84.4, 0.85.1)
 - unknown extension UI methods are ignored
+- vault export/import and plaintext reveal are not supported by the private secret-entry response route
 - richer question metadata is reduced to T3's current canonical shape
 - Takomi runtime assets are not bundled into the desktop installer; global installation or a suite root is still required
 - the mobile client does not yet expose session discovery or continuation

@@ -52,6 +52,7 @@ import { PiJsonlDecoder, type PiJsonlFrame } from "./PiProtocolConformance.ts";
 import { expandPiSkillReferences, parsePiDiscoveredResources } from "./PiResources.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
+const VAULT_SECRET_TITLE_PREFIX = "[takomi-vault-secret] ";
 const PI_RESUME_VERSION = 1 as const;
 const REASONING_DETAIL_LIMIT = 16_000;
 const REASONING_EMIT_INTERVAL = 500;
@@ -169,6 +170,7 @@ interface PendingUiRequest {
   readonly method: PiUiMethod;
   readonly nativeRequestId: string;
   readonly generation: number;
+  readonly sensitive?: boolean;
 }
 
 interface PiTurnSnapshot {
@@ -183,6 +185,7 @@ interface PiSessionContext {
   readonly process: ChildProcessSpawner.ChildProcessHandle;
   readonly input: Queue.Queue<Uint8Array>;
   readonly pendingUi: Map<RuntimeRequestId, PendingUiRequest>;
+  readonly sensitiveUiIds: Set<string>;
   readonly settledUi: Set<RuntimeRequestId>;
   readonly pendingRpc: Map<string, Deferred.Deferred<PiRpcMessage>>;
   /** Skills accepted by this exact Pi process, for native `/skill:name` dispatch. */
@@ -1703,11 +1706,21 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         eventId: randomId.pipe(Effect.map(EventId.make)),
         createdAt: nowIso,
       });
+    // Pi may echo extension UI responses; neither the request nor that echo belongs in the native log.
     const logNativePiRecord = Effect.fn("logNativePiRecord")(function* (
       context: PiSessionContext,
       record: PiRpcMessage,
     ) {
-      if (!options.nativeEventLogger) return;
+      if (
+        !options.nativeEventLogger ||
+        (record.type === "extension_ui_request" &&
+          typeof record.title === "string" &&
+          record.title.startsWith(VAULT_SECRET_TITLE_PREFIX)) ||
+        (record.type === "extension_ui_response_received" &&
+          typeof record.id === "string" &&
+          context.sensitiveUiIds.has(record.id))
+      )
+        return;
       const observedAt = yield* nowIso;
       yield* options.nativeEventLogger
         .write(
@@ -2044,11 +2057,17 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         `pi-ui-${context.generation}-${uiMethod}-${encodeURIComponent(id)}`,
       );
       if (context.pendingUi.has(requestId) || context.settledUi.has(requestId)) return;
+      const sensitive =
+        uiMethod === "input" &&
+        typeof message.title === "string" &&
+        message.title.startsWith(VAULT_SECRET_TITLE_PREFIX);
       context.pendingUi.set(requestId, {
         method: uiMethod,
         nativeRequestId: id,
         generation: context.generation,
+        sensitive,
       });
+      if (sensitive) context.sensitiveUiIds.add(id);
       const encoded = jsonString(message);
       const title = validUiText(message.title, MAX_UI_TITLE_CODE_POINTS * 4, true);
       const timeoutMs =
@@ -2118,19 +2137,23 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         description: option as string,
       }));
       yield* emit({
-        ...(yield* eventBase(context, message)),
+        ...(yield* eventBase(context, sensitive ? undefined : message)),
         type: "user-input.requested",
         requestId,
         payload: {
           questions: [
             {
               id: requestId,
-              header: title,
-              question:
-                validUiText(message.placeholder, MAX_UI_PLACEHOLDER_BYTES) ??
-                validUiText(message.prefill, MAX_UI_EDITOR_PREFILL_BYTES) ??
-                "Provide a response to continue.",
-              options,
+              header: sensitive
+                ? title.slice(VAULT_SECRET_TITLE_PREFIX.length) || "Vault secret"
+                : title,
+              question: sensitive
+                ? "Enter the vault secret."
+                : (validUiText(message.placeholder, MAX_UI_PLACEHOLDER_BYTES) ??
+                  validUiText(message.prefill, MAX_UI_EDITOR_PREFILL_BYTES) ??
+                  "Provide a response to continue."),
+              options: sensitive ? [] : options,
+              ...(sensitive ? { sensitive: true } : {}),
             },
           ],
         },
@@ -2645,6 +2668,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       const environment: NodeJS.ProcessEnv = {
         ...options.environment,
         ...(settings.homePath ? { PI_CODING_AGENT_DIR: settings.homePath } : {}),
+        T3_TAKOMI_VAULT_SECRET_UI: "1",
       };
       const spawnCommand = yield* resolveSpawnCommand(settings.binaryPath, args, {
         env: environment,
@@ -2692,6 +2716,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         process,
         input: rpcInput,
         pendingUi: new Map(),
+        sensitiveUiIds: new Set(),
         settledUi: new Set(),
         pendingRpc: new Map(),
         skillNames: undefined,
@@ -3076,7 +3101,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         const context = yield* ensureContext(threadId);
         const runtimeRequestId = RuntimeRequestId.make(requestId);
         const pending = context.pendingUi.get(runtimeRequestId);
-        if (!pending || pending.method === "confirm") {
+        if (!pending || pending.method === "confirm" || pending.sensitive) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
             operation: "respondToUserInput",
@@ -3096,6 +3121,32 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         yield* settlePendingUi(context, runtimeRequestId, { value }, undefined, answers);
       });
 
+    const respondPiSecretInput: NonNullable<
+      ProviderAdapterShape<ProviderAdapterError>["respondPiSecretInput"]
+    > = Effect.fnUntraced(function* (threadId, requestId, value, cancelled) {
+      const context = yield* ensureContext(threadId);
+      const pending = context.pendingUi.get(RuntimeRequestId.make(requestId));
+      if (
+        !pending?.sensitive ||
+        pending.generation !== context.generation ||
+        cancelled === (value !== undefined) ||
+        (value !== undefined && utf8Bytes(value) > 16 * 1024)
+      ) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "respondPiSecretInput",
+          issue: "No valid pending Pi secret request.",
+        });
+      }
+      yield* settlePendingUi(
+        context,
+        RuntimeRequestId.make(requestId),
+        cancelled ? { cancelled: true } : { value: value ?? "" },
+        undefined,
+        undefined,
+      );
+    });
+
     const readThread = (
       threadId: ThreadId,
     ): Effect.Effect<ProviderThreadSnapshot, ProviderAdapterError> =>
@@ -3114,6 +3165,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       interruptTurn,
       respondToRequest,
       respondToUserInput,
+      respondPiSecretInput,
       stopSession: (threadId) =>
         ensureContext(threadId).pipe(Effect.flatMap((context) => stopContext(context, true))),
       listSessions: () => Effect.succeed([...sessions.values()].map((context) => context.session)),

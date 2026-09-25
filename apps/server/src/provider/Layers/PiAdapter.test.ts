@@ -1316,6 +1316,102 @@ describe("Pi adapter process-path JSONL decoding", () => {
     ),
   );
 
+  effectIt.live(
+    "routes vault secrets once without writing values to native records or runtime events",
+    () =>
+      runPiProcessScenario(
+        {
+          ...process.env,
+          T3_PI_CONFORMANCE_VAULT_SECRET: "1",
+          T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE: "1",
+        },
+        ({ adapter, events, nativeRecords, threadId, waitFor }) =>
+          Effect.gen(function* () {
+            yield* adapter.startSession(startInput(threadId));
+            yield* adapter.sendTurn({ threadId, input: "Vault secret", attachments: [] });
+            yield* waitFor(
+              (event) =>
+                event.type === "user-input.requested" &&
+                event.payload.questions[0]?.sensitive === true,
+            );
+            const request = events.find(
+              (event) =>
+                event.type === "user-input.requested" &&
+                event.payload.questions[0]?.sensitive === true,
+            );
+            if (!request?.requestId || !adapter.respondPiSecretInput)
+              throw new Error("Missing secret request");
+            const responseId = ApprovalRequestId.make(request.requestId);
+            const wrongThread = yield* Effect.exit(
+              adapter.respondPiSecretInput(
+                ThreadId.make("other-thread"),
+                responseId,
+                "private-secret-value",
+                false,
+              ),
+            );
+            expect(Exit.isFailure(wrongThread)).toBe(true);
+            const oversized = yield* Effect.exit(
+              adapter.respondPiSecretInput(threadId, responseId, "x".repeat(16 * 1024 + 1), false),
+            );
+            expect(Exit.isFailure(oversized)).toBe(true);
+            const rejected = yield* Effect.exit(
+              adapter.respondToUserInput(threadId, responseId, {
+                [request.requestId]: "ordinary-secret",
+              }),
+            );
+            expect(Exit.isFailure(rejected)).toBe(true);
+            yield* adapter.respondPiSecretInput(
+              threadId,
+              responseId,
+              "private-secret-value",
+              false,
+            );
+            const replay = yield* Effect.exit(
+              adapter.respondPiSecretInput(threadId, responseId, "private-secret-value", false),
+            );
+            expect(Exit.isFailure(replay)).toBe(true);
+            yield* waitFor(
+              (event) =>
+                event.type === "runtime.warning" &&
+                event.payload.message === "Synthetic UI response captured.",
+            );
+            expect(
+              events.filter(
+                (event) =>
+                  event.type === "user-input.resolved" && event.requestId === request.requestId,
+              ),
+            ).toHaveLength(1);
+            const encode = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+            const eventText = yield* encode(events).pipe(Effect.orDie);
+            expect(eventText).not.toContain("private-secret-value");
+            expect(yield* encode(nativeRecords).pipe(Effect.orDie)).not.toContain(
+              "private-secret-value",
+            );
+            expect(eventText).not.toContain("ordinary-secret");
+            expect(eventText).not.toContain("Do not persist this hint");
+            expect(yield* encode(nativeRecords).pipe(Effect.orDie)).not.toContain(
+              "Do not persist this hint",
+            );
+            yield* adapter.startSession(startInput(threadId));
+            yield* adapter.sendTurn({ threadId, input: "Next generation", attachments: [] });
+            yield* waitFor(
+              () =>
+                events.filter(
+                  (event) =>
+                    event.type === "user-input.requested" &&
+                    event.payload.questions[0]?.sensitive === true,
+                ).length >= 2,
+            );
+            const stale = yield* Effect.exit(
+              adapter.respondPiSecretInput(threadId, responseId, "private-secret-value", false),
+            );
+            expect(Exit.isFailure(stale)).toBe(true);
+            yield* adapter.stopSession(threadId);
+          }),
+      ),
+  );
+
   effectIt.live("scopes reused native UI IDs by generation", () =>
     runPiProcessScenario(
       { ...process.env, T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE: "1" },

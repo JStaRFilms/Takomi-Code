@@ -6,6 +6,10 @@ include a skill when the task needs more context.
 Messages can contain up to 120,000 characters. Longer drafts stay in the composer
 so you can shorten them or split them into several messages.
 
+## Add a Takomi vault credential
+
+In a Takomi thread, enter `/vault-add` and follow the prompts for a service, host, and secret. You can also enter `/vault-add github github.com` to skip the first two prompts. If the agent calls `vault_request`, the same secret prompt appears in the thread. This works on web, desktop, and mobile when the environment has the Takomi Vault extension installed. Enter the secret in the masked prompt, not in the message composer. The environment stores it in its vault; the secret is not added to thread history. Other vault commands exposed by the provider appear in the slash-command menu, but transfer and plaintext reveal are not part of this private input flow.
+
 Pasting 32 KiB or more of text adds that fragment as a text-file attachment so
 the agent can inspect it without filling the model context. A smaller paste also
 becomes an attachment when inserting it would exceed the message limit. On a

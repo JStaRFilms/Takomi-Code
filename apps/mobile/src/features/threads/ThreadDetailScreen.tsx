@@ -186,6 +186,10 @@ export interface ThreadDetailScreenProps {
     questionId: string,
     customAnswer: string,
   ) => void;
+  readonly onRespondPiSecret: (
+    requestId: ApprovalRequestId,
+    response: { value: string } | { cancelled: true },
+  ) => Promise<boolean>;
   readonly onSubmitUserInput: () => Promise<unknown>;
   readonly onDismissUserInput: () => Promise<unknown>;
   readonly showContent?: boolean;
@@ -1054,6 +1058,12 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     {props.activePendingUserInput ? (
                       <PendingUserInputCard
                         pendingUserInput={props.activePendingUserInput}
+                        secretScope={JSON.stringify([
+                          props.environmentId,
+                          props.selectedThread?.id,
+                        ])}
+                        unavailable={props.connectionStateLabel !== "connected"}
+                        onRespondPiSecret={props.onRespondPiSecret}
                         maxHeight={pendingUserInputMaxHeight}
                         collapsed={userInputCollapsed}
                         onToggleCollapsed={handleToggleUserInputCollapsed}

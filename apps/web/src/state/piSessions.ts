@@ -40,6 +40,12 @@ export const piSessionMessagePreview = createEnvironmentRpcQueryAtomFamily(conne
   idleTtlMs: 5 * 60_000,
 });
 
+/** Respond to a Pi credential prompt on its owning environment. */
+export const piSecretInputResponse = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "environment-data:pi-secret-input:respond",
+  tag: WS_METHODS.providerRespondPiSecretInput,
+});
+
 /**
  * Background update check for continued threads. Polls while mounted; the
  * banner mounts this only for Pi threads with imported history.

@@ -111,6 +111,14 @@ export interface ProviderAdapterShape<TError> {
     answers: ProviderUserInputAnswers,
   ) => Effect.Effect<void, TError>;
 
+  /** Available only on the live Pi adapter; never route this through canonical commands. */
+  readonly respondPiSecretInput?: (
+    threadId: ThreadId,
+    requestId: ApprovalRequestId,
+    value: string | undefined,
+    cancelled: boolean,
+  ) => Effect.Effect<void, TError>;
+
   /**
    * Stop one provider session.
    */

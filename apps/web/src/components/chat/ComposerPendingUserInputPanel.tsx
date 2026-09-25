@@ -9,6 +9,7 @@ import { CheckIcon } from "lucide-react";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { cn } from "~/lib/utils";
 import { ComposerBanner } from "./ComposerBanner";
+import { ComposerPiSecretInputCard } from "./ComposerPiSecretInputCard";
 
 interface PendingUserInputPanelProps {
   pendingUserInputs: PendingUserInput[];
@@ -18,6 +19,12 @@ interface PendingUserInputPanelProps {
   onToggleOption: (questionId: string, optionValue: string) => void;
   onAdvance: () => void;
   onDismiss: (requestId: ApprovalRequestId) => void;
+  environmentUnavailable: boolean;
+  onRespondPiSecret: (
+    requestId: ApprovalRequestId,
+    response: { value: string } | { cancelled: true },
+  ) => Promise<boolean>;
+  secretScope: string;
 }
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
@@ -28,10 +35,26 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   onToggleOption,
   onAdvance,
   onDismiss,
+  environmentUnavailable,
+  onRespondPiSecret,
+  secretScope,
 }: PendingUserInputPanelProps) {
   if (pendingUserInputs.length === 0) return null;
   const activePrompt = pendingUserInputs[0];
   if (!activePrompt) return null;
+  const secretQuestion = activePrompt.questions.find((question) => question.sensitive === true);
+  if (secretQuestion) {
+    return (
+      <ComposerPiSecretInputCard
+        key={JSON.stringify([secretScope, activePrompt.requestId, environmentUnavailable])}
+        requestId={activePrompt.requestId}
+        header={secretQuestion.header}
+        question={secretQuestion.question}
+        unavailable={environmentUnavailable}
+        onRespond={onRespondPiSecret}
+      />
+    );
+  }
 
   return (
     <ComposerPendingUserInputCard

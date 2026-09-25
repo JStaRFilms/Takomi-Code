@@ -59,6 +59,7 @@ import {
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   ProviderUploadFeedbackError,
+  ProviderPiSecretInputError,
   PiSessionCatalogError,
   ProviderSetupError,
   RelayClientInstallFailedError,
@@ -3078,6 +3079,19 @@ const makeWsRpcLayer = (
               ),
             ),
             { "rpc.aggregate": "provider" },
+          ),
+        // Bypass RPC tracing: this payload contains the secret until it reaches Pi stdin.
+        [WS_METHODS.providerRespondPiSecretInput]: (input) =>
+          authorizeEffect(
+            requiredScopeForRpcMethod(WS_METHODS.providerRespondPiSecretInput),
+            providerService.respondPiSecretInput(input).pipe(
+              Effect.mapError(
+                () =>
+                  new ProviderPiSecretInputError({
+                    message: "Pi secret response is unavailable or invalid.",
+                  }),
+              ),
+            ),
           ),
         [WS_METHODS.providerListPiSessions]: (input) =>
           observeRpcEffect(

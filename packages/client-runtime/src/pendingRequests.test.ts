@@ -27,6 +27,24 @@ function makeActivity(overrides: {
 }
 
 describe("pending approvals", () => {
+  it("preserves the sensitive marker on a pending Pi question", () => {
+    const request = makeActivity({
+      kind: "user-input.requested",
+      payload: {
+        requestId: "pi-ui-1-input-vault",
+        questions: [
+          {
+            id: "pi-ui-1-input-vault",
+            header: "API token",
+            question: "Enter the vault secret.",
+            options: [],
+            sensitive: true,
+          },
+        ],
+      },
+    });
+    expect(derivePendingRequests([request]).userInputs[0]?.questions[0]?.sensitive).toBe(true);
+  });
   it.each([{}, { requestType: "unknown" }])(
     "exposes legacy OpenCode approvals without a known request kind: %j",
     (legacyPayload) => {

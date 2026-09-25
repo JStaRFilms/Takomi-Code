@@ -33,6 +33,9 @@ function renderPanel(pendingUserInput: PendingUserInput = prompt) {
       onToggleOption={() => {}}
       onAdvance={() => {}}
       onDismiss={() => {}}
+      environmentUnavailable={false}
+      onRespondPiSecret={async () => true}
+      secretScope="environment:thread"
     />,
   );
 }
