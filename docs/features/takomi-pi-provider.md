@@ -93,7 +93,7 @@ Current fidelity limitations:
 
 - the adapter emits one T3 question per Pi UI request
 - option descriptions currently repeat the option label
-- rich previews are not carried through
+- preview text embedded in Pi dialog titles appears in the question body, without a side-by-side preview pane
 - multi-select metadata is not explicitly mapped
 - unsupported Pi extension UI methods are ignored
 

@@ -59,7 +59,9 @@ const REASONING_EMIT_INTERVAL = 500;
 const MAX_DYNAMIC_PAYLOAD_BYTES = 1024 * 1024;
 const MAX_DYNAMIC_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
 const MAX_UI_REQUEST_BYTES = 1024 * 1024;
-const MAX_UI_TITLE_CODE_POINTS = 256;
+const MAX_UI_TITLE_CODE_POINTS = 4096;
+const MAX_UI_TITLE_BYTES = 16 * 1024;
+const UI_HEADER_CODE_POINTS = 256;
 const MAX_UI_MESSAGE_BYTES = 16 * 1024;
 const MAX_UI_PLACEHOLDER_BYTES = 2 * 1024;
 const MAX_UI_EDITOR_PREFILL_BYTES = 512 * 1024;
@@ -2080,7 +2082,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       });
       if (sensitive) context.sensitiveUiIds.add(id);
       const encoded = jsonString(message);
-      const title = validUiText(message.title, MAX_UI_TITLE_CODE_POINTS * 4, true);
+      const title = validUiText(message.title, MAX_UI_TITLE_BYTES, true);
       const timeoutMs =
         typeof message.timeout === "number" &&
         Number.isFinite(message.timeout) &&
@@ -2147,6 +2149,12 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         label: option as string,
         description: option as string,
       }));
+      const longTitle = !sensitive && Array.from(title).length > UI_HEADER_CODE_POINTS;
+      const header = longTitle
+        ? Array.from(title.split("\n", 1)[0] || title)
+            .slice(0, UI_HEADER_CODE_POINTS)
+            .join("")
+        : title;
       yield* emit({
         ...(yield* eventBase(context, sensitive ? undefined : message)),
         type: "user-input.requested",
@@ -2157,12 +2165,14 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
               id: requestId,
               header: sensitive
                 ? title.slice(VAULT_SECRET_TITLE_PREFIX.length) || "Vault secret"
-                : title,
+                : header,
               question: sensitive
                 ? "Enter the vault secret."
-                : (validUiText(message.placeholder, MAX_UI_PLACEHOLDER_BYTES) ??
-                  validUiText(message.prefill, MAX_UI_EDITOR_PREFILL_BYTES) ??
-                  "Provide a response to continue."),
+                : longTitle
+                  ? title
+                  : (validUiText(message.placeholder, MAX_UI_PLACEHOLDER_BYTES) ??
+                    validUiText(message.prefill, MAX_UI_EDITOR_PREFILL_BYTES) ??
+                    "Provide a response to continue."),
               options: sensitive ? [] : options,
               ...(sensitive ? { sensitive: true } : {}),
             },

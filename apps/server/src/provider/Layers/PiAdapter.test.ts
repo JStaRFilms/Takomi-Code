@@ -1493,6 +1493,49 @@ describe("Pi adapter process-path JSONL decoding", () => {
     );
   }
 
+  effectIt.live("renders long Pi select and multi-select fallback titles as question bodies", () =>
+    runPiProcessScenario(
+      { ...process.env, T3_PI_CONFORMANCE_LONG_UI_TITLE: "1" },
+      ({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          yield* adapter.sendTurn({ threadId, input: "Long UI titles", attachments: [] });
+          yield* waitFor((event) => event.type === "turn.completed");
+          for (const [id, header, preview, repeats, method] of [
+            ["long-select", "Choose a deployment target", "Option preview text. ", 140, "select"],
+            [
+              "long-multi-select",
+              "Choose all applicable environments",
+              "Environment preview text. ",
+              130,
+              "input",
+            ],
+          ] as const) {
+            const request = events.find(
+              (event) =>
+                event.type === "user-input.requested" && event.requestId?.endsWith(`-${id}`),
+            );
+            expect(request?.type).toBe("user-input.requested");
+            if (request?.type !== "user-input.requested")
+              throw new Error(`Missing ${method} request`);
+            const question = request.payload.questions[0];
+            expect(question?.header).toBe(header);
+            expect(question?.question).toBe(`${header}\n${preview.repeat(repeats)}`);
+            expect(question?.options).toHaveLength(method === "select" ? 2 : 0);
+          }
+          const short = events.find(
+            (event) =>
+              event.type === "user-input.requested" && event.requestId?.endsWith("-select-1"),
+          );
+          if (short?.type !== "user-input.requested")
+            throw new Error("Missing short select request");
+          expect(short.payload.questions[0]?.header).toBe("Select");
+          expect(short.payload.questions[0]?.question).toBe("Provide a response to continue.");
+          yield* adapter.stopSession(threadId);
+        }),
+    ),
+  );
+
   effectIt.live("scopes reused native UI IDs by generation", () =>
     runPiProcessScenario(
       { ...process.env, T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE: "1" },

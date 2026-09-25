@@ -57,6 +57,22 @@ function emitFixtureEvents() {
     });
   }
   if (process.env.T3_PI_CONFORMANCE_UI_TIMEOUT === "1") emitTimeoutRequest();
+  if (process.env.T3_PI_CONFORMANCE_LONG_UI_TITLE === "1") {
+    emit({
+      type: "extension_ui_request",
+      id: "long-select",
+      method: "select",
+      title: `Choose a deployment target\n${"Option preview text. ".repeat(140)}`,
+      options: ["staging", "production"],
+    });
+    emit({
+      type: "extension_ui_request",
+      id: "long-multi-select",
+      method: "input",
+      title: `Choose all applicable environments\n${"Environment preview text. ".repeat(130)}`,
+      placeholder: "Enter comma-separated selections",
+    });
+  }
   if (process.env.T3_PI_CONFORMANCE_INVALID_UI_ID === "1") {
     emit({
       type: "extension_ui_request",
