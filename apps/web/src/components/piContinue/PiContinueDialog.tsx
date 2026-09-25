@@ -8,6 +8,7 @@ import type {
   PiSessionCatalogEntry,
   ProjectId,
   ProviderInstanceId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
@@ -108,12 +109,14 @@ function PiSessionRow({
   target,
   canFork,
   busy,
+  activeMode,
   onContinue,
 }: {
   readonly entry: PiSessionCatalogEntry;
   readonly target: PiContinueDialogTarget;
   readonly canFork: boolean;
   readonly busy: boolean;
+  readonly activeMode: "attach" | "fork" | null;
   readonly onContinue: (
     entry: PiSessionCatalogEntry,
     mode: "attach" | "fork",
@@ -161,7 +164,7 @@ function PiSessionRow({
           }
           onClick={() => onContinue(entry, "attach")}
         >
-          Continue
+          {activeMode === "attach" ? "Continuing…" : "Continue"}
         </Button>
         {canFork ? (
           <Button
@@ -175,7 +178,7 @@ function PiSessionRow({
             }
             onClick={() => onContinue(entry, "fork")}
           >
-            Fork
+            {activeMode === "fork" ? "Forking…" : "Fork"}
           </Button>
         ) : null}
       </div>
@@ -200,11 +203,12 @@ function PiContinueDialog({ target }: { readonly target: PiContinueDialogTarget 
   const navigate = useNavigate();
   const { entries, nextPageAvailable, error, isPending, refresh } = usePiContinueCatalog(target);
   const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
-  const deleteThread = useAtomCommand(threadEnvironment.delete, { reportFailure: false });
   const attachSession = useAtomCommand(piSessionAttach, { reportFailure: false });
   const forkSession = useAtomCommand(piSessionFork, { reportFailure: false });
-  const [busyHandle, setBusyHandle] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<{ handle: string; mode: "attach" | "fork" } | null>(null);
+  const [actionError, setActionError] = useState<{ message: string; threadId?: ThreadId } | null>(
+    null,
+  );
 
   const onContinue = useCallback(
     async (
@@ -213,11 +217,12 @@ function PiContinueDialog({ target }: { readonly target: PiContinueDialogTarget 
       maxRecords?: number,
       seedPrompt?: string,
     ) => {
-      if (busyHandle !== null) return;
-      setBusyHandle(entry.id);
+      if (busy !== null) return;
+      setBusy({ handle: entry.id, mode });
       setActionError(null);
       const threadId = newThreadId();
       const createdAt = new Date().toISOString();
+      let threadCreated = false;
       try {
         const created = await createThread({
           environmentId: target.environmentId,
@@ -237,9 +242,13 @@ function PiContinueDialog({ target }: { readonly target: PiContinueDialogTarget 
           },
         });
         if (created._tag === "Failure") {
-          if (isAtomCommandInterrupted(created)) return;
-          throw new Error("Could not create the thread for this session.");
+          throw new Error(
+            isAtomCommandInterrupted(created)
+              ? "Connection interrupted while creating the thread. Check your thread list before retrying."
+              : "Could not create the thread for this session.",
+          );
         }
+        threadCreated = true;
         const continueInput = {
           providerInstanceId: target.providerInstanceId,
           projectId: target.projectId,
@@ -257,13 +266,15 @@ function PiContinueDialog({ target }: { readonly target: PiContinueDialogTarget 
               })
             : await attachSession({ environmentId: target.environmentId, input: continueInput });
         if (continued._tag === "Failure") {
-          await deleteThread({ environmentId: target.environmentId, input: { threadId } });
-          if (isAtomCommandInterrupted(continued)) return;
           throw new Error(
-            describePiContinueError(
-              squashAtomCommandFailure(continued),
-              mode === "fork" ? "Could not fork this session." : "Could not continue this session.",
-            ),
+            isAtomCommandInterrupted(continued)
+              ? "Connection interrupted while continuing the session."
+              : describePiContinueError(
+                  squashAtomCommandFailure(continued),
+                  mode === "fork"
+                    ? "Could not fork this session."
+                    : "Could not continue this session.",
+                ),
           );
         }
         closePiContinueDialog();
@@ -293,14 +304,18 @@ function PiContinueDialog({ target }: { readonly target: PiContinueDialogTarget 
           }),
         );
       } catch (failure) {
-        setActionError(describePiContinueError(failure, "Could not continue this session."));
+        setActionError({
+          message: describePiContinueError(failure, "Could not continue this session."),
+          ...(threadCreated ? { threadId } : {}),
+        });
       } finally {
-        setBusyHandle(null);
+        setBusy(null);
       }
     },
-    [attachSession, busyHandle, createThread, deleteThread, forkSession, navigate, target],
+    [attachSession, busy, createThread, forkSession, navigate, target],
   );
 
+  const failedThreadId = actionError?.threadId;
   return (
     <Dialog
       open
@@ -321,6 +336,12 @@ function PiContinueDialog({ target }: { readonly target: PiContinueDialogTarget 
           <div className="flex flex-col gap-2">
             {isPending ? (
               <div className="text-sm text-muted-foreground">Loading sessions…</div>
+            ) : null}
+            {busy !== null ? (
+              <div role="status" className="text-sm text-muted-foreground">
+                {busy.mode === "fork" ? "Forking" : "Continuing"} session and loading earlier
+                messages. This may take a while.
+              </div>
             ) : null}
             {error !== null ? (
               <div className="flex items-center justify-between gap-2 rounded-lg border border-destructive/40 px-3 py-2 text-sm">
@@ -344,7 +365,8 @@ function PiContinueDialog({ target }: { readonly target: PiContinueDialogTarget 
                     entry={entry}
                     target={target}
                     canFork={target.canFork}
-                    busy={busyHandle !== null}
+                    busy={busy !== null}
+                    activeMode={busy?.handle === entry.id ? busy.mode : null}
                     onContinue={onContinue}
                   />
                 ))}
@@ -356,8 +378,34 @@ function PiContinueDialog({ target }: { readonly target: PiContinueDialogTarget 
               </div>
             ) : null}
             {actionError !== null ? (
-              <div className="rounded-lg border border-destructive/40 px-3 py-2 text-sm">
-                {actionError}
+              <div
+                className="rounded-lg border border-destructive/40 px-3 py-2 text-sm"
+                role="alert"
+              >
+                <div>{actionError.message}</div>
+                {failedThreadId !== undefined ? (
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <span>
+                      The thread was kept. Open it to check the result before trying again.
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        closePiContinueDialog();
+                        void navigate({
+                          to: "/$environmentId/$threadId",
+                          params: {
+                            environmentId: target.environmentId,
+                            threadId: failedThreadId,
+                          },
+                        });
+                      }}
+                    >
+                      Open thread
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
