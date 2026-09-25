@@ -748,6 +748,54 @@ export const reconcileProviderSessions = Effect.gen(function* () {
 
 const decodeWorktreeSetupSnapshot = Schema.decodeUnknownOption(WorktreeSetupSnapshot);
 
+/** Pi UI callbacks cannot survive this process exiting. */
+export const reconcilePiUserInputs = Effect.gen(function* () {
+  const crypto = yield* Crypto.Crypto;
+  const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+  const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const pending = yield* query.listPendingPiUserInputs();
+
+  for (const { threadId, requestId } of pending) {
+    yield* Effect.gen(function* () {
+      const activity = yield* query.getUserInputActivity({ threadId, requestId });
+      if (Option.isNone(activity) || activity.value.kind !== "user-input.requested") return;
+
+      const interruptedAt = DateTime.formatIso(yield* DateTime.now);
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make(yield* crypto.randomUUIDv4),
+        threadId,
+        activity: {
+          id: EventId.make(yield* crypto.randomUUIDv4),
+          tone: "info",
+          kind: "user-input.resolved",
+          summary: "Input request cancelled by server restart",
+          payload: { requestId, answers: {} },
+          turnId: activity.value.turnId,
+          createdAt: interruptedAt,
+        },
+        createdAt: interruptedAt,
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.failCause(cause)
+          : Effect.logWarning("failed to cancel Pi input after restart", {
+              threadId,
+              requestId,
+              cause,
+            }),
+      ),
+    );
+  }
+}).pipe(
+  Effect.catchCause((cause) =>
+    Cause.hasInterrupts(cause)
+      ? Effect.failCause(cause)
+      : Effect.logWarning("Pi input startup reconciliation failed", { cause }),
+  ),
+);
+
 /**
  * A worktree bootstrap records its setup snapshot on the thread while it runs
  * and settles it when it finishes. The bootstrap itself lives only in memory,
@@ -969,6 +1017,7 @@ export const make = (options?: StartupOptions) =>
         }),
       );
 
+      yield* runStartupPhase("pi-inputs.reconcile", reconcilePiUserInputs);
       yield* runStartupPhase("provider-sessions.reconcile", reconcileProviderSessions);
       yield* runStartupPhase("worktree-setups.reconcile", reconcileWorktreeSetups);
 

@@ -1,5 +1,6 @@
 import {
   type AgentSessionImportSource,
+  ApprovalRequestId,
   ChatAttachment,
   ComposerContextId,
   CheckpointRef,
@@ -3545,6 +3546,46 @@ projectionSnapshotLayer("ProjectionSnapshotQuery activities by kind", (it) => {
         [["setup-live", "worktree-setup", { phase: "running" }]],
       );
       assert.deepEqual(yield* query.listActivitiesByKind("nope"), []);
+    }),
+  );
+
+  it.effect("finds Pi questions only in active threads with pending input", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const timestamp = "2026-03-02T00:00:00.000Z";
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES ('project-pi-input', 'Project', '/tmp/project-pi-input', '[]', ${timestamp}, ${timestamp})
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          pending_user_input_count, created_at, updated_at
+        ) VALUES
+          ('thread-pending', 'project-pi-input', 'Pending', '{"instanceId":"pi","model":"gpt-5"}',
+            'full-access', 'default', 1, ${timestamp}, ${timestamp}),
+          ('thread-clear', 'project-pi-input', 'Clear', '{"instanceId":"pi","model":"gpt-5"}',
+            'full-access', 'default', 0, ${timestamp}, ${timestamp})
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        ) VALUES
+          ('pi-pending', 'thread-pending', NULL, 'info', 'user-input.requested', 'Question',
+            '{"requestId":"pi-ui-1-input-old"}', ${timestamp}),
+          ('other-pending', 'thread-pending', NULL, 'info', 'user-input.requested', 'Question',
+            '{"requestId":"other-input"}', ${timestamp}),
+          ('pi-clear', 'thread-clear', NULL, 'info', 'user-input.requested', 'Question',
+            '{"requestId":"pi-ui-1-input-closed"}', ${timestamp})
+      `;
+      assert.deepEqual(yield* query.listPendingPiUserInputs(), [
+        {
+          threadId: ThreadId.make("thread-pending"),
+          requestId: ApprovalRequestId.make("pi-ui-1-input-old"),
+        },
+      ]);
     }),
   );
 });

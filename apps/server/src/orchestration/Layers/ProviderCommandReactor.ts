@@ -157,7 +157,8 @@ function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderService
   return (
     message.includes("unknown pending approval request") ||
     message.includes("unknown pending permission request") ||
-    message.includes("unknown pending codex approval request")
+    message.includes("unknown pending codex approval request") ||
+    message.includes("unknown pi confirmation request")
   );
 }
 
@@ -175,7 +176,8 @@ function isUnknownPendingUserInputRequestError(cause: Cause.Cause<ProviderServic
   return (
     message.includes("unknown pending user-input request") ||
     message.includes("unknown pending user input request") ||
-    message.includes("unknown pending codex user input request")
+    message.includes("unknown pending codex user input request") ||
+    message.includes("unknown pi input request")
   );
 }
 
@@ -1619,7 +1621,7 @@ const make = Effect.gen(function* () {
         threadId: event.payload.threadId,
         kind: "provider.approval.respond.failed",
         summary: "Provider approval response failed",
-        detail: "No active provider session is bound to this thread.",
+        detail: stalePendingRequestDetail("approval", event.payload.requestId),
         turnId: null,
         createdAt: event.payload.createdAt,
         requestId: event.payload.requestId,
@@ -1663,7 +1665,7 @@ const make = Effect.gen(function* () {
           threadId: event.payload.threadId,
           kind: "provider.user-input.respond.failed",
           summary: "Provider user input response failed",
-          detail: "No active provider session is bound to this thread.",
+          detail: stalePendingRequestDetail("user-input", event.payload.requestId),
           turnId: null,
           createdAt: event.payload.createdAt,
           requestId: event.payload.requestId,

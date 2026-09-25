@@ -1489,6 +1489,33 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
+  const listPendingPiUserInputRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({ threadId: ThreadId, requestId: ApprovalRequestId }),
+    execute: () => sql`
+      SELECT DISTINCT
+        a.thread_id AS "threadId",
+        json_extract(a.payload_json, '$.requestId') AS "requestId"
+      FROM projection_thread_activities a
+      JOIN projection_threads t ON t.thread_id = a.thread_id
+      WHERE a.kind = 'user-input.requested'
+        AND t.pending_user_input_count > 0
+        AND t.deleted_at IS NULL
+        AND t.archived_at IS NULL
+        AND substr(json_extract(a.payload_json, '$.requestId'), 1, 6) = 'pi-ui-'
+    `,
+  });
+
+  const listPendingPiUserInputs: ProjectionSnapshotQueryShape["listPendingPiUserInputs"] = () =>
+    listPendingPiUserInputRows().pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listPendingPiUserInputs:query",
+          "ProjectionSnapshotQuery.listPendingPiUserInputs:decodeRow",
+        ),
+      ),
+    );
+
   const listActivityRowsByKind = SqlSchema.findAll({
     Request: Schema.Struct({ kind: Schema.String }),
     Result: ProjectionThreadActivityDbRowSchema,
@@ -3765,6 +3792,7 @@ pending_approval_requests AS (
   return {
     getCommandReadModel,
     getUserInputActivity,
+    listPendingPiUserInputs,
     listActivitiesByKind,
     getSnapshot,
     getShellSnapshot,

@@ -42,6 +42,7 @@ import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@t3tools/contracts";
 import {
   ProviderAdapterRequestError,
+  ProviderAdapterValidationError,
   ProviderWorkspaceMissingError,
   type ProviderServiceError,
 } from "../../provider/Errors.ts";
@@ -4142,36 +4143,47 @@ describe("ProviderCommandReactor", () => {
     expect(resolvedActivity).toBeUndefined();
   });
 
-  it("surfaces non-resumable provider user-input callbacks as stale failures", async () => {
+  it.each([
+    {
+      name: "Codex callback loss",
+      error: new ProviderAdapterRequestError({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        method: "item/tool/respondToUserInput",
+        detail: "Unknown pending Codex user input request: user-input-request-1",
+      }),
+    },
+    {
+      name: "Pi callback loss",
+      error: new ProviderAdapterValidationError({
+        provider: "pi",
+        operation: "respondToUserInput",
+        issue: "Unknown Pi input request 'user-input-request-1'.",
+      }),
+    },
+    { name: "session loss", error: null },
+  ])("clears a non-resumable user-input callback after $name", async ({ error }) => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
-    harness.respondToUserInput.mockImplementation(() =>
-      Effect.fail(
-        new ProviderAdapterRequestError({
-          provider: ProviderDriverKind.make("claudeAgent"),
-          method: "item/tool/respondToUserInput",
-          detail: "Unknown pending Codex user input request: user-input-request-1",
-        }),
-      ),
-    );
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.make("cmd-session-set-for-user-input-error"),
-        threadId: ThreadId.make("thread-1"),
-        session: {
+    if (error) {
+      harness.respondToUserInput.mockImplementation(() => Effect.fail(error));
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-set-for-user-input-error"),
           threadId: ThreadId.make("thread-1"),
-          status: "running",
-          providerName: "claudeAgent",
-          runtimeMode: "approval-required",
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: now,
-        },
-        createdAt: now,
-      }),
-    );
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "claudeAgent",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        }),
+      );
+    }
 
     await Effect.runPromise(
       harness.engine.dispatch({

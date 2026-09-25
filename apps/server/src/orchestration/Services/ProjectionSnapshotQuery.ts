@@ -83,6 +83,12 @@ export interface ProjectionSnapshotQueryShape {
     readonly requestId: ApprovalRequestId;
   }) => Effect.Effect<Option.Option<OrchestrationThreadActivity>, ProjectionRepositoryError>;
 
+  /** Pi UI callbacks are process-local and cannot be answered after a server restart. */
+  readonly listPendingPiUserInputs: () => Effect.Effect<
+    ReadonlyArray<{ readonly threadId: ThreadId; readonly requestId: ApprovalRequestId }>,
+    ProjectionRepositoryError
+  >;
+
   /**
    * Read every activity of one kind across active (not deleted, not archived)
    * threads, without hydrating the threads. Used at startup to find state a
