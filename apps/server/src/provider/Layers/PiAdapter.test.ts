@@ -1412,6 +1412,87 @@ describe("Pi adapter process-path JSONL decoding", () => {
       ),
   );
 
+  effectIt.live("does not settle unrelated extension commands on prompt acceptance", () =>
+    runPiProcessScenario(
+      { ...process.env, T3_PI_CONFORMANCE_VAULT_COMMAND: "1" },
+      ({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          const turn = yield* adapter.sendTurn({
+            threadId,
+            input: "/fixture-command",
+            attachments: [],
+          });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Extension prompt accepted.",
+          );
+          expect(
+            events.some((event) => event.type === "turn.completed" && event.turnId === turn.turnId),
+          ).toBe(false);
+          yield* adapter.stopSession(threadId);
+        }),
+    ),
+  );
+
+  for (const handlerFails of [false, true]) {
+    effectIt.live(
+      `settles a discovered vault command after its UI prompt ${handlerFails ? "fails" : "succeeds"}`,
+      () =>
+        runPiProcessScenario(
+          {
+            ...process.env,
+            T3_PI_CONFORMANCE_VAULT_COMMAND: "1",
+            ...(handlerFails ? { T3_PI_CONFORMANCE_VAULT_ERROR: "1" } : {}),
+            T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE: "1",
+          },
+          ({ adapter, events, nativeRecords, threadId, waitFor }) =>
+            Effect.gen(function* () {
+              yield* adapter.startSession(startInput(threadId));
+              const turn = yield* adapter.sendTurn({
+                threadId,
+                input: "/vault-add API token",
+                attachments: [],
+              });
+              yield* waitFor((event) => event.type === "user-input.requested");
+              const request = events.find((event) => event.type === "user-input.requested");
+              if (!request?.requestId || !adapter.respondPiSecretInput)
+                throw new Error("Missing vault input request");
+              yield* adapter.respondPiSecretInput(
+                threadId,
+                ApprovalRequestId.make(request.requestId),
+                "private-secret-value",
+                false,
+              );
+              yield* waitFor(
+                (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+              );
+              yield* waitFor(
+                (event) =>
+                  event.type === "runtime.warning" &&
+                  event.payload.message === "Synthetic UI response captured.",
+              );
+              const terminal = events.filter(
+                (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+              );
+              expect(terminal).toHaveLength(1);
+              expect(terminal[0]?.type === "turn.completed" && terminal[0].payload.state).toBe(
+                handlerFails ? "failed" : "completed",
+              );
+              const encode = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+              expect(yield* encode(events).pipe(Effect.orDie)).not.toContain(
+                "private-secret-value",
+              );
+              expect(yield* encode(nativeRecords).pipe(Effect.orDie)).not.toContain(
+                "private-secret-value",
+              );
+              yield* adapter.stopSession(threadId);
+            }),
+        ),
+    );
+  }
+
   effectIt.live("scopes reused native UI IDs by generation", () =>
     runPiProcessScenario(
       { ...process.env, T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE: "1" },

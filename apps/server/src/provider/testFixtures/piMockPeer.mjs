@@ -22,6 +22,7 @@ const transcriptPath = process.env.T3_PI_CONFORMANCE_TRANSCRIPT;
 let input = "";
 let stateRequest;
 let commandsRequest;
+let vaultPromptId;
 
 function emit(record, crlf = false) {
   process.stdout.write(`${JSON.stringify(record)}${crlf ? "\r\n" : "\n"}`);
@@ -169,11 +170,42 @@ function handle(record) {
           id: record.id,
           command: "get_commands",
           success: true,
-          data: { commands: fixture.slashCommands },
+          data: {
+            commands:
+              process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1"
+                ? [...fixture.slashCommands, { name: "vault-add", source: "extension" }]
+                : fixture.slashCommands,
+          },
         });
       }
       break;
     case "prompt":
+      if (
+        process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" &&
+        record.message === "/fixture-command"
+      ) {
+        emit({ type: "response", id: record.id, command: "prompt", success: true });
+        emit({
+          type: "extension_ui_request",
+          id: "extension-notify",
+          method: "notify",
+          message: "Extension prompt accepted.",
+        });
+        break;
+      }
+      if (
+        process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" &&
+        record.message.startsWith("/vault-add")
+      ) {
+        vaultPromptId = record.id;
+        emit({
+          type: "extension_ui_request",
+          id: "vault-secret",
+          method: "input",
+          title: "[takomi-vault-secret] API token",
+        });
+        break;
+      }
       emit({ type: "response", id: record.id, command: "prompt", success: true });
       if (process.env.T3_PI_CONFORMANCE_UNTERMINATED === "1") {
         process.stdout.end(
@@ -207,6 +239,20 @@ function handle(record) {
       });
       break;
     case "extension_ui_response":
+      if (vaultPromptId && record.id === "vault-secret") {
+        if (process.env.T3_PI_CONFORMANCE_VAULT_ERROR === "1") {
+          emit({
+            type: "extension_error",
+            extensionPath: "command:vault-add",
+            event: "command",
+            error: "Vault write failed.",
+          });
+        }
+        emit({ type: "response", id: vaultPromptId, command: "prompt", success: true });
+        emit({ type: "response", id: vaultPromptId, command: "prompt", success: true });
+        if (process.env.T3_PI_CONFORMANCE_VAULT_ERROR === "1") emit({ type: "agent_settled" });
+        vaultPromptId = undefined;
+      }
       if (process.env.T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE === "1") {
         emit({
           type: "extension_ui_response_received",

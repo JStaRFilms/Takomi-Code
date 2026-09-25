@@ -190,6 +190,16 @@ interface PiSessionContext {
   readonly pendingRpc: Map<string, Deferred.Deferred<PiRpcMessage>>;
   /** Skills accepted by this exact Pi process, for native `/skill:name` dispatch. */
   skillNames: ReadonlySet<string> | undefined;
+  vaultCommandNames: ReadonlySet<string>;
+  pendingVaultPrompt:
+    | {
+        readonly id: string;
+        readonly generation: number;
+        readonly turnId: TurnId;
+        readonly commandName: string;
+        error?: string;
+      }
+    | undefined;
   readonly toolActivityByCallId: Map<
     string,
     ReadonlyArray<NonNullable<ToolPresentationEnvelope["activity"]>[number]>
@@ -1976,6 +1986,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         },
       });
       context.activeTurnId = undefined;
+      if (context.pendingVaultPrompt?.turnId === turnId) context.pendingVaultPrompt = undefined;
       context.reasoningBlocks.clear();
       context.turnFailure = undefined;
       const nextSession = {
@@ -2175,6 +2186,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         const responseId = readString(message.id);
         const pendingResponse = responseId ? context.pendingRpc.get(responseId) : undefined;
         const command = readString(message.command);
+        const pendingVaultPrompt = context.pendingVaultPrompt;
         if (command === "get_state" && message.success === true && isRecord(message.data)) {
           const sessionFile = readString(message.data.sessionFile);
           const sessionId = readString(message.data.sessionId);
@@ -2200,6 +2212,17 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
               payload: { providerThreadId: sessionId },
             });
           }
+        } else if (
+          command === "prompt" &&
+          message.success === true &&
+          pendingVaultPrompt &&
+          responseId === pendingVaultPrompt.id &&
+          pendingVaultPrompt.generation === context.generation &&
+          pendingVaultPrompt.turnId === context.activeTurnId
+        ) {
+          const failure = pendingVaultPrompt.error;
+          context.pendingVaultPrompt = undefined;
+          yield* completeTurn(context, failure ? "failed" : "completed", failure);
         } else if (command === "prompt" && message.success === false) {
           const error = readString(message.error) ?? "Pi rejected the prompt.";
           context.turnFailure = error;
@@ -2497,6 +2520,14 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         }
         case "extension_error": {
           const error = readString(message.error) ?? "A Pi extension failed.";
+          const pending = context.pendingVaultPrompt;
+          if (
+            pending?.generation === context.generation &&
+            pending.turnId === context.activeTurnId &&
+            message.event === "command" &&
+            message.extensionPath === `command:${pending.commandName}`
+          )
+            pending.error = error;
           yield* emit({
             ...(yield* eventBase(context, message)),
             type: "runtime.error",
@@ -2720,6 +2751,8 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         settledUi: new Set(),
         pendingRpc: new Map(),
         skillNames: undefined,
+        vaultCommandNames: new Set(),
+        pendingVaultPrompt: undefined,
         toolActivityByCallId: new Map(),
         truncatedToolActivityCallIds: new Set(),
         takomiSubagentTaskTracker: createTakomiSubagentTaskTracker(),
@@ -2886,6 +2919,19 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         context.skillNames = new Set(
           parsePiDiscoveredResources(commandsResponse.data).skills.map((skill) => skill.name),
         );
+        const commands = commandsResponse.data.commands;
+        if (Array.isArray(commands)) {
+          context.vaultCommandNames = new Set(
+            commands.flatMap((command) =>
+              isRecord(command) &&
+              command.source === "extension" &&
+              typeof command.name === "string" &&
+              command.name.startsWith("vault-")
+                ? [command.name]
+                : [],
+            ),
+          );
+        }
       }
       return context.session;
     });
@@ -3016,13 +3062,29 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         context.skillNames === undefined || input.input === undefined
           ? (input.input ?? "")
           : expandPiSkillReferences(input.input, context.skillNames);
+      const promptId = `prompt-${yield* randomId}`;
+      const commandName = message.startsWith("/") ? message.slice(1).split(" ", 1)[0] : undefined;
+      if (!existingTurn && commandName && context.vaultCommandNames.has(commandName)) {
+        context.pendingVaultPrompt = {
+          id: promptId,
+          generation: context.generation,
+          turnId,
+          commandName,
+        };
+      }
       yield* sendRpc(context, {
-        id: `prompt-${yield* randomId}`,
+        id: promptId,
         type: "prompt",
         message,
         ...(images.length > 0 ? { images } : {}),
         ...(existingTurn ? { streamingBehavior: "steer" } : {}),
-      });
+      }).pipe(
+        Effect.onError(() =>
+          Effect.sync(() => {
+            if (context.pendingVaultPrompt?.id === promptId) context.pendingVaultPrompt = undefined;
+          }),
+        ),
+      );
       return {
         threadId: input.threadId,
         turnId,

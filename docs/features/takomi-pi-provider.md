@@ -136,7 +136,7 @@ Suite mode also discovers globally installed Pi companion packages from Pi setti
 
 ## Commands, prompts, and skills
 
-The web and mobile command menus use Pi's `get_commands` response for the selected project. Extension commands, prompt templates, and skills are shown in Pi's first-wins order. Pi terminal-only built-ins are not shown because they cannot be invoked through RPC.
+The web and mobile command menus use Pi's `get_commands` response for the selected project. Extension commands, prompt templates, and skills are shown in Pi's first-wins order. Pi terminal-only built-ins are not shown because they cannot be invoked through RPC. Pi handles registered vault commands without starting an agent run, so the adapter settles those command-only turns when Pi acknowledges their `prompt` RPC. Other extension commands may start an agent run and still settle on its lifecycle event.
 
 Project resources follow Pi's project-trust decision. Explicit `--approve` and `--no-approve` launch arguments take precedence. In non-interactive RPC mode, the default `ask` behavior cannot display Pi's own trust prompt, so protected resources may remain unavailable until Pi has a saved decision or another supported trust policy applies. Extensions can also decide trust; when that effective result is not observable, Takomi Code reports the trust information as partial rather than claiming an approval or rejection.
 
