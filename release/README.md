@@ -61,7 +61,7 @@ builds manually.
 4. Review public configuration in the repository-root `.env` or `.env.local` when the build needs
    T3 Connect, Clerk, or relay configuration. Never commit secrets.
 
-The current source versions are desktop `0.0.42` and mobile `1.2.1`.
+The current source versions are desktop `0.0.43` and mobile `1.2.3`.
 
 ## Build both applications
 
