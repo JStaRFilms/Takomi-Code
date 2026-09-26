@@ -130,6 +130,26 @@ export class ProviderPiSecretInputError extends Schema.TaggedError<ProviderPiSec
   { message: Schema.String },
 ) {}
 
+export const PI_VAULT_ARCHIVE_MAX_BYTES = 12 * 1024 * 1024;
+
+export const ProviderTakePiVaultExportInput = Schema.Struct({
+  threadId: ThreadId,
+  transferId: TrimmedNonEmptyString,
+});
+export type ProviderTakePiVaultExportInput = typeof ProviderTakePiVaultExportInput.Type;
+
+export const ProviderTakePiVaultExportResult = Schema.Struct({
+  filename: TrimmedNonEmptyString,
+  archive: TrimmedNonEmptyString,
+  key: TrimmedNonEmptyString,
+});
+export type ProviderTakePiVaultExportResult = typeof ProviderTakePiVaultExportResult.Type;
+
+export class ProviderPiVaultExportError extends Schema.TaggedError<ProviderPiVaultExportError>()(
+  "ProviderPiVaultExportError",
+  { message: Schema.String },
+) {}
+
 export const ProviderUploadFeedbackInput = Schema.Struct({
   threadId: ThreadId,
   reason: Schema.optional(TrimmedNonEmptyString),

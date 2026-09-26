@@ -1,5 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - The integration tests launch only the synthetic Pi peer.
+// @effect-diagnostics preferSchemaOverJson:off - Assert that synthetic runtime event serialization contains no private values.
 import * as NodePath from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -1186,6 +1189,53 @@ describe("Pi adapter process-path JSONL decoding", () => {
     runtimeMode: "full-access" as const,
   });
 
+  effectIt.live(
+    "matches discovery's trust gate when starting in an inferred Takomi checkout",
+    () => {
+      const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pi-inferred-suite-"));
+      const argsPath = NodePath.join(cwd, "launch-args.json");
+      const agentDir = NodePath.join(cwd, "agent");
+      NodeFS.mkdirSync(agentDir);
+      NodeFS.writeFileSync(NodePath.join(cwd, "package.json"), '{"name":"takomi"}');
+      NodeFS.writeFileSync(
+        NodePath.join(agentDir, "settings.json"),
+        '{"defaultProjectTrust":"ask"}',
+      );
+      NodeFS.mkdirSync(NodePath.join(cwd, ".pi", "prompts"), { recursive: true });
+      for (const name of [
+        "takomi-runtime",
+        "takomi-subagents",
+        "oauth-router",
+        "takomi-context-manager",
+        "notify-sound",
+        "antigravity-provider",
+      ]) {
+        const extension = NodePath.join(cwd, ".pi", "extensions", name);
+        NodeFS.mkdirSync(extension, { recursive: true });
+        NodeFS.writeFileSync(NodePath.join(extension, "index.ts"), "");
+      }
+      return runPiProcessScenario(
+        {
+          ...process.env,
+          HOME: cwd,
+          USERPROFILE: cwd,
+          PI_CODING_AGENT_DIR: agentDir,
+          T3_PI_CONFORMANCE_LAUNCH_ARGS_PATH: argsPath,
+        },
+        ({ adapter, threadId }) =>
+          Effect.gen(function* () {
+            yield* adapter.startSession({ ...startInput(threadId), cwd });
+            const args = NodeFS.readFileSync(argsPath, "utf8");
+            expect(args).toContain('"--no-extensions"');
+            expect(args).not.toContain('"--extension"');
+            yield* adapter.stopSession(threadId);
+          }),
+      ).pipe(
+        Effect.ensuring(Effect.sync(() => NodeFS.rmSync(cwd, { recursive: true, force: true }))),
+      );
+    },
+  );
+
   effectIt.live("preserves fragmented UTF-8 and surfaces malformed and oversized records", () =>
     runPiProcessScenario(
       {
@@ -1431,6 +1481,148 @@ describe("Pi adapter process-path JSONL decoding", () => {
           expect(
             events.some((event) => event.type === "turn.completed" && event.turnId === turn.turnId),
           ).toBe(false);
+          yield* adapter.stopSession(threadId);
+        }),
+    ),
+  );
+
+  effectIt.live("marks vault command notifications and labels deletion choices", () =>
+    runPiProcessScenario(
+      { ...process.env, T3_PI_CONFORMANCE_VAULT_COMMAND: "1" },
+      ({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          const vaultTurn = yield* adapter.sendTurn({
+            threadId,
+            input: "/vault-list",
+            attachments: [],
+          });
+          yield* waitFor(
+            (event) => event.type === "turn.completed" && event.turnId === vaultTurn.turnId,
+          );
+          expect(
+            events.find(
+              (event) =>
+                event.type === "runtime.warning" && event.payload.message.startsWith("Backend:"),
+            ),
+          ).toMatchObject({ payload: { category: "vault-command" } });
+          const deleteTurn = yield* adapter.sendTurn({
+            threadId,
+            input: "/vault-delete",
+            attachments: [],
+          });
+          yield* waitFor(
+            (event) => event.type === "request.opened" && event.turnId === deleteTurn.turnId,
+          );
+          const request = events.find(
+            (event) => event.type === "request.opened" && event.turnId === deleteTurn.turnId,
+          );
+          expect(request?.type === "request.opened" && request.payload.options).toEqual([
+            { decision: "accept", label: "Delete credential" },
+            { decision: "decline", label: "Cancel" },
+          ]);
+          yield* adapter.stopSession(threadId);
+        }),
+    ),
+  );
+
+  effectIt.live("delivers a vault export key and archive once without persisting the key", () => {
+    const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pi-vault-export-"));
+    const archivePath = NodePath.join(directory, "vault.transfer");
+    NodeFS.writeFileSync(archivePath, "synthetic encrypted archive");
+    return runPiProcessScenario(
+      {
+        ...process.env,
+        T3_PI_CONFORMANCE_VAULT_COMMAND: "1",
+        T3_PI_CONFORMANCE_EXPORT_ARCHIVE_PATH: archivePath,
+      },
+      ({ adapter, events, nativeRecords, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          if (!adapter.takePiVaultExport) throw new Error("Pi export method unavailable");
+          yield* adapter.startSession(startInput(threadId));
+          yield* adapter.sendTurn({ threadId, input: "/vault-export", attachments: [] });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.category === "vault-export-ready",
+          );
+          const ready = events.find(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.category === "vault-export-ready",
+          );
+          if (ready?.type !== "runtime.warning" || !ready.payload.transferId)
+            throw new Error("Missing vault export event");
+          const delivered = yield* adapter.takePiVaultExport(threadId, ready.payload.transferId);
+          expect(delivered).toEqual({
+            filename: "vault.transfer",
+            archive: Buffer.from("synthetic encrypted archive").toString("base64"),
+            key: "a".repeat(64),
+          });
+          const second = yield* Effect.exit(
+            adapter.takePiVaultExport(threadId, ready.payload.transferId),
+          );
+          expect(Exit.isFailure(second)).toBe(true);
+          expect(JSON.stringify(events)).not.toContain("a".repeat(64));
+          expect(JSON.stringify(nativeRecords)).not.toContain("a".repeat(64));
+          yield* adapter.stopSession(threadId);
+        }),
+    ).pipe(
+      Effect.ensuring(
+        Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+      ),
+    );
+  });
+
+  effectIt.live("imports an archive through private file and key prompts", () =>
+    runPiProcessScenario(
+      {
+        ...process.env,
+        T3_PI_CONFORMANCE_VAULT_COMMAND: "1",
+        T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE: "1",
+      },
+      ({ adapter, events, nativeRecords, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          if (!adapter.respondPiSecretInput) throw new Error("Pi secret response unavailable");
+          yield* adapter.startSession(startInput(threadId));
+          yield* adapter.sendTurn({ threadId, input: "/vault-import", attachments: [] });
+          yield* waitFor(
+            (event) =>
+              event.type === "user-input.requested" &&
+              event.payload.questions[0]?.fileInput === "vault-archive",
+          );
+          const archive = events.find(
+            (event) =>
+              event.type === "user-input.requested" &&
+              event.payload.questions[0]?.fileInput === "vault-archive",
+          );
+          if (!archive?.requestId) throw new Error("Missing archive prompt");
+          yield* adapter.respondPiSecretInput(
+            threadId,
+            ApprovalRequestId.make(archive.requestId),
+            "c3ludGhldGljIGFyY2hpdmU=",
+            false,
+          );
+          yield* waitFor(
+            (event) =>
+              event.type === "user-input.requested" &&
+              event.payload.questions[0]?.header === "Transfer key:",
+          );
+          const key = events.find(
+            (event) =>
+              event.type === "user-input.requested" &&
+              event.payload.questions[0]?.header === "Transfer key:",
+          );
+          if (!key?.requestId) throw new Error("Missing key prompt");
+          yield* adapter.respondPiSecretInput(
+            threadId,
+            ApprovalRequestId.make(key.requestId),
+            "b".repeat(64),
+            false,
+          );
+          yield* waitFor((event) => event.type === "turn.completed");
+          expect(JSON.stringify(events)).not.toContain("c3ludGhldGljIGFyY2hpdmU=");
+          expect(JSON.stringify(nativeRecords)).not.toContain("c3ludGhldGljIGFyY2hpdmU=");
+          expect(JSON.stringify(events)).not.toContain("b".repeat(64));
+          expect(JSON.stringify(nativeRecords)).not.toContain("b".repeat(64));
           yield* adapter.stopSession(threadId);
         }),
     ),

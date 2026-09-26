@@ -586,8 +586,13 @@ export function runtimeEventToActivities(
           // shows what the warning was about, not a generic "Runtime warning".
           summary: truncateDetail(event.payload.message, 120),
           payload: {
-            message: truncateDetail(event.payload.message),
+            message:
+              event.payload.category === "vault-command"
+                ? event.payload.message
+                : truncateDetail(event.payload.message),
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
+            ...(event.payload.category ? { category: event.payload.category } : {}),
+            ...(event.payload.transferId ? { transferId: event.payload.transferId } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

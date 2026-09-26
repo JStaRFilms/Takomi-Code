@@ -60,6 +60,7 @@ import {
   ProjectWriteFileError,
   ProviderUploadFeedbackError,
   ProviderPiSecretInputError,
+  ProviderPiVaultExportError,
   PiSessionCatalogError,
   ProviderSetupError,
   RelayClientInstallFailedError,
@@ -3092,6 +3093,23 @@ const makeWsRpcLayer = (
                   }),
               ),
             ),
+          ),
+        // The response contains the one-time transfer key and encrypted archive. Do not trace it.
+        [WS_METHODS.providerTakePiVaultExport]: (input) =>
+          authorizeEffect(
+            requiredScopeForRpcMethod(WS_METHODS.providerTakePiVaultExport),
+            providerService.takePiVaultExport
+              ? providerService.takePiVaultExport(input).pipe(
+                  Effect.mapError(
+                    () =>
+                      new ProviderPiVaultExportError({
+                        message: "Pi vault export is unavailable.",
+                      }),
+                  ),
+                )
+              : Effect.fail(
+                  new ProviderPiVaultExportError({ message: "Pi vault export is unavailable." }),
+                ),
           ),
         [WS_METHODS.providerListPiSessions]: (input) =>
           observeRpcEffect(

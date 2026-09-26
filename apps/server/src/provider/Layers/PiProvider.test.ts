@@ -1,5 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Resolves the checked-in subprocess fixture.
 import * as NodeAssert from "node:assert/strict";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
@@ -9,6 +11,7 @@ import { describe, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 
+import { resolvePiLaunchResources } from "./PiLaunchResources.ts";
 import {
   discoverPiResources,
   makePendingPiProvider,
@@ -62,6 +65,7 @@ describe("Pi provider snapshot", () => {
       NodeAssert.equal(provider.supportsConversationRollback, false);
       NodeAssert.equal(piSessionCatalogSupported("0.84.4"), true);
       NodeAssert.equal(piSessionCatalogSupported("0.85.1"), true);
+      NodeAssert.equal(piSessionCatalogSupported("0.87.1"), true);
       NodeAssert.equal(piSessionCatalogSupported("0.84.5"), false);
       NodeAssert.equal(piSessionCatalogSupported("0.85.0"), false);
     }),
@@ -69,6 +73,77 @@ describe("Pi provider snapshot", () => {
 });
 
 describe("Pi scoped resource probe", () => {
+  it.live("uses local Takomi extensions instead of duplicate global copies", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pi-launch-")),
+      );
+      const cwd = NodePath.join(root, "project");
+      const homePath = NodePath.join(root, "agent");
+      try {
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(NodePath.join(cwd, ".pi", "prompts"), { recursive: true });
+          await NodeFSP.mkdir(NodePath.join(homePath, "extensions", "takomi-runtime"), {
+            recursive: true,
+          });
+          await NodeFSP.writeFile(NodePath.join(cwd, "package.json"), '{"name":"takomi"}');
+          await NodeFSP.writeFile(
+            NodePath.join(homePath, "extensions", "takomi-runtime", "index.ts"),
+            "",
+          );
+          for (const name of [
+            "takomi-runtime",
+            "takomi-subagents",
+            "oauth-router",
+            "takomi-context-manager",
+            "notify-sound",
+            "antigravity-provider",
+          ]) {
+            const directory = NodePath.join(cwd, ".pi", "extensions", name);
+            await NodeFSP.mkdir(directory, { recursive: true });
+            await NodeFSP.writeFile(NodePath.join(directory, "index.ts"), "");
+          }
+        });
+        const settings = {
+          enabled: true,
+          binaryPath: process.execPath,
+          homePath,
+          suiteRoot: "",
+          launchArgs: `"${fixturePath}"`,
+          customModels: [],
+        };
+        const resources = yield* resolvePiLaunchResources({
+          settings,
+          cwd,
+          environment: process.env,
+        });
+        NodeAssert.deepEqual(resources.missingPaths, []);
+        NodeAssert.equal(resources.args[0], "--no-extensions");
+        NodeAssert.ok(
+          resources.args.includes(
+            NodePath.join(cwd, ".pi", "extensions", "takomi-runtime", "index.ts"),
+          ),
+        );
+        NodeAssert.ok(
+          !resources.args.includes(
+            NodePath.join(homePath, "extensions", "takomi-runtime", "index.ts"),
+          ),
+        );
+        const untrusted = yield* resolvePiLaunchResources({
+          settings,
+          cwd,
+          environment: process.env,
+          allowInferredSuite: false,
+        });
+        NodeAssert.deepEqual(untrusted.args, ["--no-extensions"]);
+        const discovery = yield* discoverPiResources(settings, cwd, process.env);
+        NodeAssert.equal(discovery.status, "available");
+      } finally {
+        yield* Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true }));
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.live("applies one deadline and tears down a non-responsive peer", () =>
     Effect.gen(function* () {
       const startedAt = yield* Clock.currentTimeMillis;

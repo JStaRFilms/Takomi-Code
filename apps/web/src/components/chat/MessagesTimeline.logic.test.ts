@@ -3521,6 +3521,34 @@ describe("deriveMessagesTimelineRows", () => {
     });
   });
 
+  it("shows a vault result between work entries without hiding it in a work group", () => {
+    const createdAt = "2026-09-01T12:00:00Z";
+    const entries = [
+      { id: "before", createdAt, label: "Before", tone: "info" as const },
+      {
+        id: "vault",
+        createdAt,
+        label: "Backend: local",
+        tone: "info" as const,
+        vaultNotice: "Backend: local\n- cred_ABC | Demo",
+        vaultExportId: "transfer-1",
+      },
+      { id: "after", createdAt, label: "After", tone: "info" as const },
+    ].map((entry) => ({ id: entry.id, kind: "work" as const, createdAt, entry }));
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: entries,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.find((row) => row.kind === "vault-notice")).toMatchObject({
+      message: "Backend: local\n- cred_ABC | Demo",
+      transferId: "transfer-1",
+    });
+    expect(rows.map((row) => row.kind)).toEqual(["work-toggle", "vault-notice", "work-toggle"]);
+  });
+
   it.each([true, false])(
     "keeps a large expanded tool run inside one timeline item, live=%s",
     (isWorking) => {

@@ -277,6 +277,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
             requestId={props.pendingUserInput.requestId}
             header={secretQuestion.header}
             question={secretQuestion.question}
+            fileInput={secretQuestion.fileInput === "vault-archive"}
             unavailable={props.unavailable}
             onInputFocusChange={props.onInputFocusChange}
             onRespond={props.onRespondPiSecret}

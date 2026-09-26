@@ -101,6 +101,8 @@ export interface WorkLogEntry {
   requestKind?: PendingApproval["requestKind"];
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  vaultNotice?: string;
+  vaultExportId?: string;
   toolCallId?: string;
   /**
    * One row per workflow run or per-turn batch of direct spawns, like web's
@@ -508,6 +510,16 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       ? payload.taskId
       : undefined;
   const entry: DerivedWorkLogEntry = {
+    ...(activity.kind === "runtime.warning" &&
+    (payload?.category === "vault-command" || payload?.category === "vault-export-ready") &&
+    typeof payload.message === "string"
+      ? {
+          vaultNotice: payload.message,
+          ...(payload.category === "vault-export-ready" && typeof payload.transferId === "string"
+            ? { vaultExportId: payload.transferId }
+            : {}),
+        }
+      : {}),
     id: activity.id,
     createdAt: activity.createdAt,
     turnId: activity.turnId,
@@ -1584,7 +1596,8 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
 
     const isStandalone =
       entry.activity.workEntry.sourceActivityKind === "context-compaction" ||
-      entry.activity.workEntry.questionAnswer !== undefined;
+      entry.activity.workEntry.questionAnswer !== undefined ||
+      entry.activity.workEntry.vaultNotice !== undefined;
     if (isStandalone || firstActivityEntry?.turnId !== entry.turnId) {
       flushGroup();
     }
@@ -2130,6 +2143,17 @@ function appendActivityGroupRows(
     groupableRun = [];
   };
   for (const activity of activities) {
+    if (activity.workEntry.vaultNotice !== undefined) {
+      flushGroupableRun(false);
+      result.push({
+        type: "activity-group",
+        id: activity.id,
+        createdAt: activity.createdAt,
+        turnId: activity.turnId,
+        activities: [activity],
+      });
+      continue;
+    }
     const spawn = activity.workEntry.agentSpawn;
     if (activity.workEntry.tone !== "error" && spawn === undefined) {
       groupableRun.push(activity);

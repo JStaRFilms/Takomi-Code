@@ -2079,6 +2079,54 @@ describe("buildThreadFeed", () => {
     });
   });
 
+  it("keeps a vault result visible outside collapsed work", () => {
+    const createdAt = "2026-04-01T00:00:01.000Z";
+    const activities: ThreadFeedActivity[] = ["before", "vault", "after"].map((id) => ({
+      id,
+      createdAt,
+      turnId: null,
+      summary: id,
+      detail: null,
+      canExpand: false,
+      getFullDetail: () => null,
+      getCopyText: () => id,
+      icon: "command",
+      toolLike: false,
+      status: null,
+      workEntry: {
+        id,
+        createdAt,
+        turnId: null,
+        label: id,
+        tone: "info",
+        ...(id === "vault"
+          ? { vaultNotice: "Encrypted vault ready to download.", vaultExportId: "transfer-1" }
+          : {}),
+      },
+    }));
+    const feed: ThreadFeedEntry[] = [
+      {
+        type: "activity-group",
+        id: "group",
+        createdAt,
+        turnId: null,
+        activities,
+      },
+    ];
+    const rows = deriveThreadFeedPresentation(feed, null, new Set());
+    expect(rows.map((row) => row.type)).toEqual(["work-toggle", "activity-group", "work-toggle"]);
+    expect(rows[1]).toMatchObject({
+      activities: [
+        {
+          workEntry: {
+            vaultNotice: "Encrypted vault ready to download.",
+            vaultExportId: "transfer-1",
+          },
+        },
+      ],
+    });
+  });
+
   it("keeps expanded work in one group with stable row identities", () => {
     const activity = (
       id: string,

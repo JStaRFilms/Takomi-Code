@@ -87,7 +87,9 @@ Pi `extension_ui_request` messages are mapped as follows:
 
 This also carries Takomi's `ask_user_question` RPC fallback. It presents questions one at a time through Pi's `select` and `input` dialogs.
 
-Takomi Vault secret input is the exception. When the vault extension requests an `input` whose title starts with `[takomi-vault-secret] `, the adapter publishes only a pending question marked `sensitive`. Web, desktop, and mobile collect its value in a masked field and call `provider.respondPiSecretInput` directly on the owning environment. The authenticated server checks the live Pi request and sends a one-use `extension_ui_response` to that process. It records a resolution with empty answers, never the value. Ordinary `thread.user-input.respond` commands cannot answer a sensitive question. Stopping or replacing the Pi process invalidates its pending request. The Pi host opts into this protocol through `T3_TAKOMI_VAULT_SECRET_UI`; other RPC hosts keep the vault's TUI-only secret entry. The environment host and its authorized connected clients are trusted with transport access; this is not end-to-end encryption from the server.
+Takomi Vault secret input is the exception. When the vault extension requests an `input` whose title starts with `[takomi-vault-secret] `, the adapter publishes only a pending question marked `sensitive`. Web, desktop, and mobile collect its value in a masked field and call `provider.respondPiSecretInput` directly on the owning environment. The authenticated server checks the live Pi request and sends a one-use `extension_ui_response` to that process. It records a resolution with empty answers, never the value. Ordinary `thread.user-input.respond` commands cannot answer a sensitive question. Stopping or replacing the Pi process invalidates its pending request. The Pi host opts into this protocol through `T3_TAKOMI_VAULT_SECRET_UI`; other RPC hosts keep the vault's TUI-only secret entry.
+
+`T3_TAKOMI_VAULT_TRANSFER_UI` also enables GUI transfer. Import takes an encrypted file through a private one-use response, then asks for the key in a masked field. Export sends a private `takomi_vault_export` JSONL record that the adapter intercepts before native logging. The thread receives only a transfer ID; an authorized client retrieves the key and bounded archive once through `provider.takePiVaultExport`. Neither value enters the thread projector or RPC tracing. Replacing the Pi process invalidates the transfer. The environment host and its authorized connected clients can access the transfer; the key is not hidden from the server.
 
 Current fidelity limitations:
 
@@ -136,7 +138,7 @@ Suite mode also discovers globally installed Pi companion packages from Pi setti
 
 ## Commands, prompts, and skills
 
-The web and mobile command menus use Pi's `get_commands` response for the selected project. Extension commands, prompt templates, and skills are shown in Pi's first-wins order. Pi terminal-only built-ins are not shown because they cannot be invoked through RPC. Pi handles registered vault commands without starting an agent run, so the adapter settles those command-only turns when Pi acknowledges their `prompt` RPC. Other extension commands may start an agent run and still settle on its lifecycle event.
+The web and mobile command menus use Pi's `get_commands` response for the selected project. Extension commands, prompt templates, and skills are shown in Pi's first-wins order. Pi terminal-only built-ins are not shown because they cannot be invoked through RPC. Pi handles registered vault commands without starting an agent run, so the adapter settles those command-only turns when Pi acknowledges their `prompt` RPC. The adapter marks notifications from an active discovered vault command; both clients display their redacted metadata in a separate timeline row instead of hiding it in the work log. This row never becomes a Pi assistant message. Deletion uses a single "Delete credential" confirmation rather than a reusable approval. Other extension commands may start an agent run and still settle on its lifecycle event.
 
 Project resources follow Pi's project-trust decision. Explicit `--approve` and `--no-approve` launch arguments take precedence. In non-interactive RPC mode, the default `ask` behavior cannot display Pi's own trust prompt, so protected resources may remain unavailable until Pi has a saved decision or another supported trust policy applies. Extensions can also decide trust; when that effective result is not observable, Takomi Code reports the trust information as partial rather than claiming an approval or rejection.
 
@@ -144,7 +146,7 @@ Resource snapshots are isolated by environment, provider instance, and exact pro
 
 ## Session catalog
 
-For the supported Pi protocol boundary (verified releases: 0.84.4, 0.85.1), web and desktop can request a bounded, paginated list
+For the supported Pi protocol boundary (verified releases: 0.84.4, 0.85.1, 0.87.1), web and desktop can request a bounded, paginated list
 of Pi sessions for the selected provider instance and workspace. Catalog cursors are scoped to the
 environment, provider instance, exact workspace, server generation, and expiry. The server also
 rejects continuation when another active T3 thread already holds the same session file.
@@ -197,9 +199,9 @@ the next message continues with full CLI context.
 - only `full-access` is supported
 - Pi session attach, full-file fork, point-split fork, message preview, and visible CLI
   history hydration are supported into fresh threads
-- session catalog listing is version-gated to verified Pi releases (0.84.4, 0.85.1)
+- session catalog listing is version-gated to verified Pi releases (0.84.4, 0.85.1, 0.87.1)
 - unknown extension UI methods are ignored
-- vault export/import and plaintext reveal are not supported by the private secret-entry response route
+- plaintext reveal remains TUI-only; vault export and import use separate private GUI transfer handling
 - richer question metadata is reduced to T3's current canonical shape
 - Takomi runtime assets are not bundled into the desktop installer; global installation or a suite root is still required
 - the mobile client does not yet expose session discovery or continuation

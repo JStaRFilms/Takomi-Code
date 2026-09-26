@@ -17,6 +17,8 @@ import type {
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRespondPiSecretInput,
+  ProviderTakePiVaultExportInput,
+  ProviderTakePiVaultExportResult,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
@@ -88,6 +90,11 @@ export interface ProviderServiceShape {
   readonly respondPiSecretInput: (
     input: ProviderRespondPiSecretInput,
   ) => Effect.Effect<void, ProviderServiceError>;
+
+  /** Private one-time export delivery. Never publish its result as a thread activity. */
+  readonly takePiVaultExport?: (
+    input: ProviderTakePiVaultExportInput,
+  ) => Effect.Effect<ProviderTakePiVaultExportResult, ProviderServiceError>;
 
   readonly stopSession: (
     input: ProviderStopSessionInput,

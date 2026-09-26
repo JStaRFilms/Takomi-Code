@@ -10,7 +10,7 @@ export const PI_CATALOG_VERSION = "0.84.4";
  * Deliberately an allowlist, not a range: each new Pi release must prove
  * header version, filename convention, and fork layout before joining it.
  */
-export const PI_CATALOG_VERSIONS: ReadonlyArray<string> = ["0.84.4", "0.85.1"];
+export const PI_CATALOG_VERSIONS: ReadonlyArray<string> = ["0.84.4", "0.85.1", "0.87.1"];
 export const PI_CATALOG_HARD_CEILING = 2_000;
 const MAX_FILE_PREFIX_BYTES = 1024 * 1024;
 const MAX_FILE_TAIL_BYTES = 64 * 1024;

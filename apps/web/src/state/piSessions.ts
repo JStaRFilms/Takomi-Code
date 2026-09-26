@@ -46,6 +46,11 @@ export const piSecretInputResponse = createEnvironmentRpcCommand(connectionAtomR
   tag: WS_METHODS.providerRespondPiSecretInput,
 });
 
+export const piVaultExportTake = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "environment-data:pi-vault-export:take",
+  tag: WS_METHODS.providerTakePiVaultExport,
+});
+
 /**
  * Background update check for continued threads. Polls while mounted; the
  * banner mounts this only for Pi threads with imported history.

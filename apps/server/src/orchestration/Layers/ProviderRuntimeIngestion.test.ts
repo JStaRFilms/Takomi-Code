@@ -4052,6 +4052,53 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.status).toBe("running");
     expect(thread.session?.activeTurnId).toBe("turn-warning");
     expect(thread.session?.lastError).toBeNull();
+
+    const vaultList = `Backend: local\n${"- cred_ABC | Demo | example.test\n".repeat(20)}`;
+    harness.emit({
+      type: "runtime.warning",
+      eventId: asEventId("evt-vault-list"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-warning"),
+      payload: { message: vaultList, category: "vault-command" },
+    });
+    const vaultThread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-vault-list",
+      ),
+    );
+    const vault = vaultThread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-vault-list",
+    );
+    expect(vault?.payload).toMatchObject({ message: vaultList, category: "vault-command" });
+    harness.emit({
+      type: "runtime.warning",
+      eventId: asEventId("evt-vault-export"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-warning"),
+      payload: {
+        message: "Encrypted vault ready to download.",
+        category: "vault-export-ready",
+        transferId: "transfer-1",
+      },
+    });
+    const readyThread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-vault-export",
+      ),
+    );
+    expect(
+      readyThread.activities.find(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-vault-export",
+      )?.payload,
+    ).toMatchObject({
+      message: "Encrypted vault ready to download.",
+      category: "vault-export-ready",
+      transferId: "transfer-1",
+    });
   });
 
   it("maps session/thread lifecycle and item.started into session/activity projections", async () => {

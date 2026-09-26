@@ -13,9 +13,11 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
   pendingCount,
   className,
 }: ComposerPendingApprovalPanelProps) {
-  const Detail = approval.requestKind === "mcp-elicitation" ? "span" : "code";
-  const fallbackLabel =
-    approval.requestKind === "mcp-elicitation"
+  const isVaultDelete = approval.detail?.startsWith("Delete credential?\n") ?? false;
+  const Detail = approval.requestKind === "mcp-elicitation" || isVaultDelete ? "span" : "code";
+  const fallbackLabel = isVaultDelete
+    ? "Delete credential?"
+    : approval.requestKind === "mcp-elicitation"
       ? "App access approval"
       : approval.requestKind === "command"
         ? "Command approval"
@@ -24,8 +26,9 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
           : approval.requestKind === "permission"
             ? "App permission approval"
             : "File change approval";
-  const detailAriaLabel =
-    approval.requestKind === "mcp-elicitation"
+  const detailAriaLabel = isVaultDelete
+    ? "Credential deletion"
+    : approval.requestKind === "mcp-elicitation"
       ? "App access request"
       : approval.requestKind === "command"
         ? "Command"
@@ -52,14 +55,16 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
         aria-label={detailAriaLabel}
         className={cn(
           "block max-h-20 w-full min-w-0 overflow-auto text-xs text-foreground [scrollbar-width:thin] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70 [&::-webkit-scrollbar]:h-1.5",
-          approval.requestKind === "mcp-elicitation"
+          approval.requestKind === "mcp-elicitation" || isVaultDelete
             ? "whitespace-pre-wrap font-sans wrap-break-word"
             : "whitespace-pre font-mono",
         )}
         data-approval-detail="complete"
         tabIndex={0}
       >
-        {approval.detail || fallbackLabel}
+        {isVaultDelete
+          ? approval.detail?.slice("Delete credential?\n".length)
+          : approval.detail || fallbackLabel}
       </Detail>
     </span>
   );

@@ -44,6 +44,25 @@ describe("pending approvals", () => {
       },
     });
     expect(derivePendingRequests([request]).userInputs[0]?.questions[0]?.sensitive).toBe(true);
+    const archive = makeActivity({
+      kind: "user-input.requested",
+      payload: {
+        requestId: "pi-ui-1-input-archive",
+        questions: [
+          {
+            id: "pi-ui-1-input-archive",
+            header: "Vault archive",
+            question: "Select archive",
+            options: [],
+            sensitive: true,
+            fileInput: "vault-archive",
+          },
+        ],
+      },
+    });
+    expect(derivePendingRequests([archive]).userInputs[0]?.questions[0]?.fileInput).toBe(
+      "vault-archive",
+    );
   });
   it.each([{}, { requestType: "unknown" }])(
     "exposes legacy OpenCode approvals without a known request kind: %j",

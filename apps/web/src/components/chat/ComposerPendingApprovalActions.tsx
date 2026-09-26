@@ -47,7 +47,13 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           <Button
             key={option.decision}
             size="xs"
-            variant={option.decision === "accept" ? "default" : "outline"}
+            variant={
+              option.decision === "accept"
+                ? option.label === "Delete credential"
+                  ? "destructive"
+                  : "default"
+                : "outline"
+            }
             disabled={isResponding}
             aria-description={option.warning}
             onClick={() => void onRespondToApproval(requestId, option.decision)}

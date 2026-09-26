@@ -28,6 +28,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
   const options: ReadonlyArray<ProviderApprovalOption> =
     props.approval.options ?? DEFAULT_APPROVAL_OPTIONS;
   const warning = options.find((option) => option.warning)?.warning;
+  const isVaultDelete = props.approval.detail?.startsWith("Delete credential?\n") ?? false;
   // Opaque for the same reason as PendingUserInputCard: nothing blurs the feed
   // behind this card, so a translucent surface bleeds messages through it.
   return (
@@ -36,11 +37,15 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
         Approval needed
       </Text>
       <Text className="font-t3-bold text-lg text-foreground">
-        {props.approval.appName ?? props.approval.requestKind}
+        {isVaultDelete
+          ? "Delete credential?"
+          : (props.approval.appName ?? props.approval.requestKind)}
       </Text>
       {props.approval.detail ? (
         <Text className="font-sans text-sm leading-normal text-foreground-secondary">
-          {props.approval.detail}
+          {isVaultDelete
+            ? props.approval.detail.slice("Delete credential?\n".length)
+            : props.approval.detail}
         </Text>
       ) : null}
       {warning ? (
@@ -52,10 +57,11 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
             key={option.decision}
             label={option.label}
             tone={
-              option.decision === "accept"
-                ? "primary"
-                : option.decision === "decline"
-                  ? "danger"
+              option.label === "Delete credential" ||
+              (option.decision === "decline" && option.label !== "Cancel")
+                ? "danger"
+                : option.decision === "accept"
+                  ? "primary"
                   : "secondary"
             }
             disabled={props.respondingApprovalId === props.approval.requestId}

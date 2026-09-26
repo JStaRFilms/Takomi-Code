@@ -320,6 +320,7 @@ function isActivityEntry(entry: TimelineEntry): entry is ActivityEntry {
   return entry.kind === "message"
     ? entry.message.role === "reasoning"
     : entry.kind === "work" &&
+        entry.entry.vaultNotice === undefined &&
         entry.entry.agentSpawn === undefined &&
         entry.entry.questionAnswer === undefined &&
         entry.entry.sourceActivityKind !== "context-compaction" &&
@@ -336,6 +337,13 @@ export type MessagesTimelineRow =
       entries: ActivityEntry[];
       expanded: boolean;
       active: boolean;
+    }
+  | {
+      kind: "vault-notice";
+      id: string;
+      createdAt: string;
+      message: string;
+      transferId?: string;
     }
   | {
       kind: "work";
@@ -1197,6 +1205,18 @@ export function deriveMessagesTimelineRows(input: {
     }
 
     if (timelineEntry.kind === "work") {
+      if (timelineEntry.entry.vaultNotice !== undefined) {
+        nextRows.push({
+          kind: "vault-notice",
+          id: timelineEntry.id,
+          createdAt: timelineEntry.createdAt,
+          message: timelineEntry.entry.vaultNotice,
+          ...(timelineEntry.entry.vaultExportId
+            ? { transferId: timelineEntry.entry.vaultExportId }
+            : {}),
+        });
+        continue;
+      }
       if (
         timelineEntry.entry.agentSpawn !== undefined ||
         timelineEntry.entry.questionAnswer !== undefined ||
@@ -1225,6 +1245,7 @@ export function deriveMessagesTimelineRows(input: {
           !nextEntry ||
           nextEntry.kind !== "work" ||
           nextEntry.entry.agentSpawn !== undefined ||
+          nextEntry.entry.vaultNotice !== undefined ||
           nextEntry.entry.questionAnswer !== undefined ||
           nextEntry.entry.sourceActivityKind === "context-compaction" ||
           nextEntry.entry.tone === "error" ||
@@ -1612,6 +1633,14 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "context-compaction": {
       const bc = b as typeof a;
       return a.createdAt === bc.createdAt && a.label === bc.label;
+    }
+    case "vault-notice": {
+      const notice = b as typeof a;
+      return (
+        a.createdAt === notice.createdAt &&
+        a.message === notice.message &&
+        a.transferId === notice.transferId
+      );
     }
 
     case "proposed-plan":

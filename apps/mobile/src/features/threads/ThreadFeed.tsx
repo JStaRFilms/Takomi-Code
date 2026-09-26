@@ -172,6 +172,7 @@ import {
   WORK_GROUP_TOGGLE_HEIGHT,
 } from "./thread-work-log";
 import { appendPendingThreadMessages, type PendingThreadFeedEntry } from "./pending-thread-feed";
+import { VaultNoticeCard } from "./VaultNoticeCard";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import {
@@ -1355,6 +1356,7 @@ function renderFeedEntry(
   props: Pick<
     ThreadFeedProps,
     | "environmentId"
+    | "threadId"
     | "onUseArtifactTemplate"
     | "skills"
     | "dispatchingMessageId"
@@ -1745,6 +1747,19 @@ function renderFeedEntry(
           </View>
         ) : null}
       </Animated.View>
+    );
+  }
+
+  const vaultNotice =
+    entry.activities.length === 1 ? entry.activities[0]?.workEntry.vaultNotice : undefined;
+  if (vaultNotice !== undefined) {
+    return (
+      <VaultNoticeCard
+        message={vaultNotice}
+        transferId={entry.activities[0]?.workEntry.vaultExportId}
+        environmentId={props.environmentId}
+        threadId={props.threadId}
+      />
     );
   }
 
@@ -2752,6 +2767,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         <ThreadMediaVisibility>
           {renderFeedEntry(info, {
             environmentId: props.environmentId,
+            threadId: props.threadId,
             dispatchingMessageId: props.dispatchingMessageId,
             onEditPendingMessage: props.onEditPendingMessage,
             copiedRowId,

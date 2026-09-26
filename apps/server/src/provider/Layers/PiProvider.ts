@@ -1,3 +1,4 @@
+import { PI_CATALOG_VERSIONS } from "@t3tools/takomi-pi-host/sessionCatalog";
 import {
   type PiSettings,
   type ModelCapabilities,
@@ -27,6 +28,7 @@ import {
   type PiDiscoveredResources,
 } from "./PiResources.ts";
 import { PiJsonlDecoder } from "./PiProtocolConformance.ts";
+import { resolvePiLaunchResources } from "./PiLaunchResources.ts";
 
 import {
   buildServerProvider,
@@ -56,7 +58,7 @@ const decodeUnknownJsonString = Schema.decodeUnknownSync(UnknownFromJsonString);
 const encodeUnknownJsonString = Schema.encodeUnknownSync(UnknownFromJsonString);
 
 export const piSessionCatalogSupported = (version: string): boolean =>
-  version === "0.84.4" || version === "0.85.1";
+  PI_CATALOG_VERSIONS.includes(version);
 
 const piCapabilities = (resourcesAvailable: boolean, sessionCatalogAvailable: boolean) =>
   ({
@@ -257,7 +259,28 @@ export function discoverPiResources(
         ...(settings.homePath ? { PI_CODING_AGENT_DIR: settings.homePath } : {}),
       };
       const launchArgs = tokenizeCliArgs(settings.launchArgs);
-      const args = [...launchArgs, "--mode", "rpc", "--no-session"];
+      const trust = settings.suiteRoot
+        ? undefined
+        : yield* discoverPiProjectTrust({
+            homePath: settings.homePath,
+            cwd,
+            environment: processEnv,
+            launchArgs,
+            observedProjectResources: false,
+          });
+      const launchResources = yield* resolvePiLaunchResources({
+        settings,
+        cwd,
+        environment: processEnv,
+        allowInferredSuite:
+          trust === "explicit-approved" ||
+          trust === "configured-saved-approved-partial" ||
+          trust === "configured-default-always-partial",
+      });
+      if (launchResources.missingPaths.length > 0) {
+        return yield* Effect.fail("Takomi suite root is missing required assets");
+      }
+      const args = [...launchArgs, ...launchResources.args, "--mode", "rpc", "--no-session"];
       const spawnCommand = yield* resolveSpawnCommand(settings.binaryPath || "pi", args, {
         env: processEnv,
       });

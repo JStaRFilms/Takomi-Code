@@ -79,6 +79,7 @@ function parseQuestions(value: unknown): UserInputQuestion[] {
       options,
       multiSelect: question.multiSelect === true,
       ...(question.sensitive === true ? { sensitive: true } : {}),
+      ...(question.fileInput === "vault-archive" ? { fileInput: "vault-archive" } : {}),
       ...(typeof question.allowCustomAnswer === "boolean"
         ? { allowCustomAnswer: question.allowCustomAnswer }
         : {}),

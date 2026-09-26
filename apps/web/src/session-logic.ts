@@ -81,6 +81,8 @@ export interface WorkLogEntry {
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  vaultNotice?: string;
+  vaultExportId?: string;
   /** Grouping key for subagent lifecycle rows (one row per agent). */
   taskId?: string;
   /** Agent role (subagent_type) for labeled timeline rows. */
@@ -581,6 +583,16 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     : extractToolDetail(payload, title ?? activity.summary);
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const entry: DerivedWorkLogEntry = {
+    ...(activity.kind === "runtime.warning" &&
+    (payload?.category === "vault-command" || payload?.category === "vault-export-ready") &&
+    typeof payload.message === "string"
+      ? {
+          vaultNotice: payload.message,
+          ...(payload.category === "vault-export-ready" && typeof payload.transferId === "string"
+            ? { vaultExportId: payload.transferId }
+            : {}),
+        }
+      : {}),
     id: activity.id,
     createdAt: activity.createdAt,
     turnId: activity.turnId,

@@ -43,5 +43,5 @@ appends the new messages to the thread's visible history — the same thread,
 nothing abandoned. The banner reappears on its own when more work lands, and
 dismissing it only silences that batch.
 
-Requires a Pi release T3 Code supports (0.84.4 or 0.85.1) and a project whose
+Requires a Pi release T3 Code supports (0.84.4, 0.85.1, or 0.87.1) and a project whose
 Takomi provider is enabled.

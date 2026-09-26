@@ -1,5 +1,6 @@
 import {
   ApprovalRequestId,
+  PI_VAULT_ARCHIVE_MAX_BYTES,
   EventId,
   type PiSettings,
   type ProviderApprovalDecision,
@@ -49,10 +50,17 @@ import {
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { PiJsonlDecoder, type PiJsonlFrame } from "./PiProtocolConformance.ts";
-import { expandPiSkillReferences, parsePiDiscoveredResources } from "./PiResources.ts";
+import { readPiVaultExportArchive } from "./PiVaultExportArchive.ts";
+import {
+  discoverPiProjectTrust,
+  expandPiSkillReferences,
+  parsePiDiscoveredResources,
+} from "./PiResources.ts";
+import { resolvePiLaunchResources } from "./PiLaunchResources.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const VAULT_SECRET_TITLE_PREFIX = "[takomi-vault-secret] ";
+const VAULT_ARCHIVE_TITLE_PREFIX = "[takomi-vault-archive] ";
 const PI_RESUME_VERSION = 1 as const;
 const REASONING_DETAIL_LIMIT = 16_000;
 const REASONING_EMIT_INTERVAL = 500;
@@ -70,17 +78,8 @@ const MAX_UI_OPTION_BYTES = 2 * 1024;
 const MAX_UI_OPTIONS_BYTES = 256 * 1024;
 const MAX_UI_REQUEST_ID_CODE_POINTS = 256;
 const MAX_UI_REQUEST_ID_BYTES = 512;
-const TAKOMI_EXTENSION_NAMES = [
-  "takomi-runtime",
-  "takomi-subagents",
-  "oauth-router",
-  "takomi-context-manager",
-  "notify-sound",
-  "antigravity-provider",
-] as const;
 const encoder = new TextEncoder();
 const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
-const decodeJsonString = Schema.decodeUnknownExit(UnknownFromJsonString);
 const encodeJsonString = Schema.encodeUnknownExit(UnknownFromJsonString);
 
 function jsonString(value: unknown): string | undefined {
@@ -173,6 +172,7 @@ interface PendingUiRequest {
   readonly nativeRequestId: string;
   readonly generation: number;
   readonly sensitive?: boolean;
+  readonly archive?: boolean;
 }
 
 interface PiTurnSnapshot {
@@ -193,6 +193,14 @@ interface PiSessionContext {
   /** Skills accepted by this exact Pi process, for native `/skill:name` dispatch. */
   skillNames: ReadonlySet<string> | undefined;
   vaultCommandNames: ReadonlySet<string>;
+  pendingVaultExport:
+    | {
+        readonly id: string;
+        readonly key: string;
+        readonly path: string;
+        readonly generation: number;
+      }
+    | undefined;
   pendingVaultPrompt:
     | {
         readonly id: string;
@@ -261,116 +269,6 @@ const TAKOMI_TOOL_FAMILIES = {
 } as const;
 
 type TakomiToolName = keyof typeof TAKOMI_TOOL_FAMILIES;
-
-type PiResourceSettings = {
-  readonly extensions: readonly string[];
-  readonly packages: readonly string[];
-};
-
-function parsePiResourceSettings(raw: string): PiResourceSettings {
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return {
-      extensions: Array.isArray(parsed.extensions)
-        ? parsed.extensions.filter((value): value is string => typeof value === "string")
-        : [],
-      packages: Array.isArray(parsed.packages)
-        ? parsed.packages.filter((value): value is string => typeof value === "string")
-        : [],
-    };
-  } catch {
-    return { extensions: [], packages: [] };
-  }
-}
-
-function npmPackageName(source: string): string | undefined {
-  if (!source.startsWith("npm:")) return undefined;
-  const spec = source.slice("npm:".length);
-  if (!spec) return undefined;
-  if (!spec.startsWith("@")) return spec.split("@", 1)[0] || undefined;
-  const slash = spec.indexOf("/");
-  if (slash < 0) return undefined;
-  const version = spec.indexOf("@", slash);
-  return version < 0 ? spec : spec.slice(0, version);
-}
-
-function packageExtensionEntries(raw: string): readonly string[] {
-  try {
-    const parsed = JSON.parse(raw) as { pi?: { extensions?: unknown } };
-    return Array.isArray(parsed.pi?.extensions)
-      ? parsed.pi.extensions.filter((value): value is string => typeof value === "string")
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function discoverPiCompanionExtensions(input: {
-  readonly fileSystem: FileSystem.FileSystem;
-  readonly path: Path.Path;
-  readonly environment: NodeJS.ProcessEnv;
-  readonly homePath: string;
-}) {
-  return Effect.gen(function* () {
-    const configuredHome =
-      readString(input.homePath) ?? readString(input.environment.PI_CODING_AGENT_DIR);
-    const userHome =
-      readString(input.environment.USERPROFILE) ?? readString(input.environment.HOME);
-    const agentDir =
-      configuredHome ?? (userHome ? input.path.join(userHome, ".pi", "agent") : undefined);
-    if (!agentDir) return [];
-
-    const settingsRaw = yield* input.fileSystem
-      .readFileString(input.path.join(agentDir, "settings.json"))
-      .pipe(Effect.orElseSucceed(() => ""));
-    const resourceSettings = parsePiResourceSettings(settingsRaw);
-    const candidates = resourceSettings.extensions.map((extensionPath) =>
-      input.path.isAbsolute(extensionPath)
-        ? extensionPath
-        : input.path.resolve(agentDir, extensionPath),
-    );
-
-    const globalExtensionsDir = input.path.join(agentDir, "extensions");
-    const globalEntries = yield* input.fileSystem
-      .readDirectory(globalExtensionsDir)
-      .pipe(Effect.orElseSucceed(() => [] as string[]));
-    for (const entry of globalEntries) {
-      const extensionName = entry.replace(/\.ts$/u, "");
-      if (
-        TAKOMI_EXTENSION_NAMES.includes(extensionName as (typeof TAKOMI_EXTENSION_NAMES)[number])
-      ) {
-        continue;
-      }
-      candidates.push(
-        entry.endsWith(".ts")
-          ? input.path.join(globalExtensionsDir, entry)
-          : input.path.join(globalExtensionsDir, entry, "index.ts"),
-      );
-    }
-
-    for (const source of resourceSettings.packages) {
-      const packageName = npmPackageName(source);
-      if (!packageName) continue;
-      const packageDir = input.path.join(
-        agentDir,
-        "npm",
-        "node_modules",
-        ...packageName.split("/"),
-      );
-      const manifestRaw = yield* input.fileSystem
-        .readFileString(input.path.join(packageDir, "package.json"))
-        .pipe(Effect.orElseSucceed(() => ""));
-      for (const extensionPath of packageExtensionEntries(manifestRaw)) {
-        candidates.push(input.path.resolve(packageDir, extensionPath));
-      }
-    }
-
-    const existing = yield* Effect.filter([...new Set(candidates)], (candidate) =>
-      input.fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false)),
-    );
-    return existing;
-  });
-}
 
 function takomiFamily(toolName: string): ToolPresentationEnvelope["family"] | undefined {
   const normalized = toolName.toLowerCase();
@@ -1725,9 +1623,11 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
     ) {
       if (
         !options.nativeEventLogger ||
+        record.type === "takomi_vault_export" ||
         (record.type === "extension_ui_request" &&
           typeof record.title === "string" &&
-          record.title.startsWith(VAULT_SECRET_TITLE_PREFIX)) ||
+          (record.title.startsWith(VAULT_SECRET_TITLE_PREFIX) ||
+            record.title.startsWith(VAULT_ARCHIVE_TITLE_PREFIX))) ||
         (record.type === "extension_ui_response_received" &&
           typeof record.id === "string" &&
           context.sensitiveUiIds.has(record.id))
@@ -2055,7 +1955,13 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           yield* emit({
             ...(yield* eventBase(context, message)),
             type: "runtime.warning",
-            payload: { message: notification },
+            payload: {
+              message: notification,
+              ...(context.pendingVaultPrompt?.turnId === context.activeTurnId &&
+              context.pendingVaultPrompt?.generation === context.generation
+                ? { category: "vault-command" as const }
+                : {}),
+            },
           });
         }
         return;
@@ -2070,15 +1976,21 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         `pi-ui-${context.generation}-${uiMethod}-${encodeURIComponent(id)}`,
       );
       if (context.pendingUi.has(requestId) || context.settledUi.has(requestId)) return;
+      const archive =
+        uiMethod === "input" &&
+        typeof message.title === "string" &&
+        message.title.startsWith(VAULT_ARCHIVE_TITLE_PREFIX) &&
+        context.pendingVaultPrompt?.commandName === "vault-import";
       const sensitive =
         uiMethod === "input" &&
         typeof message.title === "string" &&
-        message.title.startsWith(VAULT_SECRET_TITLE_PREFIX);
+        (message.title.startsWith(VAULT_SECRET_TITLE_PREFIX) || archive);
       context.pendingUi.set(requestId, {
         method: uiMethod,
         nativeRequestId: id,
         generation: context.generation,
         sensitive,
+        archive,
       });
       if (sensitive) context.sensitiveUiIds.add(id);
       const encoded = jsonString(message);
@@ -2134,6 +2046,15 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           payload: {
             requestType: "dynamic_tool_call",
             detail: `${title}\n${validUiText(message.message, MAX_UI_MESSAGE_BYTES, true)!}`,
+            ...(title === "Delete credential?" &&
+            context.pendingVaultPrompt?.commandName === "vault-delete"
+              ? {
+                  options: [
+                    { decision: "accept" as const, label: "Delete credential" },
+                    { decision: "decline" as const, label: "Cancel" },
+                  ],
+                }
+              : {}),
             args: {
               title,
               message: validUiText(message.message, MAX_UI_MESSAGE_BYTES, true)!,
@@ -2163,11 +2084,15 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           questions: [
             {
               id: requestId,
-              header: sensitive
-                ? title.slice(VAULT_SECRET_TITLE_PREFIX.length) || "Vault secret"
-                : header,
+              header: archive
+                ? "Vault archive"
+                : sensitive
+                  ? title.slice(VAULT_SECRET_TITLE_PREFIX.length) || "Vault secret"
+                  : header,
               question: sensitive
-                ? "Enter the vault secret."
+                ? archive
+                  ? "Choose an encrypted vault archive on this device."
+                  : "Enter the vault secret."
                 : longTitle
                   ? title
                   : (validUiText(message.placeholder, MAX_UI_PLACEHOLDER_BYTES) ??
@@ -2175,6 +2100,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                     "Provide a response to continue."),
               options: sensitive ? [] : options,
               ...(sensitive ? { sensitive: true } : {}),
+              ...(archive ? { fileInput: "vault-archive" as const } : {}),
             },
           ],
         },
@@ -2187,6 +2113,36 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       message: PiRpcMessage,
     ) {
       if (!isLiveContext(context, context.generation)) return;
+      if (message.type === "takomi_vault_export") {
+        const pending = context.pendingVaultPrompt;
+        if (
+          pending?.commandName !== "vault-export" ||
+          pending.generation !== context.generation ||
+          pending.turnId !== context.activeTurnId ||
+          typeof message.key !== "string" ||
+          !/^[a-f0-9]{64}$/.test(message.key) ||
+          typeof message.path !== "string" ||
+          !path.isAbsolute(message.path)
+        )
+          return;
+        const transferId = yield* randomId;
+        context.pendingVaultExport = {
+          id: transferId,
+          key: message.key,
+          path: message.path,
+          generation: context.generation,
+        };
+        yield* emit({
+          ...(yield* eventBase(context)),
+          type: "runtime.warning",
+          payload: {
+            message: "Encrypted vault ready to download.",
+            category: "vault-export-ready",
+            transferId,
+          },
+        });
+        return;
+      }
       if (message.type === "extension_ui_request") {
         yield* handleUiRequest(context, message);
         return;
@@ -2632,76 +2588,42 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       const cwd = input.cwd ?? serverConfig.cwd;
       const sessionScope = yield* Scope.make();
       const resumeFile = readPiResumeCursor(input.resumeCursor);
-      let suiteRoot = settings.suiteRoot;
-      if (!suiteRoot) {
-        const manifestRaw = yield* fileSystem
-          .readFileString(path.join(cwd, "package.json"))
-          .pipe(Effect.orElseSucceed(() => ""));
-        const manifest = decodeJsonString(manifestRaw);
-        const isTakomiSourceCheckout =
-          Exit.isSuccess(manifest) && isRecord(manifest.value) && manifest.value.name === "takomi";
-        if (isTakomiSourceCheckout) {
-          const inferredPaths = [
-            ...TAKOMI_EXTENSION_NAMES.map((name) =>
-              path.join(cwd, ".pi", "extensions", name, "index.ts"),
-            ),
-            path.join(cwd, ".pi", "prompts"),
-          ];
-          const missingPaths = yield* Effect.filter(inferredPaths, (candidate) =>
-            fileSystem.exists(candidate).pipe(
-              Effect.orElseSucceed(() => false),
-              Effect.map((exists) => !exists),
-            ),
-          );
-          if (missingPaths.length === 0) suiteRoot = cwd;
-        }
-      }
-      const takomiExtensionPaths = suiteRoot
-        ? TAKOMI_EXTENSION_NAMES.map((name) =>
-            path.join(suiteRoot, ".pi", "extensions", name, "index.ts"),
-          )
-        : [];
-      const takomiPromptPath = suiteRoot ? path.join(suiteRoot, ".pi", "prompts") : undefined;
-      if (suiteRoot) {
-        const requiredPaths = [...takomiExtensionPaths, takomiPromptPath].filter(
-          (candidate): candidate is string => candidate !== undefined,
-        );
-        const missingPaths = yield* Effect.filter(requiredPaths, (candidate) =>
-          fileSystem.exists(candidate).pipe(
-            Effect.orElseSucceed(() => false),
-            Effect.map((exists) => !exists),
-          ),
-        );
-        if (missingPaths.length > 0) {
-          yield* Scope.close(sessionScope, Exit.void).pipe(Effect.ignore);
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "startSession",
-            issue: `Takomi suite root is missing required assets: ${missingPaths.join(", ")}`,
-          });
-        }
-      }
-      const companionExtensionPaths = suiteRoot
-        ? yield* discoverPiCompanionExtensions({
-            fileSystem,
-            path,
-            environment: options.environment,
+      const launchArgs = tokenizeCliArgs(settings.launchArgs);
+      const trust = settings.suiteRoot
+        ? undefined
+        : yield* discoverPiProjectTrust({
             homePath: settings.homePath,
-          })
-        : [];
-      const takomiArgs = suiteRoot
-        ? [
-            "--no-extensions",
-            ...[...companionExtensionPaths, ...takomiExtensionPaths].flatMap((extensionPath) => [
-              "--extension",
-              extensionPath,
-            ]),
-            ...(takomiPromptPath ? ["--prompt-template", takomiPromptPath] : []),
-          ]
-        : [];
+            cwd,
+            environment: options.environment,
+            launchArgs,
+            observedProjectResources: false,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          );
+      const resources = yield* resolvePiLaunchResources({
+        settings,
+        cwd,
+        environment: options.environment,
+        allowInferredSuite:
+          trust === "explicit-approved" ||
+          trust === "configured-saved-approved-partial" ||
+          trust === "configured-default-always-partial",
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+      if (resources.missingPaths.length > 0) {
+        yield* Scope.close(sessionScope, Exit.void).pipe(Effect.ignore);
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: `Takomi suite root is missing required assets: ${resources.missingPaths.join(", ")}`,
+        });
+      }
       const args = [
-        ...tokenizeCliArgs(settings.launchArgs),
-        ...takomiArgs,
+        ...launchArgs,
+        ...resources.args,
         "--mode",
         "rpc",
         ...(resumeFile ? ["--session", resumeFile] : []),
@@ -2710,6 +2632,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         ...options.environment,
         ...(settings.homePath ? { PI_CODING_AGENT_DIR: settings.homePath } : {}),
         T3_TAKOMI_VAULT_SECRET_UI: "1",
+        T3_TAKOMI_VAULT_TRANSFER_UI: "1",
       };
       const spawnCommand = yield* resolveSpawnCommand(settings.binaryPath, args, {
         env: environment,
@@ -2763,6 +2686,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         skillNames: undefined,
         vaultCommandNames: new Set(),
         pendingVaultPrompt: undefined,
+        pendingVaultExport: undefined,
         toolActivityByCallId: new Map(),
         truncatedToolActivityCallIds: new Set(),
         takomiSubagentTaskTracker: createTakomiSubagentTaskTracker(),
@@ -3193,6 +3117,38 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         yield* settlePendingUi(context, runtimeRequestId, { value }, undefined, answers);
       });
 
+    const takePiVaultExport: NonNullable<
+      ProviderAdapterShape<ProviderAdapterError>["takePiVaultExport"]
+    > = Effect.fnUntraced(function* (threadId, transferId) {
+      const context = yield* ensureContext(threadId);
+      const pending = context.pendingVaultExport;
+      if (!pending || pending.id !== transferId || pending.generation !== context.generation) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "takePiVaultExport",
+          issue: "No pending vault export.",
+        });
+      }
+      const archive = yield* Effect.tryPromise({
+        try: () => readPiVaultExportArchive(pending.path),
+        catch: () =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "takePiVaultExport",
+            detail: "Vault archive is unavailable.",
+          }),
+      });
+      if (context.pendingVaultExport !== pending || !isLiveContext(context, pending.generation)) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "takePiVaultExport",
+          issue: "Vault export expired.",
+        });
+      }
+      context.pendingVaultExport = undefined;
+      return { ...archive, key: pending.key };
+    });
+
     const respondPiSecretInput: NonNullable<
       ProviderAdapterShape<ProviderAdapterError>["respondPiSecretInput"]
     > = Effect.fnUntraced(function* (threadId, requestId, value, cancelled) {
@@ -3202,7 +3158,9 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         !pending?.sensitive ||
         pending.generation !== context.generation ||
         cancelled === (value !== undefined) ||
-        (value !== undefined && utf8Bytes(value) > 16 * 1024)
+        (value !== undefined &&
+          utf8Bytes(value) >
+            (pending.archive ? Math.ceil(PI_VAULT_ARCHIVE_MAX_BYTES / 3) * 4 : 16 * 1024))
       ) {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
@@ -3238,6 +3196,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       respondToRequest,
       respondToUserInput,
       respondPiSecretInput,
+      takePiVaultExport,
       stopSession: (threadId) =>
         ensureContext(threadId).pipe(Effect.flatMap((context) => stopContext(context, true))),
       listSessions: () => Effect.succeed([...sessions.values()].map((context) => context.session)),

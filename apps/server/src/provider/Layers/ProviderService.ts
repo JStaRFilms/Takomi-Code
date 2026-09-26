@@ -18,6 +18,7 @@ import {
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   type ProviderRespondPiSecretInput,
+  type ProviderTakePiVaultExportInput,
   RuntimeRequestId,
   ProviderSendTurnInput,
   type ChatImageAttachment,
@@ -2034,7 +2035,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     function* (input: ProviderRespondPiSecretInput) {
       if (
         (input.cancelled === true) === (input.value !== undefined) ||
-        (input.value !== undefined && new TextEncoder().encode(input.value).byteLength > 16 * 1024)
+        (input.value !== undefined &&
+          new TextEncoder().encode(input.value).byteLength > 16 * 1024 * 1024)
       ) {
         return yield* toValidationError("respondPiSecretInput", "Invalid secret response.");
       }
@@ -2058,6 +2060,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     },
   );
+
+  const takePiVaultExport: NonNullable<ProviderServiceMethod<"takePiVaultExport">> =
+    Effect.fnUntraced(function* (input: ProviderTakePiVaultExportInput) {
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "takePiVaultExport",
+        allowRecovery: false,
+      });
+      if (
+        routed.adapter.provider !== "pi" ||
+        !routed.isActive ||
+        !routed.adapter.takePiVaultExport
+      ) {
+        return yield* toValidationError("takePiVaultExport", "No pending Pi vault export.");
+      }
+      return yield* routed.adapter.takePiVaultExport(routed.threadId, input.transferId);
+    });
 
   const stopSession: ProviderServiceMethod<"stopSession"> = Effect.fn("stopSession")(
     function* (rawInput) {
@@ -2436,6 +2455,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToRequest,
     respondToUserInput,
     respondPiSecretInput,
+    takePiVaultExport,
     stopSession,
     listSessions,
     getCapabilities,

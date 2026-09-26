@@ -242,7 +242,7 @@ NodeTest.test("rejects the documented convention for an unverified Pi version", 
 });
 
 NodeTest.test("accepts each verified Pi release in the allowlist", async (t) => {
-  for (const version of ["0.84.4", "0.85.1"]) {
+  for (const version of ["0.84.4", "0.85.1", "0.87.1"]) {
     const value = await fixture();
     t.after(() => NodeFSP.rm(value.root, { recursive: true, force: true }));
     await NodeFSP.writeFile(

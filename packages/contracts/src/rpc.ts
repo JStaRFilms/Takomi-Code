@@ -102,7 +102,10 @@ import {
 import {
   ProviderUploadFeedbackError,
   ProviderPiSecretInputError,
+  ProviderPiVaultExportError,
   ProviderRespondPiSecretInput,
+  ProviderTakePiVaultExportInput,
+  ProviderTakePiVaultExportResult,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
 } from "./provider.ts";
@@ -316,6 +319,7 @@ export const WS_METHODS = {
   // Provider methods
   providerUploadFeedback: "provider.uploadFeedback",
   providerRespondPiSecretInput: "provider.respondPiSecretInput",
+  providerTakePiVaultExport: "provider.takePiVaultExport",
   providerAuthStart: "provider.auth.start",
   providerConsumeResetCredit: "provider.consumeResetCredit",
   providerAuthComplete: "provider.auth.complete",
@@ -1028,6 +1032,12 @@ const WsProviderRespondPiSecretInputRpc = Rpc.make(WS_METHODS.providerRespondPiS
   error: Schema.Union([ProviderPiSecretInputError, EnvironmentAuthorizationError]),
 });
 
+const WsProviderTakePiVaultExportRpc = Rpc.make(WS_METHODS.providerTakePiVaultExport, {
+  payload: ProviderTakePiVaultExportInput,
+  success: ProviderTakePiVaultExportResult,
+  error: Schema.Union([ProviderPiVaultExportError, EnvironmentAuthorizationError]),
+});
+
 const WsProviderListPiSessionsRpc = Rpc.make(WS_METHODS.providerListPiSessions, {
   payload: PiSessionCatalogInput,
   success: PiSessionCatalogPage,
@@ -1544,6 +1554,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsDeleteRpc,
   WsProviderUploadFeedbackRpc,
   WsProviderRespondPiSecretInputRpc,
+  WsProviderTakePiVaultExportRpc,
   WsProviderListPiSessionsRpc,
   WsProviderAttachPiSessionRpc,
   WsProviderForkPiSessionRpc,

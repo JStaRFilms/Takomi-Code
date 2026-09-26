@@ -119,6 +119,15 @@ export interface ProviderAdapterShape<TError> {
     cancelled: boolean,
   ) => Effect.Effect<void, TError>;
 
+  /** Retrieve a completed Pi vault export once without recording its transfer key. */
+  readonly takePiVaultExport?: (
+    threadId: ThreadId,
+    transferId: string,
+  ) => Effect.Effect<
+    { readonly filename: string; readonly archive: string; readonly key: string },
+    TError
+  >;
+
   /**
    * Stop one provider session.
    */

@@ -50,6 +50,7 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
         requestId={activePrompt.requestId}
         header={secretQuestion.header}
         question={secretQuestion.question}
+        fileInput={secretQuestion.fileInput === "vault-archive"}
         unavailable={environmentUnavailable}
         onRespond={onRespondPiSecret}
       />

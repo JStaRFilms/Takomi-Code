@@ -19,6 +19,13 @@ const sessionTree = (entriesByParent.get(null) ?? []).map(function node(entry) {
   return { entry, children: (entriesByParent.get(entry.id) ?? []).map(node) };
 });
 const transcriptPath = process.env.T3_PI_CONFORMANCE_TRANSCRIPT;
+if (process.env.T3_PI_CONFORMANCE_LAUNCH_ARGS_PATH) {
+  appendFileSync(
+    process.env.T3_PI_CONFORMANCE_LAUNCH_ARGS_PATH,
+    JSON.stringify(process.argv.slice(2)),
+    "utf8",
+  );
+}
 let input = "";
 let stateRequest;
 let commandsRequest;
@@ -189,13 +196,70 @@ function handle(record) {
           data: {
             commands:
               process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1"
-                ? [...fixture.slashCommands, { name: "vault-add", source: "extension" }]
+                ? [
+                    ...fixture.slashCommands,
+                    { name: "vault-add", source: "extension" },
+                    { name: "vault-list", source: "extension" },
+                    { name: "vault-delete", source: "extension" },
+                    { name: "vault-export", source: "extension" },
+                    { name: "vault-import", source: "extension" },
+                  ]
                 : fixture.slashCommands,
           },
         });
       }
       break;
     case "prompt":
+      if (
+        process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" &&
+        record.message === "/vault-export" &&
+        process.env.T3_PI_CONFORMANCE_EXPORT_ARCHIVE_PATH
+      ) {
+        emit({
+          type: "takomi_vault_export",
+          key: "a".repeat(64),
+          path: process.env.T3_PI_CONFORMANCE_EXPORT_ARCHIVE_PATH,
+        });
+        emit({ type: "response", id: record.id, command: "prompt", success: true });
+        break;
+      }
+      if (
+        process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" &&
+        record.message === "/vault-import"
+      ) {
+        vaultPromptId = record.id;
+        emit({
+          type: "extension_ui_request",
+          id: "vault-import-archive",
+          method: "input",
+          title: "[takomi-vault-archive] Select encrypted vault archive:",
+        });
+        break;
+      }
+      if (
+        process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" &&
+        record.message === "/vault-delete"
+      ) {
+        vaultPromptId = record.id;
+        emit({
+          type: "extension_ui_request",
+          id: "vault-delete-confirm",
+          method: "confirm",
+          title: "Delete credential?",
+          message: "Delete cred_ABC (Demo)? This revokes its grants.",
+        });
+        break;
+      }
+      if (process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" && record.message === "/vault-list") {
+        emit({
+          type: "extension_ui_request",
+          id: "vault-list-result",
+          method: "notify",
+          message: "Backend: local\n- cred_ABC | Demo | example.test",
+        });
+        emit({ type: "response", id: record.id, command: "prompt", success: true });
+        break;
+      }
       if (
         process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" &&
         record.message === "/fixture-command"
@@ -255,6 +319,28 @@ function handle(record) {
       });
       break;
     case "extension_ui_response":
+      if (vaultPromptId && record.id === "vault-import-archive") {
+        emit({
+          type: "extension_ui_request",
+          id: "vault-import-key",
+          method: "input",
+          title: "[takomi-vault-secret] Transfer key:",
+        });
+      }
+      if (vaultPromptId && record.id === "vault-import-key") {
+        emit({
+          type: "extension_ui_request",
+          id: "vault-import-result",
+          method: "notify",
+          message: "Imported 1 credential(s). Grants were not imported.",
+        });
+        emit({ type: "response", id: vaultPromptId, command: "prompt", success: true });
+        vaultPromptId = undefined;
+      }
+      if (vaultPromptId && record.id === "vault-delete-confirm") {
+        emit({ type: "response", id: vaultPromptId, command: "prompt", success: true });
+        vaultPromptId = undefined;
+      }
       if (vaultPromptId && record.id === "vault-secret") {
         if (process.env.T3_PI_CONFORMANCE_VAULT_ERROR === "1") {
           emit({
