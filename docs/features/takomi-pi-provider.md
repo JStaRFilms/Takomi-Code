@@ -150,6 +150,8 @@ For the supported Pi protocol boundary (verified releases: 0.84.4, 0.85.1, 0.87.
 of Pi sessions for the selected provider instance and workspace. Catalog cursors are scoped to the
 environment, provider instance, exact workspace, server generation, and expiry. The server also
 rejects continuation when another active T3 thread already holds the same session file.
+For a new Pi release, follow the [compatibility check](../operations/pi-compatibility.md) before
+adding it to the supported list.
 
 This is discovery plus continuation. Catalog entries hydrate into T3 threads through
 `provider.attachPiSession` (bind the live CLI session file) and `provider.forkPiSession`

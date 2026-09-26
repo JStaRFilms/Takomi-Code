@@ -14,8 +14,10 @@ Pi JSON-RPC process and normalizes `pi.eventmsg` input into the shared provider 
 Configuration and process ownership remain instance-scoped, while command and skill discovery is
 resolved for the thread's workspace. Pi-specific protocol behavior belongs at this boundary rather
 than in generic orchestration. The [session catalog](../../apps/server/src/provider/Layers/PiSessionCatalog.ts)
-is currently a version-gated, read-only boundary for Pi 0.84.4: it supports bounded listing and
-ownership diagnostics, not attach, clone, or native-history import.
+reads session metadata without opening a writable Pi session. For verified Pi releases it also
+supports attaching or forking a compatible v3 session into a fresh thread and importing visible
+CLI messages. Its version gate protects against unverified storage changes; see the
+[Pi release check](../operations/pi-compatibility.md) before enabling another version.
 
 ## Process and account isolation
 
