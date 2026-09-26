@@ -106,7 +106,13 @@ export function foldUserInputActivities(
         if (typeof question.question === "string") texts.set(question.id, question.question);
       }
     }
+    const privateResponse = payloads.some((payload) => payload.privateResponse === true);
     const questionTextById = Object.fromEntries(texts);
+    if (privateResponse) {
+      for (const [id, question] of questions) {
+        if (typeof question.header === "string") questionTextById[id] = question.header;
+      }
+    }
     const submitted = group.findLast(
       (activity) =>
         activity.kind === "user-input.answer-submitted" &&
@@ -140,11 +146,13 @@ export function foldUserInputActivities(
       ...group[0]!,
       kind: "user-input.answer-submitted",
       tone: "tool",
-      summary: submittedAnswer
-        ? "User input submitted"
-        : group.some((activity) => activity.kind === "user-input.resolved")
-          ? "User input dismissed"
-          : "User input requested",
+      summary: privateResponse
+        ? "Private input submitted"
+        : submittedAnswer
+          ? "User input submitted"
+          : group.some((activity) => activity.kind === "user-input.resolved")
+            ? "User input dismissed"
+            : "User input requested",
       payload: answer,
     });
   }

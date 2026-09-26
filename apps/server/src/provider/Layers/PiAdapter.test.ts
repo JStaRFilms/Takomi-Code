@@ -1405,6 +1405,10 @@ describe("Pi adapter process-path JSONL decoding", () => {
               adapter.respondPiSecretInput(threadId, responseId, "x".repeat(16 * 1024 + 1), false),
             );
             expect(Exit.isFailure(oversized)).toBe(true);
+            const empty = yield* Effect.exit(
+              adapter.respondPiSecretInput(threadId, responseId, "", false),
+            );
+            expect(Exit.isFailure(empty)).toBe(true);
             const rejected = yield* Effect.exit(
               adapter.respondToUserInput(threadId, responseId, {
                 [request.requestId]: "ordinary-secret",
@@ -1432,6 +1436,12 @@ describe("Pi adapter process-path JSONL decoding", () => {
                   event.type === "user-input.resolved" && event.requestId === request.requestId,
               ),
             ).toHaveLength(1);
+            expect(
+              events.find(
+                (event) =>
+                  event.type === "user-input.resolved" && event.requestId === request.requestId,
+              )?.payload,
+            ).toMatchObject({ answers: {}, privateResponse: true });
             const encode = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
             const eventText = yield* encode(events).pipe(Effect.orDie);
             expect(eventText).not.toContain("private-secret-value");
@@ -1457,6 +1467,27 @@ describe("Pi adapter process-path JSONL decoding", () => {
               adapter.respondPiSecretInput(threadId, responseId, "private-secret-value", false),
             );
             expect(Exit.isFailure(stale)).toBe(true);
+            const next = events.findLast(
+              (event) =>
+                event.type === "user-input.requested" &&
+                event.payload.questions[0]?.sensitive === true,
+            );
+            if (!next?.requestId) throw new Error("Missing new secret request");
+            yield* adapter.respondPiSecretInput(
+              threadId,
+              ApprovalRequestId.make(next.requestId),
+              undefined,
+              true,
+            );
+            yield* waitFor(
+              (event) => event.type === "user-input.resolved" && event.requestId === next.requestId,
+            );
+            expect(
+              events.find(
+                (event) =>
+                  event.type === "user-input.resolved" && event.requestId === next.requestId,
+              )?.payload,
+            ).toEqual({ answers: {} });
             yield* adapter.stopSession(threadId);
           }),
       ),
@@ -1722,7 +1753,7 @@ describe("Pi adapter process-path JSONL decoding", () => {
           if (short?.type !== "user-input.requested")
             throw new Error("Missing short select request");
           expect(short.payload.questions[0]?.header).toBe("Select");
-          expect(short.payload.questions[0]?.question).toBe("Provide a response to continue.");
+          expect(short.payload.questions[0]?.question).toBe("Choose an option below.");
           yield* adapter.stopSession(threadId);
         }),
     ),

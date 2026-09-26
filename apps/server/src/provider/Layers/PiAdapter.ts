@@ -1928,7 +1928,12 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           ...(yield* eventBase(context)),
           type: "user-input.resolved",
           requestId,
-          payload: { answers: answers ?? {} },
+          payload: {
+            answers: answers ?? {},
+            ...(pending.sensitive && "value" in response && response.value.length > 0
+              ? { privateResponse: true }
+              : {}),
+          },
         });
       }
       if (isWritableContext(context, pending.generation)) {
@@ -2092,12 +2097,12 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
               question: sensitive
                 ? archive
                   ? "Choose an encrypted vault archive on this device."
-                  : "Enter the vault secret."
+                  : "This value won't be saved in the thread."
                 : longTitle
                   ? title
                   : (validUiText(message.placeholder, MAX_UI_PLACEHOLDER_BYTES) ??
                     validUiText(message.prefill, MAX_UI_EDITOR_PREFILL_BYTES) ??
-                    "Provide a response to continue."),
+                    (uiMethod === "select" ? "Choose an option below." : "Enter a response.")),
               options: sensitive ? [] : options,
               ...(sensitive ? { sensitive: true } : {}),
               ...(archive ? { fileInput: "vault-archive" as const } : {}),
@@ -3159,8 +3164,9 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         pending.generation !== context.generation ||
         cancelled === (value !== undefined) ||
         (value !== undefined &&
-          utf8Bytes(value) >
-            (pending.archive ? Math.ceil(PI_VAULT_ARCHIVE_MAX_BYTES / 3) * 4 : 16 * 1024))
+          (value.length === 0 ||
+            utf8Bytes(value) >
+              (pending.archive ? Math.ceil(PI_VAULT_ARCHIVE_MAX_BYTES / 3) * 4 : 16 * 1024)))
       ) {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,

@@ -1,6 +1,7 @@
 import { EventId, TurnId, type OrchestrationThreadActivity } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { derivePendingRequests } from "./pendingRequests.ts";
+import { foldUserInputActivities } from "./work-log/userInput.ts";
 
 let nextActivityId = 0;
 
@@ -27,6 +28,51 @@ function makeActivity(overrides: {
 }
 
 describe("pending approvals", () => {
+  it("shows successful private input without treating it as dismissed or saving a value", () => {
+    const requested = makeActivity({
+      kind: "user-input.requested",
+      payload: {
+        requestId: "pi-private-1",
+        questions: [
+          {
+            id: "pi-private-1",
+            header: "GOOGLE_CLIENT_SECRET",
+            question: "This value won't be saved in the thread.",
+            options: [],
+            sensitive: true,
+          },
+        ],
+      },
+    });
+    const resolved = makeActivity({
+      kind: "user-input.resolved",
+      payload: {
+        requestId: "pi-private-1",
+        answers: {},
+        privateResponse: true,
+      },
+    });
+    const folded = foldUserInputActivities([requested, resolved]);
+    expect(folded).toHaveLength(1);
+    expect(folded[0]?.summary).toBe("Private input submitted");
+    expect(folded[0]?.payload).toMatchObject({
+      answers: {},
+      questionTextById: { "pi-private-1": "GOOGLE_CLIENT_SECRET" },
+    });
+    expect(
+      foldUserInputActivities([
+        requested,
+        makeActivity({
+          kind: "user-input.resolved",
+          payload: {
+            requestId: "pi-private-1",
+            answers: {},
+          },
+        }),
+      ])[0]?.summary,
+    ).toBe("User input dismissed");
+  });
+
   it("preserves the sensitive marker on a pending Pi question", () => {
     const request = makeActivity({
       kind: "user-input.requested",

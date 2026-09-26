@@ -5136,6 +5136,30 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resolvedPayload?.answers).toEqual({
       sandbox_mode: "workspace-write",
     });
+
+    harness.emit({
+      type: "user-input.resolved",
+      eventId: asEventId("evt-private-input-resolved"),
+      provider: ProviderDriverKind.make("pi"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-user-input"),
+      requestId: ApprovalRequestId.make("req-private-input"),
+      payload: { answers: {}, privateResponse: true },
+    });
+    const privateThread = await waitForThread(harness.readModel, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-private-input-resolved",
+      ),
+    );
+    expect(
+      privateThread.activities.find(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-private-input-resolved",
+      )?.payload,
+    ).toMatchObject({
+      answers: {},
+      privateResponse: true,
+    });
   });
 
   it("continues processing runtime events after a single event handler failure", async () => {
