@@ -343,12 +343,10 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         }),
       });
       const lease = yield* effect.pipe(
-        Effect.mapError(
-          (error): TracedAttemptFailure => ({
-            error,
-            attemptSpan: Option.some(attemptSpan),
-          }),
-        ),
+        Effect.mapError((error): TracedAttemptFailure => ({
+          error,
+          attemptSpan: Option.some(attemptSpan),
+        })),
       );
       return { attemptSpan: Option.some(attemptSpan), lease };
     }).pipe(Effect.withSpan("relay.connection.attempt", { root: true }));
@@ -384,12 +382,10 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         attemptSpan: Option.none<Tracer.Span>(),
         lease,
       })),
-      Effect.mapError(
-        (error): TracedAttemptFailure => ({
-          error,
-          attemptSpan: Option.none(),
-        }),
-      ),
+      Effect.mapError((error): TracedAttemptFailure => ({
+        error,
+        attemptSpan: Option.none(),
+      })),
     );
   });
 
@@ -538,20 +534,16 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       exitUnlessInterrupted(
         establishTracedConnection(attempt, generation, lastFailure, pendingRetry),
       ).pipe(
-        Effect.map(
-          (exit): EstablishmentEvent => ({
-            _tag: "Completed",
-            exit,
-          }),
-        ),
+        Effect.map((exit): EstablishmentEvent => ({
+          _tag: "Completed",
+          exit,
+        })),
       ),
       waitForEstablishmentInterrupt().pipe(
-        Effect.map(
-          (resetRetry): EstablishmentEvent => ({
-            _tag: "Interrupted",
-            resetRetry,
-          }),
-        ),
+        Effect.map((resetRetry): EstablishmentEvent => ({
+          _tag: "Interrupted",
+          resetRetry,
+        })),
       ),
       Effect.sleep(CONNECTION_ESTABLISHMENT_TIMEOUT).pipe(
         Effect.as<EstablishmentEvent>({ _tag: "TimedOut" }),
@@ -626,20 +618,16 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
 
     const connectedExit = yield* Effect.raceFirst(
       active.lease.session.closed.pipe(
-        Effect.mapError(
-          (error): TracedAttemptFailure => ({
-            error,
-            attemptSpan: active.attemptSpan,
-          }),
-        ),
+        Effect.mapError((error): TracedAttemptFailure => ({
+          error,
+          attemptSpan: active.attemptSpan,
+        })),
       ),
       monitorConnectedLease(active.lease).pipe(
-        Effect.mapError(
-          (error): TracedAttemptFailure => ({
-            error,
-            attemptSpan: active.attemptSpan,
-          }),
-        ),
+        Effect.mapError((error): TracedAttemptFailure => ({
+          error,
+          attemptSpan: active.attemptSpan,
+        })),
       ),
     ).pipe(exitUnlessInterrupted);
     const connectedForMs = (yield* Clock.currentTimeMillis) - connectedAt;
@@ -655,6 +643,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   }, Effect.ensuring(clearLease));
 
   const waitForRetrySignal = Effect.fnUntraced(function* (delayMs: number) {
+    // @effect-diagnostics-next-line raceFirstWithSleepToTimeout:off - the sleep is the retry delay (false), not a timeout around the signal loop
     return yield* Effect.raceFirst(
       Effect.sleep(delayMs).pipe(Effect.as(false)),
       Effect.gen(function* () {

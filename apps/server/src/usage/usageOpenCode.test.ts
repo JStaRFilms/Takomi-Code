@@ -47,6 +47,7 @@ describe("parseOpenCodeUsageRow", () => {
         reasoningTokens: 99,
       },
       reportedCostUsd: null,
+      fast: false,
       dedupeKey: "opencode:msg_1",
     });
   });

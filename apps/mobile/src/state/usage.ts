@@ -16,7 +16,7 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
-import { refreshUsage } from "@t3tools/client-runtime/state/usage";
+import { needsCursorKeychainAccess, refreshUsage } from "@t3tools/client-runtime/state/usage";
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
@@ -33,6 +33,7 @@ export interface EnvironmentUsageStatus {
   readonly isConnected: boolean;
   readonly error: string | null;
   readonly summary: UsageSummary | null;
+  readonly needsCursorKeychainAccess: boolean;
 }
 
 // Keep the last successful answer available when the route remounts. The RPC
@@ -57,14 +58,18 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
       const cacheKey = `${environmentId}:${windowKey}`;
       const freshSummary = Option.getOrNull(AsyncResult.value(result));
       if (freshSummary !== null) usageMemoryCache.set(cacheKey, freshSummary);
-
+      const summary = freshSummary ?? usageMemoryCache.get(cacheKey) ?? null;
       statuses.push({
         environmentId,
         label: presentation.entry.target.label,
         isPending: result.waiting,
         isConnected: presentation.connection.phase === "connected",
         error: result._tag === "Failure" ? "This environment could not report usage." : null,
-        summary: freshSummary ?? usageMemoryCache.get(cacheKey) ?? null,
+        summary,
+        needsCursorKeychainAccess: needsCursorKeychainAccess(
+          summary,
+          get(serverEnvironment.providersValueAtom(environmentId)),
+        ),
       });
     }
     return statuses;

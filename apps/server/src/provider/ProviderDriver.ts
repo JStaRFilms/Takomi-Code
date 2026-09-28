@@ -80,6 +80,8 @@ export interface ProviderInstance {
    */
   readonly isWorkspaceSnapshotCurrent?: (cwd: string) => Effect.Effect<boolean>;
   readonly refreshModels?: () => Effect.Effect<void, ProviderDriverError>;
+  /** Invalidate T3-owned discovery caches before an explicit provider refresh. */
+  readonly invalidateCaches?: Effect.Effect<void>;
   /**
    * Redeem one banked rate-limit reset credit on the signed-in account, then
    * re-probe so the snapshot reflects the cleared windows. Account-level,
