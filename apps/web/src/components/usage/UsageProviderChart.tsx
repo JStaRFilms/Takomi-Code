@@ -5,6 +5,7 @@ import type { DailyTotals, HourlyTotals } from "@t3tools/shared/usageMerge";
 import {
   formatDayShort,
   formatHourShort,
+  formatMonthShort,
   formatRelativeHourShort,
   formatTokens,
   formatUsd,
@@ -26,7 +27,7 @@ interface UsageProviderChartProps {
   readonly hourly: readonly HourlyTotals[];
   readonly metric: UsageChartMetric;
   readonly referenceTime: string | undefined;
-  readonly resolution: "day" | "hour";
+  readonly resolution: "day" | "hour" | "month";
   readonly timeZone: string;
 }
 
@@ -308,7 +309,11 @@ export function UsageProviderChart({
   const hoveredPeriod = hoverIndex === null ? undefined : periods[hoverIndex];
   const hoveredColumn = hoverIndex === null ? undefined : series[hoverIndex];
   const formatPeriod = (period: string) =>
-    resolution === "hour" ? formatHourShort(period, timeZone) : formatDayShort(period);
+    resolution === "hour"
+      ? formatHourShort(period, timeZone)
+      : resolution === "month"
+        ? formatMonthShort(period)
+        : formatDayShort(period);
   const formatTooltipPeriod = (period: string) =>
     resolution === "hour" && referenceTime !== undefined
       ? formatRelativeHourShort(period, referenceTime, timeZone)
@@ -344,7 +349,7 @@ export function UsageProviderChart({
             viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`}
             preserveAspectRatio="none"
             role="img"
-            aria-label={`${resolution === "hour" ? "Hourly" : "Daily"} ${metric === "tokens" ? "processed tokens" : "cost"} by provider`}
+            aria-label={`${resolution === "hour" ? "Hourly" : resolution === "month" ? "Monthly" : "Daily"} ${metric === "tokens" ? "processed tokens" : "cost"} by provider`}
           >
             {ticks.map((tick) => {
               const y = toY(tick);

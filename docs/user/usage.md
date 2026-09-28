@@ -13,6 +13,11 @@ estimated API-equivalent cost. These estimates are not your subscription bill.
 OpenCode reads its history from its local database. Subscription turns with unknown cost are
 estimated using model rates when available; models without rates show as unpriced.
 
+Choose **All time** to count all available session history, including work older than 90 days.
+The first scan can take longer. The server saves parsed transcript history for later scans; changed
+files update on the next scan, and model prices still apply to the entire range. All-time charts
+and the web time breakdown group results by month. The saved history uses disk space on the server.
+
 Totals depend on the history available on each server. Grok turns without a saved completed-turn
 record are missing from the totals.
 

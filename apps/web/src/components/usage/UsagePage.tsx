@@ -37,12 +37,15 @@ import { shortcutLabelForCommand } from "../../keybindings";
 import { useUsage, type EnvironmentUsageStatus } from "../../state/usage";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
+  aggregateUsageMonths,
   enumerateDays,
   enumerateHourStarts,
+  enumerateMonths,
   formatCount,
   formatDateTimeShort,
   formatDayShort,
   formatHourShort,
+  formatMonthShort,
   formatPercent,
   formatTokens,
   formatUsageContractMismatch,
@@ -106,9 +109,12 @@ export function UsagePage() {
   const shortcutTitle = (
     option: (typeof METRIC_OPTIONS)[number] | (typeof WINDOW_OPTIONS)[number],
   ) => {
-    const shortcut = shortcutLabelForCommand(keybindings, option.command, {
-      context: { usagePageOpen: true },
-    });
+    const shortcut =
+      option.command === null
+        ? null
+        : shortcutLabelForCommand(keybindings, option.command, {
+            context: { usagePageOpen: true },
+          });
     return shortcut ? `${option.label} (${shortcut})` : option.label;
   };
   const [windowSelection, setWindowSelection] = useState(() => ({
@@ -129,6 +135,7 @@ export function UsagePage() {
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
+  const isAllTime = windowDays === 0;
   const { merged, environments, selectedEnvironments, isPending, isPartial, refresh } = useUsage(
     window,
     selectedEnvironmentIds,
@@ -156,8 +163,16 @@ export function UsagePage() {
   });
 
   const days = useMemo(
-    () => enumerateDays(window.sinceDay, window.untilDay),
-    [window.sinceDay, window.untilDay],
+    () => (isAllTime ? [] : enumerateDays(window.sinceDay, window.untilDay)),
+    [isAllTime, window.sinceDay, window.untilDay],
+  );
+  const monthly = useMemo(
+    () => (isAllTime ? aggregateUsageMonths(merged.daily) : []),
+    [isAllTime, merged.daily],
+  );
+  const chartMonths = useMemo(
+    () => (isAllTime ? enumerateMonths(monthly[0]?.day ?? window.untilDay, window.untilDay) : []),
+    [isAllTime, monthly, window.untilDay],
   );
   const hours = useMemo(
     () =>
@@ -166,11 +181,9 @@ export function UsagePage() {
         : enumerateHourStarts(window.sinceTime, window.untilTime),
     [window.sinceTime, window.untilTime],
   );
-  // Newest first: the window can run 90 periods, so the interesting end
-  // belongs at the top of the table.
   const breakdownPeriods = useMemo<readonly (DailyTotals | HourlyTotals)[]>(
-    () => (isPast24Hours ? merged.hourly : merged.daily).toReversed(),
-    [isPast24Hours, merged.daily, merged.hourly],
+    () => (isPast24Hours ? merged.hourly : isAllTime ? monthly : merged.daily).toReversed(),
+    [isPast24Hours, isAllTime, monthly, merged.daily, merged.hourly],
   );
   const breakdownModels = useMemo(
     () =>
@@ -240,7 +253,9 @@ export function UsagePage() {
 
     const command = resolveUsageShortcut(event, keybindings);
     const metricOption = METRIC_OPTIONS.find((option) => option.command === command);
-    const periodOption = WINDOW_OPTIONS.find((option) => option.command === command);
+    const periodOption = WINDOW_OPTIONS.find(
+      (option) => option.command !== null && option.command === command,
+    );
     if (!metricOption && !periodOption) return;
 
     event.preventDefault();
@@ -299,8 +314,9 @@ export function UsagePage() {
     if (showingLimits && connectedLimitsEnvironments) autoRefreshLimits();
   }, [showingLimits, connectedLimitsEnvironments]);
 
-  const windowLabel =
-    isPast24Hours && window.sinceTime !== undefined && window.untilTime !== undefined
+  const windowLabel = isAllTime
+    ? "All available history"
+    : isPast24Hours && window.sinceTime !== undefined && window.untilTime !== undefined
       ? `${formatDateTimeShort(window.sinceTime, window.timeZone)} to ${formatDateTimeShort(window.untilTime, window.timeZone)}`
       : `${formatDayShort(window.sinceDay)} to ${formatDayShort(window.untilDay)}`;
   const topbarContent = (
@@ -578,18 +594,18 @@ export function UsagePage() {
 
                   <div className="flex min-w-0 flex-col gap-3">
                     <h2 className="text-sm font-medium text-foreground">
-                      {isPast24Hours ? "Hourly" : "Daily"}{" "}
+                      {isPast24Hours ? "Hourly" : isAllTime ? "Monthly" : "Daily"}{" "}
                       {metric === "tokens" ? "processed tokens" : "cost"}
                     </h2>
                     <UsageProviderChart
                       providers={activeProviders}
-                      days={days}
-                      daily={merged.daily}
+                      days={isAllTime ? chartMonths : days}
+                      daily={isAllTime ? monthly : merged.daily}
                       hours={hours}
                       hourly={merged.hourly}
                       metric={metric}
                       referenceTime={window.untilTime}
-                      resolution={isPast24Hours ? "hour" : "day"}
+                      resolution={isPast24Hours ? "hour" : isAllTime ? "month" : "day"}
                       timeZone={window.timeZone}
                     />
                   </div>
@@ -627,7 +643,10 @@ export function UsagePage() {
                       {(
                         [
                           { value: "model", label: "Model" },
-                          { value: "time", label: isPast24Hours ? "Hour" : "Day" },
+                          {
+                            value: "time",
+                            label: isPast24Hours ? "Hour" : isAllTime ? "Month" : "Day",
+                          },
                         ] as const
                       ).map((option) => (
                         <Toggle key={option.value} value={option.value}>
@@ -702,7 +721,9 @@ export function UsagePage() {
                       </colgroup>
                       <thead>
                         <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                          <th className="py-2 font-normal">{isPast24Hours ? "Hour" : "Day"}</th>
+                          <th className="py-2 font-normal">
+                            {isPast24Hours ? "Hour" : isAllTime ? "Month" : "Day"}
+                          </th>
                           {activeProviders.map((provider) => (
                             <th key={provider} className="py-2 text-right font-normal">
                               {PROVIDER_PRESENTATION[provider].label}
@@ -731,7 +752,9 @@ export function UsagePage() {
                               <td className="py-2 text-foreground">
                                 {"hourStart" in period
                                   ? formatHourShort(period.hourStart, window.timeZone)
-                                  : formatDayShort(period.day)}
+                                  : isAllTime
+                                    ? formatMonthShort(period.day)
+                                    : formatDayShort(period.day)}
                               </td>
                               {activeProviders.map((provider) => (
                                 <td

@@ -2,7 +2,10 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  aggregateUsageMonths,
   enumerateHourStarts,
+  enumerateMonths,
+  formatMonthShort,
   formatDateTimeShort,
   formatHourShort,
   formatPercent,
@@ -89,6 +92,48 @@ describe("hourly usage formatting", () => {
     expect(window.resolution).toBe("hour");
     expect(window.sinceTime).toBe("2026-08-10T12:37:00.000Z");
     expect(window.untilTime).toBe("2026-08-11T12:37:00.000Z");
+  });
+
+  it("requests all available history without an hourly range", () => {
+    const window = makeWindow(0, new Date("2026-08-11T12:37:42.123Z"));
+    expect(window).toMatchObject({ sinceDay: "1970-01-01", resolution: "day" });
+    expect(window.sinceTime).toBeUndefined();
+  });
+
+  it("groups all-time chart data by month and keeps provider totals", () => {
+    const daily = [
+      {
+        day: "2025-12-31",
+        costUsd: 2,
+        totalTokens: 20,
+        byProvider: new Map([["codex" as const, { costUsd: 2, totalTokens: 20 }]]),
+      },
+      {
+        day: "2026-01-01",
+        costUsd: 3,
+        totalTokens: 30,
+        byProvider: new Map([["codex" as const, { costUsd: 3, totalTokens: 30 }]]),
+      },
+      {
+        day: "2026-01-02",
+        costUsd: 4,
+        totalTokens: 40,
+        byProvider: new Map([["claude" as const, { costUsd: 4, totalTokens: 40 }]]),
+      },
+    ];
+    const months = aggregateUsageMonths(daily);
+    expect(months.map((month) => [month.day, month.costUsd, month.totalTokens])).toEqual([
+      ["2025-12-01", 2, 20],
+      ["2026-01-01", 7, 70],
+    ]);
+    expect(months[1]?.byProvider.get("codex")?.totalTokens).toBe(30);
+    expect(months[1]?.byProvider.get("claude")?.totalTokens).toBe(40);
+    expect(enumerateMonths("2025-12-31", "2026-02-01")).toEqual([
+      "2025-12-01",
+      "2026-01-01",
+      "2026-02-01",
+    ]);
+    expect(formatMonthShort("2025-12-01")).toBe("Dec 2025");
   });
 
   it("degrades an unknown resolved zone to UTC instead of crashing", () => {

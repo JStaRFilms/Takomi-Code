@@ -9,11 +9,14 @@ import {
   type MergedUsage,
 } from "@t3tools/shared/usageMerge";
 import {
+  aggregateUsageMonths,
   enumerateDays,
   enumerateHourStarts,
+  enumerateMonths,
   formatCount,
   formatDayShort,
   formatHourShort,
+  formatMonthShort,
   formatPercent,
   formatTokens,
   formatUsageContractMismatch,
@@ -56,6 +59,7 @@ const WINDOW_OPTIONS = [
   { value: 7, label: "7d", accessibilityLabel: "Past 7 days" },
   { value: 30, label: "30d", accessibilityLabel: "Past 30 days" },
   { value: 90, label: "90d", accessibilityLabel: "Past 90 days" },
+  { value: 0, label: "All", accessibilityLabel: "All available history" },
 ] as const;
 
 const METRIC_OPTIONS = [
@@ -95,6 +99,7 @@ export function UsageRouteScreen() {
   const [metric, setMetric] = useState<UsageChartMetric>("cost");
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
+  const isAllTime = windowDays === 0;
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const { merged, environments, selectedEnvironments, isPending, refresh } = useUsage(
@@ -125,28 +130,40 @@ export function UsageRouteScreen() {
     ),
   ];
 
-  const days = useMemo(
-    () => enumerateDays(window.sinceDay, window.untilDay),
-    [window.sinceDay, window.untilDay],
+  const monthly = useMemo(
+    () => (isAllTime ? aggregateUsageMonths(merged.daily) : []),
+    [isAllTime, merged.daily],
   );
   const chartDays = useMemo(
     () =>
-      isPast24Hours && window.sinceTime !== undefined && window.untilTime !== undefined
-        ? enumerateHourStarts(window.sinceTime, window.untilTime)
-        : days,
-    [days, isPast24Hours, window.sinceTime, window.untilTime],
+      isAllTime
+        ? enumerateMonths(monthly[0]?.day ?? window.untilDay, window.untilDay)
+        : isPast24Hours && window.sinceTime !== undefined && window.untilTime !== undefined
+          ? enumerateHourStarts(window.sinceTime, window.untilTime)
+          : enumerateDays(window.sinceDay, window.untilDay),
+    [
+      isAllTime,
+      monthly,
+      isPast24Hours,
+      window.sinceDay,
+      window.untilDay,
+      window.sinceTime,
+      window.untilTime,
+    ],
   );
   const chartTotals = useMemo(
     (): readonly DailyTotals[] =>
-      isPast24Hours
-        ? merged.hourly.map((hour) => ({
-            day: hour.hourStart,
-            costUsd: hour.costUsd,
-            totalTokens: hour.totalTokens,
-            byProvider: hour.byProvider,
-          }))
-        : merged.daily,
-    [isPast24Hours, merged.daily, merged.hourly],
+      isAllTime
+        ? monthly
+        : isPast24Hours
+          ? merged.hourly.map((hour) => ({
+              day: hour.hourStart,
+              costUsd: hour.costUsd,
+              totalTokens: hour.totalTokens,
+              byProvider: hour.byProvider,
+            }))
+          : merged.daily,
+    [isAllTime, monthly, isPast24Hours, merged.daily, merged.hourly],
   );
 
   const [refreshingUsage, setRefreshingUsage] = useState(false);
@@ -348,6 +365,7 @@ export function UsageRouteScreen() {
                     sinceDay={window.sinceDay}
                     untilDay={window.untilDay}
                     isPast24Hours={isPast24Hours}
+                    isAllTime={isAllTime}
                     timeZone={window.timeZone}
                   />
                   <ProviderSection
@@ -482,6 +500,7 @@ function ChartCard(props: {
   readonly sinceDay: string;
   readonly untilDay: string;
   readonly isPast24Hours: boolean;
+  readonly isAllTime: boolean;
   readonly timeZone: string;
 }) {
   const { merged, metric } = props;
@@ -519,9 +538,11 @@ function ChartCard(props: {
 
       <View className="flex-row items-center justify-between">
         <Text className="text-xs text-foreground-tertiary">
-          {props.isPast24Hours
-            ? formatHourShort(props.days[0] ?? "", props.timeZone)
-            : formatDayShort(props.sinceDay)}
+          {props.isAllTime
+            ? formatMonthShort(props.days[0] ?? props.untilDay)
+            : props.isPast24Hours
+              ? formatHourShort(props.days[0] ?? "", props.timeZone)
+              : formatDayShort(props.sinceDay)}
         </Text>
         <View className="flex-row items-center gap-4">
           {merged.providers.map((provider) => (
@@ -537,9 +558,11 @@ function ChartCard(props: {
           ))}
         </View>
         <Text className="text-xs text-foreground-tertiary">
-          {props.isPast24Hours
-            ? formatHourShort(props.days[props.days.length - 1] ?? "", props.timeZone)
-            : formatDayShort(props.untilDay)}
+          {props.isAllTime
+            ? formatMonthShort(props.untilDay)
+            : props.isPast24Hours
+              ? formatHourShort(props.days[props.days.length - 1] ?? "", props.timeZone)
+              : formatDayShort(props.untilDay)}
         </Text>
       </View>
     </View>

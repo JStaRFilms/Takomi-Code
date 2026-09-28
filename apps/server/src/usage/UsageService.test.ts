@@ -778,6 +778,41 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live("keeps older all-time history cached across shorter scans and restarts", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      const oldContent = claudeLine(1, 5).replace("2026-08-01", "2024-08-01");
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(transcript, oldContent);
+        await NodeFSP.utimes(transcript, 1_722_470_400, 1_722_470_400);
+      });
+      const allTime = { ...WINDOW, sinceDay: UsageDay.make("1970-01-01") };
+      yield* Effect.gen(function* () {
+        const first = yield* (yield* UsageService.make).readSummary(allTime);
+        assert.strictEqual(totalOutputTokens(first), 5);
+        yield* Effect.promise(() => NodeFSP.rm(transcript));
+        const recent = yield* (yield* UsageService.make).readSummary(WINDOW);
+        assert.strictEqual(totalOutputTokens(recent), 0);
+        const restartedService = yield* UsageService.make;
+        const restarted = yield* restartedService.readSummary(allTime);
+        assert.strictEqual(totalOutputTokens(restarted), 5);
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(
+            transcript,
+            oldContent.replace('"output_tokens":5', '"output_tokens":99'),
+          );
+          await NodeFSP.utimes(transcript, 1_722_470_400, 1_722_470_400);
+        });
+        const changed = yield* restartedService.readSummary(allTime);
+        assert.strictEqual(totalOutputTokens(changed), 99);
+      }).pipe(
+        Effect.provide(
+          serviceLayers({ prefix: "usage-service-all-time-cache-test", home, settings }),
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.live("does not share an in-flight scan after custom prices change", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

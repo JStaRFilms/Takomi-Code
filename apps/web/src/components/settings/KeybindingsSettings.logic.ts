@@ -16,7 +16,9 @@ import { isMacPlatform } from "../../lib/utils";
 import { METRIC_OPTIONS, WINDOW_OPTIONS } from "../usage/usageShortcuts";
 
 const usageCommandOrder = new Map<KeybindingCommand, number>(
-  [...METRIC_OPTIONS, ...WINDOW_OPTIONS].map((option, index) => [option.command, index]),
+  [...METRIC_OPTIONS, ...WINDOW_OPTIONS]
+    .filter((option) => option.command !== null)
+    .map((option, index) => [option.command, index]),
 );
 
 function compareUsageCommands(left: KeybindingCommand, right: KeybindingCommand): number | null {

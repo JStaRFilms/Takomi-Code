@@ -6,7 +6,7 @@
  */
 import { UsageDay, type UsageResolution, type UsageSummaryInput } from "@t3tools/contracts";
 
-import type { UsageContractMismatch } from "./usageMerge.ts";
+import type { DailyTotals, UsageContractMismatch } from "./usageMerge.ts";
 
 const CURRENCY = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -92,6 +92,47 @@ export function enumerateDays(sinceDay: string, untilDay: string): readonly stri
     days.push(new Date(cursor).toISOString().slice(0, 10));
   }
   return days;
+}
+
+export const ALL_TIME_START_DAY = UsageDay.make("1970-01-01");
+
+/** Monthly chart cells keep an all-time view from plotting thousands of daily points. */
+export function aggregateUsageMonths(daily: readonly DailyTotals[]): readonly DailyTotals[] {
+  const months = new Map<string, DailyTotals>();
+  for (const entry of daily) {
+    const day = `${entry.day.slice(0, 7)}-01`;
+    const previous = months.get(day);
+    const byProvider = new Map(previous?.byProvider);
+    for (const [provider, totals] of entry.byProvider) {
+      const old = byProvider.get(provider);
+      byProvider.set(provider, {
+        costUsd: (old?.costUsd ?? 0) + totals.costUsd,
+        totalTokens: (old?.totalTokens ?? 0) + totals.totalTokens,
+      });
+    }
+    months.set(day, {
+      day,
+      costUsd: (previous?.costUsd ?? 0) + entry.costUsd,
+      totalTokens: (previous?.totalTokens ?? 0) + entry.totalTokens,
+      byProvider,
+    });
+  }
+  return [...months.values()].sort((a, b) => a.day.localeCompare(b.day));
+}
+
+export function enumerateMonths(sinceDay: string, untilDay: string): readonly string[] {
+  const months: string[] = [];
+  const start = new Date(`${sinceDay.slice(0, 7)}-01T00:00:00Z`);
+  const end = `${untilDay.slice(0, 7)}-01`;
+  while (!Number.isNaN(start.getTime()) && start.toISOString().slice(0, 10) <= end) {
+    months.push(start.toISOString().slice(0, 10));
+    start.setUTCMonth(start.getUTCMonth() + 1);
+  }
+  return months;
+}
+
+export function formatMonthShort(day: string): string {
+  return `${formatDayShort(day).split(" ")[0]} ${day.slice(0, 4)}`;
 }
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -203,7 +244,7 @@ export function formatRelativeHourShort(
 
 /**
  * The window the page requests, expressed in the viewer's own time zone so days
- * line up with what they actually experienced.
+ * line up with what they actually experienced. Zero days requests all available history.
  */
 export function makeWindow(
   days: number,
@@ -245,6 +286,14 @@ export function makeWindow(
       resolution,
       sinceTime: sinceTime.toISOString(),
       untilTime: untilTime.toISOString(),
+    };
+  }
+  if (days === 0) {
+    return {
+      sinceDay: ALL_TIME_START_DAY,
+      untilDay: UsageDay.make(untilDay),
+      timeZone,
+      resolution,
     };
   }
   // Subtracting fixed milliseconds from `now` lands on the wrong calendar day

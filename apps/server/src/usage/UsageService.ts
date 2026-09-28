@@ -56,6 +56,7 @@ import { readCursorAccountUsage } from "./cursorUsageReader.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
 import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
+import { ALL_TIME_START_DAY } from "@t3tools/shared/usageFormat";
 import {
   listOpenCodeDatabases,
   readOpenCodeUsage as readOpenCodeDatabase,
@@ -90,7 +91,7 @@ const RATES_REFRESH_FLOOR_MS = 60 * 1000;
 const MTIME_SLACK_MS = 36 * 60 * 60 * 1000;
 const MAX_HOURLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-/** Longest window the UI offers, plus slack. Older entries are pruned. */
+/** Keep recent scan entries until an all-time request opts into retaining older history. */
 const CACHE_RETENTION_DAYS = 90;
 
 const decodeCodexSettings = Schema.decodeOption(CodexSettings);
@@ -116,7 +117,10 @@ const encodeScanCacheFile = Schema.encodeEffect(ScanCacheJson);
 const encodeUsageRecordKey = Schema.encodeSync(ScanCacheJson);
 const CachedSource = Schema.Struct({ dir: Schema.String, volumeId: Schema.String });
 const decodeCachedSources = Schema.decodeUnknownOption(
-  Schema.Struct({ sources: Schema.Record(Schema.String, CachedSource) }),
+  Schema.Struct({
+    sources: Schema.Record(Schema.String, CachedSource),
+    allTimeCached: Schema.optional(Schema.Boolean),
+  }),
 );
 
 export class UsageService extends Context.Service<
@@ -168,6 +172,7 @@ export const make = Effect.gen(function* () {
   const fileCache: ScanCache = new Map();
   const sourceCache = new Map<string, typeof CachedSource.Type>();
   let cacheDirty = false;
+  let allTimeCached = false;
   const isWithinDirectory = (filePath: string, dir: string) => {
     const relative = path.relative(dir, filePath);
     return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
@@ -410,6 +415,7 @@ export const make = Effect.gen(function* () {
       for (const [path, entry] of decodeScanCache(document)) fileCache.set(path, entry);
       const sources = decodeCachedSources(document);
       if (Option.isSome(sources)) {
+        allTimeCached = sources.value.allTimeCached === true;
         for (const [key, source] of Object.entries(sources.value.sources))
           sourceCache.set(key, source);
       }
@@ -423,6 +429,7 @@ export const make = Effect.gen(function* () {
     yield* encodeScanCacheFile({
       ...encodeScanCache(fileCache),
       sources: Object.fromEntries(sourceCache),
+      allTimeCached,
     }).pipe(
       Effect.flatMap((serialized) => fileSystem.writeFileString(scanCachePath, serialized)),
       Effect.map(() => {
@@ -813,7 +820,15 @@ export const make = Effect.gen(function* () {
     const windowStartMs =
       (hourlyWindow?.sinceTimeMs ?? DateTime.toEpochMillis(windowStart.value)) - MTIME_SLACK_MS;
 
-    const retentionCutoffMs = startedAtMs - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    // Once an all-time scan has filled the durable per-file cache, later
+    // shorter windows must not evict its historical records.
+    if (input.sinceDay === ALL_TIME_START_DAY && !allTimeCached) {
+      allTimeCached = true;
+      cacheDirty = true;
+    }
+    const retentionCutoffMs = allTimeCached
+      ? 0
+      : startedAtMs - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
     // Pricing only matters once records are aggregated, so the rate table
     // loads while transcripts stream instead of gating them: a cold rates
