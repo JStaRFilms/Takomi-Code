@@ -57,6 +57,10 @@ import { UsageAggregator } from "./usageAggregation.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
 import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 import {
+  listOpenCodeDatabases,
+  readOpenCodeUsage as readOpenCodeDatabase,
+} from "./usageOpenCode.ts";
+import {
   listTranscriptFiles,
   readDirectoryVolumeId,
   readTranscriptRecords,
@@ -507,10 +511,6 @@ export const make = Effect.gen(function* () {
     readonly files:
       | readonly { readonly path: string; readonly records: readonly UsageRecord[] }[]
       | null;
-    /** Set when a usage database exists but could not be read at all. */
-    readonly readError?: string;
-    /** Rows that parsed as JSON but carried no recognisable usage payload. */
-    readonly malformedRecords?: number;
   }
 
   const collectDirs = Effect.fn("UsageService.collectDirs")(function* (
@@ -558,13 +558,46 @@ export const make = Effect.gen(function* () {
       }
       return [...canonical];
     });
-    const dataHome = hostEnvironment["XDG_DATA_HOME"]?.trim();
-    for (const dir of yield* envRoots("OPENCODE_DATA_DIR", [
-      path.join(
-        dataHome && path.isAbsolute(dataHome) ? dataHome : path.join(home, ".local", "share"),
-        "opencode",
-      ),
-    ])) {
+    const openCodeDirs = new Set<string>();
+    const openCodeDatabases = new Set<string>();
+    for (const environment of [
+      hostEnvironment,
+      ...Object.values(settings.providerInstances)
+        .filter((instance) => instance.driver === "opencode")
+        .map((instance) => mergeProviderInstanceEnvironment(instance.environment, hostEnvironment)),
+    ]) {
+      if (
+        environment.OPENCODE_DB?.trim() ||
+        ["1", "true"].includes(environment.OPENCODE_DISABLE_CHANNEL_DB?.trim().toLowerCase() ?? "")
+      ) {
+        const databases = yield* Effect.promise(() =>
+          listOpenCodeDatabases({ environment, homeDirectory: home }),
+        );
+        for (const database of databases) {
+          openCodeDatabases.add(
+            yield* fileSystem.realPath(database).pipe(Effect.orElseSucceed(() => database)),
+          );
+        }
+      } else {
+        const dataDir = environment.XDG_DATA_HOME?.trim();
+        for (const root of (
+          environment.OPENCODE_DATA_DIR?.trim() ||
+          path.join(
+            dataDir && path.isAbsolute(dataDir) ? dataDir : path.join(home, ".local", "share"),
+            "opencode",
+          )
+        )
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)) {
+          const resolved = path.resolve(expandHomePath(root));
+          openCodeDirs.add(
+            yield* fileSystem.realPath(resolved).pipe(Effect.orElseSucceed(() => resolved)),
+          );
+        }
+      }
+    }
+    for (const dir of openCodeDirs) {
       const result = yield* Effect.promise(() => readOpenCodeUsage(dir, windowStartMs));
       scanned.push({
         provider: "opencode",
@@ -573,6 +606,25 @@ export const make = Effect.gen(function* () {
         files: result.missing && !result.error ? null : result.files,
         status: result.error ? "partial" : "ok",
         ...(result.error ? { message: "Some OpenCode history could not be read." } : {}),
+      });
+    }
+    for (const dir of openCodeDatabases) {
+      if (
+        openCodeDirs.has(path.dirname(dir)) &&
+        /^opencode(?:-[a-zA-Z0-9_-]+)?\.db$/.test(path.basename(dir))
+      ) {
+        continue;
+      }
+      // An explicit OPENCODE_DB may have an arbitrary filename, outside the
+      // upstream directory reader's opencode*.db discovery convention.
+      const result = yield* Effect.promise(() => readOpenCodeDatabase(dir, windowStartMs));
+      scanned.push({
+        provider: "opencode",
+        dir,
+        volumeId: yield* Effect.promise(() => readDirectoryVolumeId(dir)),
+        files: result === null ? null : [{ path: dir, records: result.records }],
+        status: result === null ? "partial" : "ok",
+        ...(result === null ? { message: "OpenCode database could not be read." } : {}),
       });
     }
     const antigravityRoots = yield* envRoots("ANTIGRAVITY_DATA_DIR", [
@@ -792,8 +844,6 @@ export const make = Effect.gen(function* () {
       message,
       action,
       hostId: sourceHostId,
-      readError,
-      malformedRecords,
     } of scannedDirs) {
       const retainedFiles = [...(files ?? [])];
       const livePaths = new Set(retainedFiles.map((file) => file.path));
@@ -849,24 +899,13 @@ export const make = Effect.gen(function* () {
       sources.push({
         fingerprint: { hostId: sourceHostId ?? hostId, provider, resolvedHomePath: dir, volumeId },
         // Clients exclude missing sources, so saved records remain an available source.
-        status:
-          files === null && scannedFiles === 0
-            ? "missing"
-            : (malformedRecords ?? 0) > 0
-              ? "partial"
-              : (status ?? "ok"),
+        status: files === null && scannedFiles === 0 ? "missing" : (status ?? "ok"),
         scannedFiles,
         skippedFiles,
-        malformedRecords: malformedRecords ?? 0,
+        malformedRecords: 0,
         distinctSessions: sessionIds.size,
         message:
-          readError ??
-          message ??
-          ((malformedRecords ?? 0) > 0
-            ? "Some usage rows could not be parsed."
-            : files === null
-              ? "No transcript directory on this environment."
-              : null),
+          message ?? (files === null ? "No transcript directory on this environment." : null),
         ...(action ? { action } : {}),
       });
     }

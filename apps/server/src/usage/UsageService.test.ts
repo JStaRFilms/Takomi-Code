@@ -1067,6 +1067,24 @@ describe("UsageService", () => {
       assert.strictEqual(bucket.records, 1);
       assert.strictEqual(bucket.costSource, "unpriced");
       assert.strictEqual(bucket.sourcePath, opencodeDir);
+
+      const overridden = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-opencode-override-test",
+            home,
+            settings: {
+              providers: { claudeAgent: { homePath: NodePath.join(home, "claude") } },
+            },
+            environment: { OPENCODE_DB: dbPath },
+          }),
+        ),
+      );
+      const overrideSummary = yield* overridden.readSummary(WINDOW);
+      assert.strictEqual(
+        overrideSummary.buckets.find((entry) => entry.provider === "opencode")?.sourcePath,
+        dbPath,
+      );
     }).pipe(Effect.scoped),
   );
 });

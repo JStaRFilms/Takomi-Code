@@ -47,21 +47,21 @@ builds manually.
      package versions aligned by running:
 
      ```powershell
-      node scripts/update-release-package-versions.ts 0.0.42
+      node scripts/update-release-package-versions.ts 1.2.4
      ```
 
-     Replace `0.0.42` with the intended new version. Do not reuse a published version for a
+     Replace `1.2.4` with the intended new version. Do not reuse a published version for a
      materially different public build.
 
-   - **Mobile:** update `version` in `apps/mobile/app.config.ts`, for example from `1.2.1` to
-     `1.2.2`. The local APK uses that value in its filename. Do not manually change Android
+   - **Mobile:** update `version` in `apps/mobile/app.config.ts`, for example from `1.3.1` to
+     `1.3.2`. The local APK uses that value in its filename. Do not manually change Android
      `versionCode` or iOS `buildNumber` for EAS production builds: EAS owns those remote build
      numbers and increments them through `apps/mobile/eas.json`.
 
 4. Review public configuration in the repository-root `.env` or `.env.local` when the build needs
    T3 Connect, Clerk, or relay configuration. Never commit secrets.
 
-Both desktop and mobile source versions are `1.2.4`.
+Current source versions are desktop `1.2.4` and mobile `1.3.1`.
 
 ## Build both applications
 

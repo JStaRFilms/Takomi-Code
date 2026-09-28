@@ -1,6 +1,6 @@
 # Takomi Code handoff
 
-**Updated:** 2026-09-08
+**Updated:** 2026-09-28
 
 **Branch:** `feat/pi-takomi-parity`
 
@@ -81,12 +81,12 @@ For suite development, set **Takomi suite root** to the VibeCode Protocol Suite 
 
 ## Current local release workflow
 
-Current source versions are desktop `0.0.42` and mobile `1.2.1`. Artifact names are generated from
+Current source versions are desktop `1.2.4` and mobile `1.3.1`. Artifact names are generated from
 those version sources and the current commit:
 
 ```text
-release\Takomi-Code-0.0.42-x64.exe
-release\Takomi-Code-Preview-1.2.1-<sha>[-dirty].apk
+release\Takomi-Code-1.2.4-x64.exe
+release\Takomi-Code-Preview-1.3.1-<sha>[-dirty].apk
 ```
 
 From the repository root on Windows, build both:
