@@ -118,9 +118,22 @@ Canonical maintained files include:
 - `docs/features/takomi-tool-call-ui-audit.md`
 - `docs/features/takomi-desktop-and-android.md`
 
-## 6. Build release artifacts
+## 6. Give the built web/server test commands
 
-Local release builds output to `release/` and are driven by repository scripts.
+After the source audit, tell the user how to test the merged code without the dev runner. From the repository root, use the server's `build` task, not `build:bundle` on its own. The `build` task depends on the web build, packs the server, and copies the current web assets into `apps/server/dist/client`:
+
+```powershell
+vp run --filter t3 build
+node apps/server/dist/bin.mjs serve --base-dir .t3/production-test
+```
+
+Open the local URL or pairing link printed by `serve` yourself. `serve` runs headless and does not open a browser; leave the terminal open and stop it with Ctrl+C. The explicit data directory keeps this test server away from `~/.t3/userdata` and the checkout's existing `.t3` state. Check that the directory is not already in use before starting it. Do not start a server, open a browser, or mutate live state on the user's behalf without permission. Include these commands in the final report even when no build or server was run, and say which checks and artifacts actually exist.
+
+For a dedicated Mac host, build with the same `vp run --filter t3 build`, then run `node apps/server/dist/bin.mjs serve --tailscale-serve --no-browser` with the host's intended data directory. The machine-local `release/mac-server.md` runbook, when present, describes Mac pairing; it is ignored by Git and may not exist in other clones. Tailscale hosting and pairing are separate from local web testing; never add `--tailscale-serve` to a local test by default. The root CLI without `serve` opens a browser by default, so the launch commands are not interchangeable in presentation or data-directory effects.
+
+## 7. Build release artifacts
+
+Local release builds output to `release/` and are driven by repository scripts. These are optional for a merge unless the user requests artifacts. They do not replace the built web/server test commands above.
 
 ### Build both applications
 
@@ -136,7 +149,7 @@ vp run dist:local
 vp run dist:local:desktop
 ```
 
-The desktop version comes from `apps/desktop/package.json` (currently `0.0.42`). Expected output:
+Read the desktop version from `apps/desktop/package.json` at build time. Expected output:
 
 ```text
 release\Takomi-Code-<desktop-version>-x64.exe
@@ -150,7 +163,7 @@ Report the warning if no WSL `node-pty` prebuild is supplied: normal Windows ope
 vp run dist:local:android
 ```
 
-The mobile version comes from `apps/mobile/app.config.ts` (currently `1.2.1`). Expected output:
+Read the mobile version from `apps/mobile/app.config.ts` at build time. Expected output:
 
 ```text
 release\Takomi-Code-Preview-<mobile-version>-<sha>[-dirty].apk
@@ -158,13 +171,13 @@ release\Takomi-Code-Preview-<mobile-version>-<sha>[-dirty].apk
 
 Uncommitted tracked changes are included (the artifact name appends `-dirty`). The build uses the managed short worktree `C:\takomi-local-build` and `C:\tp` pnpm virtual store. The output is an internal, debug-signed preview APK and is not Play Store uploadable. If Gradle owns a locked build directory, stop the daemon cleanly via `C:\takomi-local-build\apps\mobile\android\gradlew.bat --stop`; never kill Java or Gradle processes by broad name/path matching.
 
-## 7. Finish safely
+## 8. Finish safely
 
 Before reporting completion:
 
 1. Confirm the merge base of `HEAD` and `upstream/main` is exactly `upstream/main`.
 2. Confirm the working tree is clean.
 3. List the merge commit and any corrective commits created afterward.
-4. State focused checks and artifact paths truthfully.
+4. State focused checks and artifact paths truthfully. Give the built web/server build and launch commands from step 6, and distinguish those from any release build commands actually run.
 5. State unresolved limitations, especially WSL packaging and Android's upstream-compatible infrastructure identity.
 6. Do not push unless explicitly requested. A merge-based update uses a normal push; do not force-push for this workflow.
