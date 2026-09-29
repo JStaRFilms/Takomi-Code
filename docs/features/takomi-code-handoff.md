@@ -1,6 +1,6 @@
 # Takomi Code handoff
 
-**Updated:** 2026-09-28
+**Updated:** 2026-09-29
 
 **Branch:** `feat/pi-takomi-parity`
 
@@ -18,6 +18,29 @@ This is the maintained status summary for the Takomi fork. Detailed documentatio
 
 The material under `docs/tasks/orchestrator-sessions/` is historical planning evidence, not current
 implementation or release guidance.
+
+## Branch model
+
+- `feat/pi-takomi-parity` — the live branch. All fork work converges here; day-to-day work
+  happens only on this branch. Takomi branding throughout.
+- `feat/pi-debrand` (worktree `worktrees/pi-debrand`) — a dormant stock-flavor branch: the same
+  features with visible Takomi chrome swapped for stock T3 equivalents (sidebar wordmark, tab and
+  inspector labels, connection client labels, provider icons, driver comment). It exists for
+  stock-build demos and the eventual upstream PR.
+
+Rules for `feat/pi-debrand`:
+
+1. Never merge it into `feat/pi-takomi-parity` — that would strip Takomi branding from the live
+   branch.
+2. It is agent-owned. Rebase it onto `feat/pi-takomi-parity` only when a stock build, demo, or
+   the upstream PR is actually requested; treat conflicts as trivial string swaps.
+3. Delete it once the upstream PR ships.
+4. App identity (`productName`, `APP_BASE_NAME`, splash, package display names) is intentionally
+   still Takomi-branded on that branch and must be handled separately at PR time.
+
+The Pi provider's visible display name is a single constant: `PI_PROVIDER_IDENTITY` in
+`packages/contracts/src/providerIdentity.ts` (the provider name flips in one line; other branding
+is per-surface chrome, not centralized).
 
 ## Current state
 

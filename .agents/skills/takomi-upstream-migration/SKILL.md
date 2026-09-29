@@ -7,6 +7,12 @@ description: Safely migrate the Takomi-Code fork onto the latest upstream T3 Cod
 
 Run from the repository root. Preserve upstream architecture and stability fixes; reapply Takomi behavior as the narrowest provider- or brand-specific delta.
 
+## Branch model (read first)
+
+- `feat/pi-takomi-parity` — the live branch; all work converges here and upstream merges target it.
+- `feat/pi-debrand` (worktree `worktrees/pi-debrand`) — dormant stock-flavor branch for stock demos and the eventual upstream PR. Never merge it into `feat/pi-takomi-parity`; never rebase it as part of a migration. If it has drifted and the user asks for a stock build or the upstream PR, rebase it onto `feat/pi-takomi-parity` at that point only (its delta is intentional string swaps; resolve conflicts accordingly), then delete it after the PR ships.
+- `PI_PROVIDER_IDENTITY` in `packages/contracts/src/providerIdentity.ts` owns the Pi display name (`"Takomi"` on the live branch, `"Pi"` on `feat/pi-debrand`). See `docs/features/takomi-code-handoff.md` for the full branch rules.
+
 ## 1. Establish a recoverable starting point
 
 1. Inspect `git status --short --branch`, remotes, current HEAD, and `upstream/main`.
