@@ -185,6 +185,61 @@ NodeTest.test(
   },
 );
 
+NodeTest.test(
+  "keeps v3 sessions continuable when a system record exceeds the metadata limit",
+  async (t) => {
+    const value = await fixture();
+    t.after(() => NodeFSP.rm(value.root, { recursive: true, force: true }));
+    const timestamp = "2026-09-29T13:36:00.000Z";
+    const header = {
+      type: "session",
+      version: 3,
+      id: "large-system",
+      timestamp,
+      cwd: value.workspace,
+    };
+    const system = {
+      type: "message",
+      id: "system",
+      parentId: null,
+      timestamp,
+      message: { role: "system", content: "x".repeat(70_000), timestamp: Date.now() },
+    };
+    const user = {
+      type: "message",
+      id: "user",
+      parentId: "system",
+      timestamp,
+      message: { role: "user", content: "Visible prompt", timestamp: Date.now() },
+    };
+    const file = NodePath.join(value.directory, "large-system.jsonl");
+    await NodeFSP.writeFile(
+      file,
+      `${[header, system, user].map((record) => JSON.stringify(record)).join("\n")}\n`,
+    );
+    NodeAssert.ok((await NodeFSP.stat(file)).size < 1024 * 1024);
+    await NodeFSP.writeFile(
+      NodePath.join(value.directory, "bad-record.jsonl"),
+      `${[JSON.stringify({ ...header, id: "bad-record" }), JSON.stringify(system), "{invalid", JSON.stringify(user)].join("\n")}\n`,
+    );
+
+    const result = await scanPiSessionCatalog(request(value), {
+      signal: new AbortController().signal,
+    });
+    const continued = result.entries.find((entry) => entry.nativeSessionId === "large-system")!;
+    NodeAssert.equal(continued.formatVersion, 3);
+    NodeAssert.equal(continued.compatibility, "truncated");
+    NodeAssert.equal(continued.fidelity, "metadata-truncated");
+    NodeAssert.equal(continued.entryCountExact, false);
+    NodeAssert.equal(continued.entryCount, 1);
+    NodeAssert.equal(continued.name, "Visible prompt");
+    NodeAssert.equal(
+      result.entries.find((entry) => entry.nativeSessionId === "bad-record")?.compatibility,
+      "malformed",
+    );
+  },
+);
+
 NodeTest.test("rejects a file replaced between lstat and descriptor open", async (t) => {
   const value = await fixture();
   t.after(() => NodeFSP.rm(value.root, { recursive: true, force: true }));

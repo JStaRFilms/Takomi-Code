@@ -453,12 +453,15 @@ async function readSession(
     let thinking: string | undefined;
     let entryCount = 0;
     let malformed = !validVersion;
+    let skippedOversizedRecord = false;
     for (const line of lines) {
       abortIfRequested(signal);
       if (line.length === 0) continue;
       if (Buffer.byteLength(line) > MAX_RECORD_BYTES) {
-        malformed = true;
-        break;
+        // Large system messages and tool results are valid Pi entries, but
+        // catalog metadata never needs to parse their contents.
+        skippedOversizedRecord = true;
+        continue;
       }
       try {
         const entry: unknown = JSON.parse(line);
@@ -486,15 +489,18 @@ async function readSession(
         break;
       }
     }
+    const metadataTruncated = truncated || skippedOversizedRecord;
     const compatibility = truncated
       ? "truncated"
       : malformed
         ? "malformed"
-        : header.version === 3
-          ? "compatible"
-          : header.version === undefined || header.version < 3
-            ? "legacy"
-            : "unknown";
+        : skippedOversizedRecord
+          ? "truncated"
+          : header.version === 3
+            ? "compatible"
+            : header.version === undefined || header.version < 3
+              ? "legacy"
+              : "unknown";
     if (truncated) {
       // Pi appends renames (session_info) at the END of the file, so a
       // truncated prefix can miss the current name. Mirror Pi's
@@ -518,11 +524,11 @@ async function readSession(
       ...(model ? { model: safeLabel(model, "Unknown model") } : {}),
       ...(thinking ? { thinking: safeLabel(thinking, "Unknown") } : {}),
       entryCount,
-      entryCountExact: !truncated && !malformed,
+      entryCountExact: !metadataTruncated && !malformed,
       parentSession: header.parentSession !== undefined,
       formatVersion: validVersion ? (header.version ?? "legacy") : "unknown",
       compatibility,
-      fidelity: truncated ? "metadata-truncated" : "metadata-only",
+      fidelity: metadataTruncated ? "metadata-truncated" : "metadata-only",
       activity: "unobservable",
       ownership: "external-source",
     };
