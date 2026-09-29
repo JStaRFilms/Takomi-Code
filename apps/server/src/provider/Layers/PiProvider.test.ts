@@ -91,6 +91,17 @@ describe("Pi scoped resource probe", () => {
             NodePath.join(homePath, "extensions", "takomi-runtime", "index.ts"),
             "",
           );
+          const packageDir = NodePath.join(homePath, "npm", "node_modules", "pi-web-ui");
+          await NodeFSP.mkdir(NodePath.join(packageDir, "extensions"), { recursive: true });
+          await NodeFSP.writeFile(
+            NodePath.join(packageDir, "package.json"),
+            '{"pi":{"extensions":["./extensions"]}}',
+          );
+          await NodeFSP.writeFile(NodePath.join(packageDir, "extensions", "webui.ts"), "");
+          await NodeFSP.writeFile(
+            NodePath.join(homePath, "settings.json"),
+            '{"packages":["npm:pi-web-ui"]}',
+          );
           for (const name of [
             "takomi-runtime",
             "takomi-subagents",
@@ -127,6 +138,16 @@ describe("Pi scoped resource probe", () => {
         NodeAssert.ok(
           !resources.args.includes(
             NodePath.join(homePath, "extensions", "takomi-runtime", "index.ts"),
+          ),
+        );
+        NodeAssert.ok(
+          resources.args.includes(
+            NodePath.join(homePath, "npm", "node_modules", "pi-web-ui", "extensions", "webui.ts"),
+          ),
+        );
+        NodeAssert.ok(
+          !resources.args.includes(
+            NodePath.join(homePath, "npm", "node_modules", "pi-web-ui", "extensions"),
           ),
         );
         const untrusted = yield* resolvePiLaunchResources({

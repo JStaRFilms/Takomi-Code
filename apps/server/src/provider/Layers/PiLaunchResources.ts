@@ -110,7 +110,24 @@ function discoverPiCompanionExtensions(input: {
         .readFileString(input.path.join(packageDir, "package.json"))
         .pipe(Effect.orElseSucceed(() => ""));
       for (const extensionPath of packageExtensionEntries(manifestRaw)) {
-        candidates.push(input.path.resolve(packageDir, extensionPath));
+        const extension = input.path.resolve(packageDir, extensionPath);
+        const entries = yield* input.fileSystem
+          .readDirectory(extension)
+          .pipe(Effect.orElseSucceed(() => undefined));
+        if (!entries) {
+          candidates.push(extension);
+          continue;
+        }
+        for (const entry of entries) {
+          if (/\.[cm]?[jt]s$/u.test(entry)) {
+            candidates.push(input.path.join(extension, entry));
+          } else {
+            candidates.push(
+              input.path.join(extension, entry, "index.ts"),
+              input.path.join(extension, entry, "index.js"),
+            );
+          }
+        }
       }
     }
 
