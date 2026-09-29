@@ -1,4 +1,4 @@
-import type { UsageProviderKind } from "@t3tools/contracts";
+import { PI_PROVIDER_IDENTITY, type UsageProviderKind } from "@t3tools/contracts";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 
 /**
@@ -19,7 +19,7 @@ export const PROVIDER_LABEL: Record<UsageProviderKind, string> = {
   claude: "Claude Code",
   codex: "Codex",
   grok: "Grok Build",
-  takomi: "Takomi",
+  takomi: PI_PROVIDER_IDENTITY.displayName,
   cursor: "Cursor",
   opencode: "OpenCode",
   antigravity: "Antigravity",

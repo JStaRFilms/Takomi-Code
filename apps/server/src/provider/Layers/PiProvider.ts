@@ -4,6 +4,7 @@ import {
   type ModelCapabilities,
   type ServerProviderModel,
   type ServerProviderCapabilities,
+  PI_PROVIDER_IDENTITY,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -39,7 +40,7 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 
-const DRIVER_KIND = ProviderDriverKind.make("pi");
+const DRIVER_KIND = ProviderDriverKind.make(PI_PROVIDER_IDENTITY.driverKind);
 
 /** Declaration-probed RPC operations backing Pi's advertised model-switching capability. */
 export const PI_ADVERTISED_RPC_OPERATIONS = [
@@ -77,7 +78,7 @@ const piCapabilities = (resourcesAvailable: boolean, sessionCatalogAvailable: bo
   }) satisfies ServerProviderCapabilities;
 
 const piPresentation = (resourcesAvailable = false, sessionCatalogAvailable = false) => ({
-  displayName: "Takomi",
+  displayName: PI_PROVIDER_IDENTITY.displayName,
   // Legacy clients read this field instead of interactionModes. Keep Plan
   // hidden there too because Pi rejects it.
   showInteractionModeToggle: false,

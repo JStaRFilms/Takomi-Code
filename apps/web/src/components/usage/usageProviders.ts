@@ -1,4 +1,4 @@
-import type { UsageProviderKind } from "@t3tools/contracts";
+import { PI_PROVIDER_IDENTITY, type UsageProviderKind } from "@t3tools/contracts";
 
 import {
   AntigravityIcon,
@@ -39,7 +39,7 @@ export const PROVIDER_PRESENTATION = {
     color: "color-mix(in oklab, var(--contrast-foreground) 72%, var(--background))",
     mark: GrokIcon,
   },
-  takomi: { label: "Takomi", color: "#20c7d9", mark: TakomiIcon },
+  takomi: { label: PI_PROVIDER_IDENTITY.displayName, color: "#20c7d9", mark: TakomiIcon },
   cursor: { label: "Cursor", color: "#8b8b8b", mark: CursorIcon },
   opencode: { label: "OpenCode", color: "#5b9bbd", mark: OpenCodeIcon },
   antigravity: { label: "Antigravity", color: "#8c7bd1", mark: AntigravityIcon },

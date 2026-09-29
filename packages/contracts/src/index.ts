@@ -17,6 +17,7 @@ export * from "./providerInstance.ts";
 export * from "./providerSetup.ts";
 export * from "./providerRuntime.ts";
 export * from "./piSessionCatalog.ts";
+export * from "./providerIdentity.ts";
 export * from "./providerUsageLimits.ts";
 export * from "./usageLimitSourceId.ts";
 export * from "./model.ts";
