@@ -6,6 +6,7 @@ import {
   GrokSettings,
   OpenCodeSettings,
   PiSettings,
+  PI_PROVIDER_IDENTITY,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import type * as Schema from "effect/Schema";
@@ -86,7 +87,7 @@ const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
   },
   {
     value: ProviderDriverKind.make("pi"),
-    label: "Takomi",
+    label: PI_PROVIDER_IDENTITY.displayName,
     icon: TakomiIcon,
     settingsSchema: PiSettings,
   },

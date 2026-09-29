@@ -7,6 +7,7 @@
  */
 import {
   PiSettings,
+  PI_PROVIDER_IDENTITY,
   ProviderDriverKind,
   type ServerProvider,
   TextGenerationError,
@@ -51,7 +52,7 @@ import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
 
-const DRIVER_KIND = ProviderDriverKind.make("pi");
+const DRIVER_KIND = ProviderDriverKind.make(PI_PROVIDER_IDENTITY.driverKind);
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 export const PI_WORKSPACE_RESOURCE_TTL = Duration.minutes(5);
 
@@ -89,7 +90,7 @@ const withInstanceIdentity =
 export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
   driverKind: DRIVER_KIND,
   metadata: {
-    displayName: "Takomi",
+    displayName: PI_PROVIDER_IDENTITY.displayName,
     supportsMultipleInstances: true,
   },
   configSchema: PiSettings,
