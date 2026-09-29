@@ -51,7 +51,7 @@ is per-surface chrome, not centralized).
   interruption, and persistent session resumption are bridged into the provider runtime.
 - Project-scoped Pi slash commands, prompt templates, and skills are discovered for web and mobile
   command menus, with trust and freshness reported through provider capabilities.
-- Pi session catalogs (verified releases: 0.84.4, 0.85.1, 0.87.1) can be listed with bounded pagination and ownership diagnostics.
+- Pi session catalogs (verified releases: 0.84.4, 0.85.1, 0.87.1, 0.99.1) can be listed with bounded pagination and ownership diagnostics.
   Attaching a catalog session to a fresh, empty T3 thread (bind the live file) and forking it
   (clone into a new session file with the source as parent, then bind the fork) are supported
   through `provider.attachPiSession` / `provider.forkPiSession`. Continuing backfills visible
@@ -68,7 +68,7 @@ is per-surface chrome, not centralized).
 
 - Pi supports only T3's `full-access` runtime mode.
 - Pi utility text generation for titles and Git/PR text is not implemented.
-- Pi session listing currently requires the supported Pi catalog boundary (verified releases: 0.84.4, 0.85.1, 0.87.1).
+- Pi session listing currently requires the supported Pi catalog boundary (verified releases: 0.84.4, 0.85.1, 0.87.1, 0.99.1).
   Attach/fork continuation is implemented with visible CLI history hydration (user/assistant
   text); tool-call history hydration and automatic terminal-session import are not.
 - Hydrated history is deliberately messages-only: tool calls stay model context because
