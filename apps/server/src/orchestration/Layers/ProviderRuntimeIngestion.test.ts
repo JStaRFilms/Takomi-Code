@@ -592,6 +592,8 @@ describe("ProviderRuntimeIngestion", () => {
         turnId: a,
         payload: {
           message: "Delayed A failure.",
+          severity: "error",
+          inputOutcome: { requestId: "prompt-a", outcome: "failed", commandName: "delayed-a" },
           detail: {
             kind: "pi.prompt-outcome",
             outcome: "failed",
@@ -619,7 +621,10 @@ describe("ProviderRuntimeIngestion", () => {
         expect.objectContaining({
           id: "pi-delayed-a-outcome",
           turnId: a,
+          tone: "error",
           payload: expect.objectContaining({
+            severity: "error",
+            inputOutcome: { requestId: "prompt-a", outcome: "failed", commandName: "delayed-a" },
             detail: expect.objectContaining({ requestId: "prompt-a", outcome: "failed" }),
           }),
         }),
@@ -644,6 +649,40 @@ describe("ProviderRuntimeIngestion", () => {
       status: "ready",
       activeTurnId: null,
     });
+  });
+
+  it("persists explicit notice severity and legacy warnings without changing a running turn", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("notice-live-turn");
+    const base = {
+      provider: ProviderDriverKind.make("pi"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId,
+    };
+    await harness.emitAndDrain([
+      { ...base, type: "turn.started", eventId: asEventId("notice-start"), payload: {} },
+    ]);
+    const runningTurn = await harness.readTurn(turnId);
+    for (const severity of ["info", "warning", "error", undefined] as const) {
+      const payload = { message: "Synthetic notice.", ...(severity ? { severity } : {}) };
+      await harness.emitAndDrain([
+        { ...base, type: "runtime.warning", eventId: asEventId(`notice-${severity}`), payload },
+      ]);
+      const thread = (await harness.readModel()).threads.find(
+        (entry) => entry.id === base.threadId,
+      );
+      expect(thread?.activities.find((entry) => entry.id === `notice-${severity}`)).toMatchObject({
+        tone: severity === "error" ? "error" : "info",
+        payload,
+      });
+      expect(thread?.session).toMatchObject({
+        status: "running",
+        activeTurnId: turnId,
+        lastError: null,
+      });
+      expect(await harness.readTurn(turnId)).toEqual(runningTurn);
+    }
   });
 
   it("maps turn started/completed events into thread session updates", async () => {

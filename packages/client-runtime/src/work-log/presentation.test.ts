@@ -5,6 +5,8 @@ import { ThreadId } from "@t3tools/contracts";
 import {
   commandDetailRepeatsCommand,
   extractCommandOutputText,
+  interpretRuntimeNotice,
+  workLogEntryIsToolLike,
   resolveViewedImageAsset,
   resolveWorkEntryToolPresentation,
   summarizeToolGroup,
@@ -16,6 +18,91 @@ import {
   workEntryDisplayIndicatesToolFailure,
   workEntryIndicatesToolSuccess,
 } from "./presentation.js";
+
+describe("interpretRuntimeNotice", () => {
+  it.each(["info", "warning", "error", undefined] as const)(
+    "interprets severity %s with legacy fallback",
+    (severity) => {
+      expect(
+        interpretRuntimeNotice({
+          kind: "runtime.warning",
+          summary: "Notice",
+          payload: { severity },
+        }),
+      ).toEqual({
+        label: "Notice",
+        noticeSeverity: severity ?? "warning",
+        tone: severity === "error" ? "error" : "info",
+      });
+    },
+  );
+
+  it.each(["handled", "failed"] as const)(
+    "labels %s input outcomes without inventing a model-run result",
+    (outcome) => {
+      for (const commandName of ["takomi-status", undefined]) {
+        const inputOutcome = {
+          requestId: "prompt-1",
+          outcome,
+          ...(commandName ? { commandName } : {}),
+        };
+        const notice = interpretRuntimeNotice({
+          kind: "runtime.warning",
+          summary: "Native result",
+          payload: { severity: "warning", inputOutcome },
+        });
+        expect(notice).toEqual({
+          label: `${commandName ? `/${commandName}` : "Submitted input"} ${outcome}`,
+          noticeSeverity: outcome === "failed" ? "error" : "info",
+          tone: outcome === "failed" ? "error" : "info",
+          inputOutcome,
+        });
+        expect(workLogEntryIsToolLike({ ...notice!, sourceActivityKind: "runtime.warning" })).toBe(
+          false,
+        );
+        expect(workEntryDisplayIndicatesToolFailure(notice!)).toBe(outcome === "failed");
+        expect(workEntryIndicatesToolSuccess(notice!)).toBe(false);
+      }
+    },
+  );
+
+  it("does not interpret untyped legacy detail as an owned submission result", () => {
+    expect(
+      interpretRuntimeNotice({
+        kind: "runtime.warning",
+        summary: "Legacy",
+        payload: {
+          detail: { kind: "pi.prompt-outcome", outcome: "failed", commandName: "status" },
+        },
+      }),
+    ).toEqual({ label: "Legacy", noticeSeverity: "warning", tone: "info" });
+    expect(
+      interpretRuntimeNotice({
+        kind: "tool.completed",
+        summary: "Read",
+        payload: { severity: "error" },
+      }),
+    ).toBeNull();
+  });
+
+  it.each(["vault-command", "vault-export-ready"])(
+    "keeps %s message in its dedicated client path",
+    (category) => {
+      expect(
+        interpretRuntimeNotice({
+          kind: "runtime.warning",
+          summary: "Vault result",
+          payload: {
+            category,
+            message: "Vault metadata",
+            severity: "info",
+            transferId: "transfer-1",
+          },
+        }),
+      ).toEqual({ label: "Vault result", noticeSeverity: "info", tone: "info" });
+    },
+  );
+});
 
 describe("workEntryIndicatesToolFailure", () => {
   const base = {

@@ -20,6 +20,7 @@ import {
   extractCommandOutputText,
   extractWorkLogToolLifecycleStatus,
   isWorktreeSetupActivity,
+  interpretRuntimeNotice,
   liveActivityToolStatus,
   normalizeCompactToolLabel,
   omitSupersededLifecycleMarkers,
@@ -101,6 +102,8 @@ export interface WorkLogEntry {
   requestKind?: PendingApproval["requestKind"];
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  noticeSeverity?: import("@t3tools/contracts").RuntimeNoticeSeverity;
+  inputOutcome?: import("@t3tools/contracts").RuntimeInputOutcome;
   vaultNotice?: string;
   vaultExportId?: string;
   toolCallId?: string;
@@ -532,6 +535,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
           ? "info"
           : activity.tone,
     sourceActivityKind: activity.kind,
+    ...interpretRuntimeNotice(activity),
     ...(() => {
       if (activity.kind !== "user-input.answer-submitted") return {};
       const answer = decodeQuestionAttachmentAnswer(activity.payload);
@@ -948,6 +952,8 @@ function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | un
 }
 
 function workEntryStatus(entry: WorkLogEntry): ThreadFeedActivity["status"] {
+  if (entry.noticeSeverity !== undefined)
+    return entry.noticeSeverity === "error" ? "failure" : null;
   if (entry.agentSpawn) {
     switch (entry.toolLifecycleStatus) {
       case "failed":
@@ -979,7 +985,8 @@ function workEntryIcon(entry: DerivedWorkLogEntry): ThreadFeedActivity["icon"] {
   ) {
     return "message";
   }
-  if (entry.sourceActivityKind === "runtime.warning") return "warning";
+  if (entry.noticeSeverity === "warning") return "warning";
+  if (entry.noticeSeverity === "error") return "alert";
   if (entry.toolSurface) return entry.toolSurface;
   if (entry.requestKind === "command") return "command";
   if (entry.requestKind === "file-read") return "eye";
@@ -1047,6 +1054,7 @@ function stripShellWrapper(value: string): string {
 
 /** Expanded rows retain detail formatting; commands stay in the separate body. */
 export function workEntryRowLabel(entry: WorkLogEntry, expanded = false): string {
+  if (entry.inputOutcome) return entry.label;
   if (entry.agentSpawn) return agentSpawnLabel(entry.agentSpawn);
   const presentation = resolveWorkEntryToolPresentation(entry);
   if (presentation) return presentation.displayName;

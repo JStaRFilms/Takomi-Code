@@ -603,7 +603,7 @@ export function runtimeEventToActivities(
         {
           id: event.eventId,
           createdAt: event.createdAt,
-          tone: "info",
+          tone: event.payload.severity === "error" ? "error" : "info",
           kind: "runtime.warning",
           // Use the adapter-supplied message as the row label so the work log
           // shows what the warning was about, not a generic "Runtime warning".
@@ -616,6 +616,8 @@ export function runtimeEventToActivities(
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
             ...(event.payload.category ? { category: event.payload.category } : {}),
             ...(event.payload.transferId ? { transferId: event.payload.transferId } : {}),
+            ...(event.payload.severity ? { severity: event.payload.severity } : {}),
+            ...(event.payload.inputOutcome ? { inputOutcome: event.payload.inputOutcome } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

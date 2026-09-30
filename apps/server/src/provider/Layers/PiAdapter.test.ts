@@ -159,7 +159,13 @@ process.stdin.on("data", (chunk) => {
         data: { commands: [] } });
     } else if (record.type === "prompt") {
       const text = record.message;
-      if (text === "/delayed-a") {
+      if (text === "/notice-types") {
+        for (const notifyType of ["info", "warning", "error", undefined, "unknown"]) {
+          emit({ type: "extension_ui_request", id: "notice-type-" + String(notifyType), method: "notify",
+            message: "Notice type: " + String(notifyType), ...(notifyType ? { notifyType } : {}) });
+        }
+        ack(record.id, "handled");
+      } else if (text === "/delayed-a") {
         delayedPrompt = record.id;
         work();
         emit({ type: "agent_settled" });
@@ -203,7 +209,7 @@ process.stdin.on("data", (chunk) => {
         // A contradictory duplicate cannot change the first authoritative disposition.
         ack(record.id, "handled");
         control("start-accepted");
-      } else if (text === "/reject" || text === "/reject-active") {
+      } else if (text === "/reject" || text === "/reject-active" || text === "reject input private-argument") {
         ack(record.id, undefined, false);
         ack(record.id, "handled");
       } else if (text === "/fail-command" || text === "/unrelated-error" || text === "input notice") {
@@ -1344,6 +1350,53 @@ describe("Pi adapter process-path JSONL decoding", () => {
     runtimeMode: "full-access" as const,
   });
 
+  effectIt.live("preserves native notice severity without failing a live model run", () =>
+    runPiLifecycleScenario((scenario) =>
+      Effect.gen(function* () {
+        const { adapter, events, threadId, waitFor } = scenario;
+        yield* adapter.startSession(startInput(threadId));
+        const run = yield* adapter.sendTurn({ threadId, input: "/run-before", attachments: [] });
+        yield* waitFor(
+          (event) =>
+            event.type === "runtime.warning" &&
+            event.payload.message === "Prompt drained: /run-before",
+        );
+        yield* adapter.sendTurn({ threadId, input: "/notice-types", attachments: [] });
+        yield* waitFor(
+          (event) =>
+            event.type === "runtime.warning" &&
+            event.payload.message === "Prompt drained: /notice-types",
+        );
+        const notices = events.filter(
+          (event) =>
+            event.type === "runtime.warning" && event.payload.message.startsWith("Notice type:"),
+        );
+        expect(notices.map((event) => event.payload)).toEqual([
+          { message: "Notice type: info", severity: "info" },
+          { message: "Notice type: warning", severity: "warning" },
+          { message: "Notice type: error", severity: "error" },
+          { message: "Notice type: undefined", severity: "info" },
+          { message: "Notice type: unknown", severity: "info" },
+        ]);
+        expect(
+          events.filter(
+            (event) => event.type === "runtime.error" || event.type === "turn.completed",
+          ),
+        ).toEqual([]);
+        expect((yield* adapter.listSessions())[0]).toMatchObject({
+          status: "running",
+          activeTurnId: run.turnId,
+        });
+        yield* advancePeer(scenario, "settle-before");
+        yield* advancePeer(scenario, "finish-settlement");
+        expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+          { turnId: run.turnId, payload: { state: "completed" } },
+        ]);
+        yield* adapter.stopSession(threadId);
+      }),
+    ),
+  );
+
   effectIt.live("keeps delayed A command notices on A while native B is running", () =>
     runPiLifecycleScenario((scenario) =>
       Effect.gen(function* () {
@@ -1373,7 +1426,15 @@ describe("Pi adapter process-path JSONL decoding", () => {
         expect(notices.map((event) => event.turnId)).toEqual([a.turnId, a.turnId]);
         expect(notices.map((event) => event.payload)).toMatchObject([
           { detail: { kind: "pi.extension-error" } },
-          { detail: { kind: "pi.prompt-outcome", outcome: "failed", commandName: "delayed-a" } },
+          {
+            severity: "error",
+            inputOutcome: {
+              requestId: expect.stringMatching(/^prompt-/),
+              outcome: "failed",
+              commandName: "delayed-a",
+            },
+            detail: { kind: "pi.prompt-outcome", outcome: "failed", commandName: "delayed-a" },
+          },
         ]);
         expect((yield* adapter.listSessions())[0]).toMatchObject({
           status: "running",
@@ -1502,7 +1563,11 @@ describe("Pi adapter process-path JSONL decoding", () => {
     ),
   );
 
-  for (const input of ["/takomi-status", "consumed by an input handler"]) {
+  for (const input of [
+    "/takomi-status",
+    "/takomi-status private-argument",
+    "consumed by an input handler",
+  ]) {
     effectIt.live(`settles handled input without a native run: ${input}`, () =>
       runPiLifecycleScenario(({ adapter, events, threadId, waitFor }) =>
         Effect.gen(function* () {
@@ -1518,6 +1583,34 @@ describe("Pi adapter process-path JSONL decoding", () => {
               (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
             ),
           ).toMatchObject([{ payload: { state: "completed" } }]);
+          const outcome = events.find(
+            (event) =>
+              event.type === "runtime.warning" &&
+              isRecord(event.payload.detail) &&
+              event.payload.detail.kind === "pi.prompt-outcome",
+          );
+          expect(outcome).toMatchObject({
+            turnId: turn.turnId,
+            payload: {
+              severity: "info",
+              inputOutcome: {
+                requestId: expect.stringMatching(/^prompt-/),
+                outcome: "handled",
+                ...(input.startsWith("/") ? { commandName: "takomi-status" } : {}),
+              },
+            },
+          });
+          if (outcome?.type === "runtime.warning") {
+            expect(Object.keys(outcome.payload.inputOutcome ?? {}).sort()).toEqual(
+              input.startsWith("/")
+                ? ["commandName", "outcome", "requestId"]
+                : ["outcome", "requestId"],
+            );
+            expect(JSON.stringify(outcome.payload.inputOutcome)).not.toContain(
+              "consumed by an input handler",
+            );
+            expect(JSON.stringify(outcome.payload.inputOutcome)).not.toContain("private-argument");
+          }
           expect((yield* adapter.listSessions())[0]?.status).toBe("ready");
           expect(
             events.some(
@@ -1823,6 +1916,7 @@ describe("Pi adapter process-path JSONL decoding", () => {
 
   for (const [input, state] of [
     ["/reject", "failed"],
+    ["reject input private-argument", "failed"],
     ["/fail-command", "failed"],
     ["/unrelated-error", "completed"],
     ["input notice", "completed"],
@@ -1840,6 +1934,27 @@ describe("Pi adapter process-path JSONL decoding", () => {
           expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
             { turnId: turn.turnId, payload: { state } },
           ]);
+          const outcome = events.find(
+            (event) =>
+              event.type === "runtime.warning" &&
+              isRecord(event.payload.detail) &&
+              event.payload.detail.kind === "pi.prompt-outcome",
+          );
+          expect(outcome).toMatchObject({
+            turnId: turn.turnId,
+            payload: {
+              severity: state === "failed" ? "error" : "info",
+              inputOutcome: {
+                requestId: expect.stringMatching(/^prompt-/),
+                outcome: state === "failed" ? "failed" : "handled",
+              },
+            },
+          });
+          if (outcome?.type === "runtime.warning") {
+            expect(JSON.stringify(outcome.payload.inputOutcome)).not.toContain("private-argument");
+            if (!input.startsWith("/"))
+              expect(outcome.payload.inputOutcome?.commandName).toBeUndefined();
+          }
           expect((yield* adapter.listSessions())[0]?.status).toBe(
             state === "failed" ? "error" : "ready",
           );

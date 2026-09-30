@@ -761,6 +761,11 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
   const displayText = workEntryRowLabel(row.workEntry, expanded);
   const iconIsDestructive = row.icon === "alert" || row.icon === "warning";
   const failed = row.status === "failure";
+  const failureLabel = row.workEntry.inputOutcome
+    ? "submitted input failed"
+    : row.workEntry.noticeSeverity === "error"
+      ? "extension error"
+      : "tool call failed";
   const toolIcon = row.workEntry.toolIcon ?? row.workEntry.toolSource?.icon;
   const icon = toolPresentation?.icon ?? workRowSymbolName(row.icon);
 
@@ -772,7 +777,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
     >
       <Pressable
         accessibilityRole={canExpand ? "button" : undefined}
-        accessibilityLabel={failed ? `${accessiblePreview}, tool call failed` : accessiblePreview}
+        accessibilityLabel={failed ? `${accessiblePreview}, ${failureLabel}` : accessiblePreview}
         accessibilityHint={
           canExpand
             ? `Double tap to ${expanded ? "hide" : "show"} full details. Long press to copy.`

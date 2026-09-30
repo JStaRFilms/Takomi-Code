@@ -54,6 +54,7 @@ function singleToolCallLabel(entry: WorkLogEntry): string {
 }
 
 export function workEntryDisplayLabel(entry: WorkLogEntry, workspaceRoot: string | undefined) {
+  if (entry.inputOutcome) return entry.label;
   const toolPresentation = resolveWorkEntryToolPresentation(entry);
   if (toolPresentation) return toolPresentation.displayName;
   if (entry.command) return entry.command;

@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { resolveWorkEntryToolPresentation } from "@t3tools/client-runtime/work-log/presentation";
+import { workEntryDisplayLabel } from "./components/chat/MessagesTimeline.logic";
 
 import {
   createMessageAttachmentPreviewProjector,
@@ -22,6 +23,7 @@ import {
   selectHandoffImageResources,
   selectMessageImageResources,
   workEntryIndicatesToolNeutralStatus,
+  workEntrySignalsSevereFailure,
 } from "./session-logic";
 
 let nextActivityId = 0;
@@ -60,6 +62,85 @@ function makeActivity(overrides: {
     ...(overrides.sequence !== undefined ? { sequence: overrides.sequence } : {}),
   };
 }
+
+describe("runtime notice presentation", () => {
+  it.each([
+    { payload: { severity: "info" }, tone: "info", label: "Synthetic notice" },
+    { payload: { severity: "warning" }, tone: "info", label: "Synthetic notice" },
+    { payload: { severity: "error" }, tone: "error", label: "Synthetic notice" },
+    {
+      payload: {
+        severity: "info",
+        inputOutcome: { requestId: "prompt-1", outcome: "handled", commandName: "takomi-status" },
+      },
+      tone: "info",
+      label: "/takomi-status handled",
+    },
+    {
+      payload: {
+        severity: "error",
+        inputOutcome: { requestId: "prompt-1", outcome: "failed", commandName: "takomi-status" },
+      },
+      tone: "error",
+      label: "/takomi-status failed",
+    },
+    {
+      payload: { inputOutcome: { requestId: "prompt-1", outcome: "handled" } },
+      tone: "info",
+      label: "Submitted input handled",
+    },
+    {
+      payload: { inputOutcome: { requestId: "prompt-1", outcome: "failed" } },
+      tone: "error",
+      label: "Submitted input failed",
+    },
+    { payload: {}, tone: "info", label: "Synthetic notice" },
+  ])("interprets a persisted notice $label with $tone tone", ({ payload, tone, label }) => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        kind: "runtime.warning",
+        summary: "Synthetic notice",
+        tone: "info",
+        turnId: "original-a",
+        payload: { ...payload, message: "Synthetic notice" },
+      }),
+    ]);
+    expect(entry).toMatchObject({
+      tone,
+      label,
+      turnId: "original-a",
+      noticeSeverity:
+        "inputOutcome" in payload
+          ? payload.inputOutcome.outcome === "failed"
+            ? "error"
+            : "info"
+          : "severity" in payload
+            ? payload.severity
+            : "warning",
+    });
+    expect(workEntryDisplayLabel(entry!, undefined)).toBe(label);
+    expect(workEntrySignalsSevereFailure(entry!)).toBe(tone === "error");
+  });
+
+  it.each(["vault-command", "vault-export-ready"])("preserves dedicated %s rows", (category) => {
+    const [entry] = deriveWorkLogEntries([
+      makeActivity({
+        kind: "runtime.warning",
+        tone: "info",
+        payload: {
+          severity: "info",
+          category,
+          message: "Vault metadata",
+          transferId: "transfer-1",
+        },
+      }),
+    ]);
+    expect(entry).toMatchObject({
+      vaultNotice: "Vault metadata",
+      ...(category === "vault-export-ready" ? { vaultExportId: "transfer-1" } : {}),
+    });
+  });
+});
 
 describe("deriveActivePlanState", () => {
   it("orders plan snapshots by sequence while ignoring unrelated activities", () => {

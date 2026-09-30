@@ -290,6 +290,69 @@ function makeThread(
   };
 }
 
+describe("runtime notice feed presentation", () => {
+  it.each([
+    { payload: { severity: "info" }, icon: "check", status: null, label: "Synthetic notice" },
+    { payload: { severity: "warning" }, icon: "warning", status: null, label: "Synthetic notice" },
+    { payload: { severity: "error" }, icon: "alert", status: "failure", label: "Synthetic notice" },
+    {
+      payload: {
+        severity: "info",
+        inputOutcome: { requestId: "prompt-1", outcome: "handled", commandName: "takomi-status" },
+      },
+      icon: "check",
+      status: null,
+      label: "/takomi-status handled",
+    },
+    {
+      payload: {
+        severity: "error",
+        inputOutcome: { requestId: "prompt-1", outcome: "failed", commandName: "takomi-status" },
+      },
+      icon: "alert",
+      status: "failure",
+      label: "/takomi-status failed",
+    },
+    {
+      payload: { inputOutcome: { requestId: "prompt-1", outcome: "handled" } },
+      icon: "check",
+      status: null,
+      label: "Submitted input handled",
+    },
+    {
+      payload: { inputOutcome: { requestId: "prompt-1", outcome: "failed" } },
+      icon: "alert",
+      status: "failure",
+      label: "Submitted input failed",
+    },
+    { payload: {}, icon: "warning", status: null, label: "Synthetic notice" },
+  ])("interprets a persisted notice $label with $icon icon", ({ payload, icon, status, label }) => {
+    const [group] = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("notice-thread"),
+        projectId: ProjectId.make("project-1"),
+        title: "Notices",
+        activities: [
+          makeActivity({
+            id: EventId.make("notice"),
+            kind: "runtime.warning",
+            summary: "Synthetic notice",
+            createdAt: "2026-04-01T00:00:00.000Z",
+            turnId: TurnId.make("original-a"),
+            payload: { ...payload, message: "Synthetic notice" },
+          }),
+        ],
+      }),
+    );
+    expect(group?.type).toBe("activity-group");
+    if (group?.type !== "activity-group") return;
+    const row = group.activities[0]!;
+    expect(row).toMatchObject({ icon, status, turnId: "original-a" });
+    expect(workEntryRowLabel(row.workEntry)).toBe(label);
+    expect(workEntryRowLabel(row.workEntry, true)).toBe(label);
+  });
+});
+
 describe("buildThreadFeed", () => {
   it("reuses unchanged feed and presentation rows during an assistant text update", () => {
     const completedTurnId = TurnId.make("completed-turn");

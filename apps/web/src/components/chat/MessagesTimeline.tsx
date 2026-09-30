@@ -4906,7 +4906,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
     setExpanded(next);
   };
   const iconConfig = workToneIcon(workEntry.tone);
-  const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
+  const showWarningIndicator = workEntry.noticeSeverity === "warning";
   const showFailedIndicator = workEntryDisplayIndicatesToolFailure(workEntry);
   const showDestructiveRowStyle =
     showFailedIndicator &&
@@ -4969,8 +4969,13 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
         ? "text-secondary-label"
         : "text-foreground/80";
   const accessiblePreview = [previewText, answerPreview].filter(Boolean).join(": ");
+  const failureLabel = workEntry.inputOutcome
+    ? "Submitted input failed"
+    : workEntry.noticeSeverity === "error"
+      ? "Extension error"
+      : "Tool call failed";
   const accessibleDisplayText = showFailedIndicator
-    ? `${accessiblePreview}, tool call failed`
+    ? `${accessiblePreview}, ${failureLabel.toLowerCase()}`
     : accessiblePreview;
   const rowToggleProps = canExpand
     ? {
@@ -5003,7 +5008,7 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
         <span
           className={iconWrapperClass}
           role={showFailedIndicator ? "img" : undefined}
-          aria-label={showFailedIndicator ? "Tool call failed" : undefined}
+          aria-label={showFailedIndicator ? failureLabel : undefined}
         >
           <ToolActivityIconView
             icon={entryToolIcon}

@@ -14,6 +14,7 @@ import {
   extractCommandOutputText,
   extractWorkLogToolLifecycleStatus,
   isWorktreeSetupActivity,
+  interpretRuntimeNotice,
   workEntryIndicatesToolFailure,
   workEntryIndicatesToolSuccess,
   workLogEntryIsToolLike,
@@ -81,6 +82,8 @@ export interface WorkLogEntry {
   toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   /** Originating orchestration activity kind (e.g. `user-input.requested`) for row chrome. */
   sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  noticeSeverity?: import("@t3tools/contracts").RuntimeNoticeSeverity;
+  inputOutcome?: import("@t3tools/contracts").RuntimeInputOutcome;
   vaultNotice?: string;
   vaultExportId?: string;
   /** Grouping key for subagent lifecycle rows (one row per agent). */
@@ -169,6 +172,7 @@ export interface TimelineEntriesProjection {
  *  not that a command exited nonzero. */
 export function workEntrySignalsSevereFailure(entry: WorkLogEntry): boolean {
   return (
+    entry.noticeSeverity === "error" ||
     entry.sourceActivityKind === "runtime.error" ||
     entry.sourceActivityKind?.endsWith(".failed") === true
   );
@@ -604,6 +608,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
           ? "info"
           : activity.tone,
     sourceActivityKind: activity.kind,
+    ...interpretRuntimeNotice(activity),
   };
   if (activity.kind === "user-input.answer-submitted") {
     const answer = decodeQuestionAttachmentAnswer(payload);

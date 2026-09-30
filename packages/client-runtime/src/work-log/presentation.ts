@@ -1,11 +1,15 @@
 import {
   isToolLifecycleItemType,
+  RuntimeInputOutcome,
+  RuntimeNoticeSeverity,
   type AssetResource,
   type RuntimeItemStatus,
   type ThreadId,
   type ToolActivitySource,
   type ToolLifecycleItemType,
 } from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-images";
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
@@ -41,8 +45,39 @@ export interface WorkLogPresentationEntry {
   readonly toolCallId?: string;
   readonly toolLifecycleStatus?: string;
   readonly sourceActivityKind?: string;
+  readonly noticeSeverity?: RuntimeNoticeSeverity;
+  readonly inputOutcome?: RuntimeInputOutcome;
   readonly taskId?: string;
   readonly toolSource?: ToolActivitySource;
+}
+
+const decodeNoticeSeverity = Schema.decodeUnknownOption(RuntimeNoticeSeverity);
+const decodeInputOutcome = Schema.decodeUnknownOption(RuntimeInputOutcome);
+
+/** Legacy runtime.warning rows keep their warning indicator; new metadata owns the display. */
+export function interpretRuntimeNotice(activity: {
+  readonly kind: string;
+  readonly summary: string;
+  readonly payload: unknown;
+}) {
+  if (activity.kind !== "runtime.warning") return null;
+  const payload = asRecord(activity.payload);
+  const inputOutcome = Option.getOrUndefined(decodeInputOutcome(payload?.inputOutcome));
+  const noticeSeverity =
+    inputOutcome?.outcome === "failed"
+      ? "error"
+      : inputOutcome?.outcome === "handled"
+        ? "info"
+        : Option.getOrElse(decodeNoticeSeverity(payload?.severity), () => "warning" as const);
+  const label = inputOutcome
+    ? `${inputOutcome.commandName ? `/${inputOutcome.commandName}` : "Submitted input"} ${inputOutcome.outcome}`
+    : activity.summary;
+  return {
+    noticeSeverity,
+    tone: noticeSeverity === "error" ? ("error" as const) : ("info" as const),
+    label,
+    ...(inputOutcome ? { inputOutcome } : {}),
+  };
 }
 
 export type ToolGroupAction =
@@ -361,6 +396,7 @@ export function commandDetailRepeatsCommand(input: {
 }
 
 export function workLogEntryIsToolLike(entry: WorkLogPresentationEntry): boolean {
+  if (entry.noticeSeverity !== undefined) return false;
   if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") return true;
   if (entry.command !== undefined && entry.command.trim().length > 0) return true;
   if (entry.requestKind !== undefined) return true;

@@ -6,6 +6,48 @@ import { classifyTaskAgentKind, ProviderRuntimeEvent } from "./providerRuntime.t
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 
 describe("ProviderRuntimeEvent", () => {
+  it("decodes optional notice metadata without breaking legacy warnings", () => {
+    const base = {
+      type: "runtime.warning",
+      eventId: "notice",
+      provider: "pi",
+      threadId: "thread-1",
+      turnId: "original-a",
+      createdAt: "2026-02-28T00:00:00.000Z",
+    };
+    for (const severity of ["info", "warning", "error", undefined]) {
+      const payload = { message: "Notice", ...(severity ? { severity } : {}) };
+      expect(decodeRuntimeEvent({ ...base, payload }).payload).toEqual(payload);
+    }
+    const payload = {
+      message: "Failed",
+      severity: "error",
+      inputOutcome: {
+        requestId: "prompt-1",
+        outcome: "failed",
+        commandName: "status",
+        arguments: "private-value",
+      },
+    };
+    expect(decodeRuntimeEvent({ ...base, payload }).payload).toEqual({
+      message: "Failed",
+      severity: "error",
+      inputOutcome: { requestId: "prompt-1", outcome: "failed", commandName: "status" },
+    });
+    for (const inputOutcome of [
+      { requestId: "x".repeat(257), outcome: "handled" },
+      { requestId: "prompt-1", outcome: "started" },
+      { requestId: "prompt-1", outcome: "handled", commandName: "status private-argument" },
+    ]) {
+      expect(() =>
+        decodeRuntimeEvent({ ...base, payload: { message: "Notice", inputOutcome } }),
+      ).toThrow();
+    }
+    expect(() =>
+      decodeRuntimeEvent({ ...base, payload: { message: "Notice", severity: "fatal" } }),
+    ).toThrow();
+  });
+
   it("requires input and output totals for complete turn usage", () => {
     const completeEvent = {
       type: "turn.completed",

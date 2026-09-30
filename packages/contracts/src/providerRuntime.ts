@@ -879,8 +879,23 @@ const ToolDeniedPayload = Schema.Struct({
 });
 export type ToolDeniedPayload = typeof ToolDeniedPayload.Type;
 
+export const RuntimeNoticeSeverity = Schema.Literals(["info", "warning", "error"]);
+export type RuntimeNoticeSeverity = typeof RuntimeNoticeSeverity.Type;
+
+/** Submission result, separate from the native model run's lifecycle. No input or arguments. */
+export const RuntimeInputOutcome = Schema.Struct({
+  requestId: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256)),
+  outcome: Schema.Literals(["handled", "failed"]),
+  commandName: Schema.optional(
+    TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256), Schema.isPattern(/^[^\s/]+$/u)),
+  ),
+});
+export type RuntimeInputOutcome = typeof RuntimeInputOutcome.Type;
+
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
+  severity: Schema.optional(RuntimeNoticeSeverity),
+  inputOutcome: Schema.optional(RuntimeInputOutcome),
   detail: Schema.optional(Schema.Unknown),
   category: Schema.optional(Schema.Literals(["vault-command", "vault-export-ready"])),
   transferId: Schema.optional(TrimmedNonEmptyStringSchema),

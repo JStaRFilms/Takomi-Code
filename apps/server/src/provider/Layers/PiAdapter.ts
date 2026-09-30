@@ -1972,6 +1972,11 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             type: "runtime.warning",
             payload: {
               message: notification,
+              // Native omission and unknown future types display as info, never as run failures.
+              severity:
+                message.notifyType === "warning" || message.notifyType === "error"
+                  ? message.notifyType
+                  : "info",
               ...(context.pendingVaultPrompt?.turnId === context.activeTurnId &&
               context.pendingVaultPrompt?.generation === context.generation
                 ? { category: "vault-command" as const }
@@ -2224,6 +2229,16 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 type: "runtime.warning",
                 payload: {
                   message: failure ?? "Pi handled the submitted input.",
+                  severity: failure ? "error" : "info",
+                  inputOutcome: {
+                    requestId: responseId,
+                    outcome: failure ? "failed" : "handled",
+                    ...(pending.commandName &&
+                    validUiRequestId(pending.commandName) &&
+                    /^[^\s/]+$/u.test(pending.commandName)
+                      ? { commandName: pending.commandName }
+                      : {}),
+                  },
                   detail: {
                     kind: "pi.prompt-outcome",
                     requestId: responseId,
@@ -2569,7 +2584,11 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             ...(yield* eventBase(context, message)),
             type: "runtime.warning",
             ...(pending ? { turnId: pending.turnId } : {}),
-            payload: { message: error, detail: { kind: "pi.extension-error", ...message } },
+            payload: {
+              message: error,
+              severity: "error",
+              detail: { kind: "pi.extension-error", ...message },
+            },
           });
           break;
         }
