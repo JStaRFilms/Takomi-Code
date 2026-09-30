@@ -19,6 +19,7 @@ import {
   resolvePiPackageFromBinary,
   type PiJsonlFrame,
   type PiRpcRecord,
+  type PiProtocolCompatibilityProbe,
   validatePiRpcConformanceFixture,
 } from "./PiProtocolConformance.ts";
 import rpcFixture from "../testFixtures/pi-v0.84.4-rpc.json" with { type: "json" };
@@ -28,6 +29,72 @@ const fixtures = Path.join(import.meta.dirname, "../testFixtures");
 const rpcPeer = Path.join(fixtures, "piMockPeer.mjs");
 const sessionManagerProbe = Path.join(fixtures, "piSessionManagerConformance.mjs");
 const sessionFixture = Path.join(fixtures, "pi-v0.84.4-session.v3.jsonl");
+
+// The 0.99.1 public RpcCommand union was checked separately from the 0.84.4 replay fixture.
+const nativeRpcCommandsByVersion: Readonly<Record<string, ReadonlyArray<string>>> = {
+  "0.84.4": rpcFixture.rpcMethods,
+  "0.99.1": [
+    "prompt",
+    "steer",
+    "follow_up",
+    "abort",
+    "clear_queue",
+    "new_session",
+    "get_state",
+    "set_model",
+    "cycle_model",
+    "get_available_models",
+    "set_thinking_level",
+    "cycle_thinking_level",
+    "get_available_thinking_levels",
+    "set_steering_mode",
+    "set_follow_up_mode",
+    "compact",
+    "set_auto_compaction",
+    "set_auto_retry",
+    "abort_retry",
+    "bash",
+    "abort_bash",
+    "get_session_stats",
+    "export_html",
+    "switch_session",
+    "fork",
+    "clone",
+    "get_fork_messages",
+    "get_entries",
+    "get_tree",
+    "get_last_assistant_text",
+    "set_session_name",
+    "get_messages",
+    "get_commands",
+  ],
+};
+
+function nativeRpcCommands(probe: Pick<PiProtocolCompatibilityProbe, "version" | "packagePath">) {
+  const reference = Object.hasOwn(nativeRpcCommandsByVersion, probe.version)
+    ? nativeRpcCommandsByVersion[probe.version]
+    : undefined;
+  if (reference === undefined) {
+    throw new Error(
+      `No installed-native conformance reference for Pi ${probe.version} at '${probe.packagePath}'. Referenced targets: ${Object.keys(nativeRpcCommandsByVersion).join(", ")}.`,
+    );
+  }
+  return reference;
+}
+
+async function probeInstalledPi() {
+  const packagePath = await resolvePiPackageFromBinary("pi", process.env);
+  const probe = await probePiProtocol(packagePath);
+  const reference = nativeRpcCommands(probe);
+  expect(probe.packagePath).toBe(packagePath);
+  expect(probe.rpcDeclarationsPath).toBe(
+    Path.join(packagePath, "dist", "modes", "rpc", "rpc-types.d.ts"),
+  );
+  expect(probe.packageJsonSha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(probe.rpcDeclarationsSha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(probe.rpcCommands).toEqual(reference);
+  return probe;
+}
 
 function records(frames: ReadonlyArray<PiJsonlFrame>): ReadonlyArray<PiRpcRecord> {
   return frames.flatMap((frame) => (frame.type === "record" ? [frame.record] : []));
@@ -178,7 +245,7 @@ async function openPeer(options: PeerOptions = {}) {
   return { frames, send, waitFor, close, dispose, child };
 }
 
-describe("Pi 0.84.4 protocol conformance", () => {
+describe("Frozen Pi 0.84.4 protocol fixtures", () => {
   it("preserves strict JSONL framing across split UTF-8, CRLF, multiple records, and abrupt EOF", () => {
     const encoder = new TextEncoder();
     const decoder = new PiJsonlDecoder();
@@ -372,22 +439,14 @@ describe("Pi 0.84.4 protocol conformance", () => {
     }
   });
 
-  it("binds compatibility to the resolved Pi package declarations, not slash-command discovery", async () => {
-    const packagePath = await resolvePiPackageFromBinary("pi", process.env);
-    const probe = await probePiProtocol(packagePath);
-    expect(probe.version).toBe("0.84.4");
-    expect(probe.packagePath).toBe(packagePath);
-    expect(probe.packageJsonSha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(probe.rpcDeclarationsSha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(probe.rpcCommands).toEqual(rpcFixture.rpcMethods);
-    assertPiRpcOperations(probe, PI_ADVERTISED_RPC_OPERATIONS);
+  it("validates frozen event shapes and keeps slash-command discovery distinct from RPC operations", () => {
+    const reference = { rpcCommands: rpcFixture.rpcMethods };
+    validatePiRpcConformanceFixture(rpcFixture, reference);
     expect(() =>
-      assertPiRpcOperations(
-        { ...probe, rpcCommands: probe.rpcCommands.filter((command) => command !== "set_model") },
-        PI_ADVERTISED_RPC_OPERATIONS,
-      ),
-    ).toThrow("does not declare advertised RPC operation(s): set_model");
-    validatePiRpcConformanceFixture(rpcFixture, probe);
+      validatePiRpcConformanceFixture(rpcFixture, {
+        rpcCommands: reference.rpcCommands.filter((command) => command !== "abort"),
+      }),
+    ).toThrow("does not match the reference RpcCommand declaration");
     const forwardFrames = new PiJsonlDecoder().push(
       encodePiJsonlRecord(rpcFixture.forwardCompatibleRecord),
     );
@@ -395,14 +454,36 @@ describe("Pi 0.84.4 protocol conformance", () => {
 
     const conflated = structuredClone(rpcFixture);
     conflated.slashCommands[0]!.name = "get_state";
-    expect(() => validatePiRpcConformanceFixture(conflated, probe)).toThrow(
+    expect(() => validatePiRpcConformanceFixture(conflated, reference)).toThrow(
       "conflated with RPC method discriminants",
     );
     // `get_commands` describes slash commands; it is never used to infer T3 capabilities.
   });
+});
 
-  it("continues a copied fixture through Pi's public SessionManager and preserves its branch state", async () => {
-    const packagePath = await resolvePiPackageFromBinary("pi", process.env);
+describe("Installed-native Pi conformance", () => {
+  it("rejects unknown native targets instead of treating the catalog allowlist as protocol proof", () => {
+    for (const version of ["0.99.2", "0.85.1", "unknown", "toString"]) {
+      expect(() => nativeRpcCommands({ version, packagePath: "/synthetic/unverified-pi" })).toThrow(
+        `No installed-native conformance reference for Pi ${version} at '/synthetic/unverified-pi'.`,
+      );
+    }
+  });
+
+  it("binds advertised operations to the resolved package and version-attributed declarations", async () => {
+    const probe = await probeInstalledPi();
+    assertPiRpcOperations(probe, PI_ADVERTISED_RPC_OPERATIONS);
+    expect(() =>
+      assertPiRpcOperations(
+        { ...probe, rpcCommands: probe.rpcCommands.filter((command) => command !== "set_model") },
+        PI_ADVERTISED_RPC_OPERATIONS,
+      ),
+    ).toThrow("does not declare advertised RPC operation(s): set_model");
+  });
+
+  it("opens, appends, and reopens a copied 0.84.4 fixture through the installed public SessionManager", async () => {
+    const probe = await probeInstalledPi();
+    const packagePath = probe.packagePath;
     const source = await FileSystem.readFile(sessionFixture);
     const sourceChecksum = Crypto.createHash("sha256").update(source).digest("hex");
     const fixture = parsePiSessionV3(source);
@@ -424,10 +505,16 @@ describe("Pi 0.84.4 protocol conformance", () => {
         ChildProcess.execFile(
           process.execPath,
           [sessionManagerProbe, packagePath, directory, copiedFixture],
-          { timeout: 15_000 },
+          // A successful cold Windows SDK probe can exceed 15s; keep bounded startup headroom.
+          { timeout: 30_000 },
           (error, stdout, stderr) => {
             if (error === null) resolve(stdout);
-            else reject(new Error(stderr || error.message));
+            else
+              reject(
+                new Error(
+                  `Pi ${probe.version} at '${packagePath}' SessionManager probe failed: ${error.message}; code=${String(error.code)}; killed=${String(error.killed)}; signal=${String(error.signal)}; stdout=${stdout}; stderr=${stderr}`,
+                ),
+              );
           },
         );
       });

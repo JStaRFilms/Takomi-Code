@@ -271,7 +271,7 @@ function validateMessage(value: unknown, description: string): void {
 /** Validate fixture shapes whose required fields are declared outside RpcCommand. */
 export function validatePiRpcConformanceFixture(
   value: unknown,
-  probe: PiProtocolCompatibilityProbe,
+  reference: Pick<PiProtocolCompatibilityProbe, "rpcCommands">,
 ): void {
   const fixture = requiredRecord(value, "Pi RPC fixture");
   if (
@@ -283,8 +283,8 @@ export function validatePiRpcConformanceFixture(
       "Pi RPC fixture requires separate rpcMethods, slashCommands, and events arrays.",
     );
   }
-  if (JSON.stringify(fixture.rpcMethods) !== JSON.stringify(probe.rpcCommands)) {
-    throw new Error("Pi RPC method fixture does not match the resolved RpcCommand declaration.");
+  if (JSON.stringify(fixture.rpcMethods) !== JSON.stringify(reference.rpcCommands)) {
+    throw new Error("Pi RPC method fixture does not match the reference RpcCommand declaration.");
   }
   const rpcMethods = new Set(fixture.rpcMethods);
   for (const [index, commandValue] of fixture.slashCommands.entries()) {
