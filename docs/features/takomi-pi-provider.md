@@ -130,7 +130,7 @@ With blank overrides, Pi discovers global assets from locations such as:
 ~/.agents/skills/
 ```
 
-For Takomi source development, set **Takomi suite root** to the VibeCode Protocol Suite checkout. The adapter then loads Takomi extensions and prompt templates from that checkout directly.
+For Takomi source development, set **Takomi suite root** to the VibeCode Protocol Suite checkout. The adapter then loads Takomi extensions, including Vault, and prompt templates from that checkout directly. An incomplete checkout reports its missing resource paths instead of silently substituting a global installation.
 
 Suite mode also discovers globally installed Pi companion packages from Pi settings and npm manifests. Companion extensions are loaded explicitly while duplicate global Takomi packages are excluded, preserving tools such as `ask_user_question`, `todo`, context-mode, browser/preview integrations, and other installed packages.
 

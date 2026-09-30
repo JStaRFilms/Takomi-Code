@@ -81,20 +81,41 @@ describe("Pi scoped resource probe", () => {
         NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pi-launch-")),
       );
       const cwd = NodePath.join(root, "project");
-      const homePath = NodePath.join(root, "agent");
+      const homePath = NodePath.join(root, "takomi-vault", "agent");
       try {
         yield* Effect.promise(async () => {
           await NodeFSP.mkdir(NodePath.join(cwd, ".pi", "prompts"), { recursive: true });
           await NodeFSP.mkdir(NodePath.join(homePath, "extensions", "takomi-runtime"), {
             recursive: true,
           });
+          await NodeFSP.mkdir(NodePath.join(homePath, "extensions", "takomi-vault"), {
+            recursive: true,
+          });
+          await NodeFSP.writeFile(
+            NodePath.join(homePath, "extensions", "takomi-vault", "index.ts"),
+            "",
+          );
+          await NodeFSP.writeFile(NodePath.join(homePath, "extensions", "takomi-vault.js"), "");
+          await NodeFSP.writeFile(NodePath.join(homePath, "extensions", "takomi-vault.mts"), "");
           await NodeFSP.writeFile(NodePath.join(cwd, "package.json"), '{"name":"takomi"}');
           await NodeFSP.writeFile(
             NodePath.join(homePath, "extensions", "takomi-runtime", "index.ts"),
             "",
           );
           const packageDir = NodePath.join(homePath, "npm", "node_modules", "pi-web-ui");
+          const vaultPackageDir = NodePath.join(homePath, "npm", "node_modules", "takomi-vault");
           await NodeFSP.mkdir(NodePath.join(packageDir, "extensions"), { recursive: true });
+          await NodeFSP.mkdir(NodePath.join(vaultPackageDir, "extensions", "vault"), {
+            recursive: true,
+          });
+          await NodeFSP.writeFile(
+            NodePath.join(vaultPackageDir, "package.json"),
+            '{"pi":{"extensions":["./extensions/vault"]}}',
+          );
+          await NodeFSP.writeFile(
+            NodePath.join(vaultPackageDir, "extensions", "vault", "index.ts"),
+            "",
+          );
           await NodeFSP.writeFile(
             NodePath.join(packageDir, "package.json"),
             '{"pi":{"extensions":["./extensions"]}}',
@@ -102,7 +123,7 @@ describe("Pi scoped resource probe", () => {
           await NodeFSP.writeFile(NodePath.join(packageDir, "extensions", "webui.ts"), "");
           await NodeFSP.writeFile(
             NodePath.join(homePath, "settings.json"),
-            '{"packages":["npm:pi-web-ui"]}',
+            '{"extensions":["extensions/takomi-vault/index.ts","extensions/takomi-vault.js","extensions/takomi-vault.mts"],"packages":["npm:pi-web-ui","npm:takomi-vault"]}',
           );
           for (const name of [
             "takomi-runtime",
@@ -111,6 +132,7 @@ describe("Pi scoped resource probe", () => {
             "takomi-context-manager",
             "notify-sound",
             "antigravity-provider",
+            "takomi-vault",
           ]) {
             const directory = NodePath.join(cwd, ".pi", "extensions", name);
             await NodeFSP.mkdir(directory, { recursive: true });
@@ -142,6 +164,41 @@ describe("Pi scoped resource probe", () => {
             NodePath.join(homePath, "extensions", "takomi-runtime", "index.ts"),
           ),
         );
+        const suiteVaultPath = NodePath.join(cwd, ".pi", "extensions", "takomi-vault", "index.ts");
+        NodeAssert.equal(resources.args.filter((arg) => arg === suiteVaultPath).length, 1);
+        NodeAssert.ok(
+          !resources.args.includes(NodePath.join(homePath, "extensions", "takomi-vault.js")),
+        );
+        NodeAssert.ok(
+          !resources.args.includes(NodePath.join(homePath, "extensions", "takomi-vault.mts")),
+        );
+        const isolatedHome = NodePath.join(root, "empty-agent");
+        yield* Effect.promise(() => NodeFSP.mkdir(isolatedHome));
+        const suiteOnly = yield* resolvePiLaunchResources({
+          settings: { ...settings, homePath: isolatedHome, suiteRoot: cwd },
+          cwd,
+          environment: process.env,
+        });
+        NodeAssert.deepEqual(suiteOnly.missingPaths, []);
+        NodeAssert.equal(suiteOnly.args.filter((arg) => arg === suiteVaultPath).length, 1);
+        NodeAssert.ok(
+          !resources.args.includes(
+            NodePath.join(homePath, "extensions", "takomi-vault", "index.ts"),
+          ),
+        );
+        NodeAssert.ok(
+          !resources.args.includes(
+            NodePath.join(
+              homePath,
+              "npm",
+              "node_modules",
+              "takomi-vault",
+              "extensions",
+              "vault",
+              "index.ts",
+            ),
+          ),
+        );
         NodeAssert.ok(
           resources.args.includes(
             NodePath.join(homePath, "npm", "node_modules", "pi-web-ui", "extensions", "webui.ts"),
@@ -159,8 +216,29 @@ describe("Pi scoped resource probe", () => {
           allowInferredSuite: false,
         });
         NodeAssert.deepEqual(untrusted.args, ["--no-extensions"]);
+        const explicit = yield* resolvePiLaunchResources({
+          settings: { ...settings, suiteRoot: cwd },
+          cwd,
+          environment: process.env,
+        });
+        NodeAssert.ok(explicit.args.includes(suiteVaultPath));
         const discovery = yield* discoverPiResources(settings, cwd, process.env);
         NodeAssert.equal(discovery.status, "available");
+        yield* Effect.promise(() =>
+          NodeFSP.rm(NodePath.join(cwd, ".pi", "extensions", "takomi-vault", "index.ts")),
+        );
+        const incomplete = yield* resolvePiLaunchResources({
+          settings: { ...settings, suiteRoot: cwd },
+          cwd,
+          environment: process.env,
+        });
+        NodeAssert.deepEqual(incomplete.missingPaths, [suiteVaultPath]);
+        const incompleteDiscovery = yield* discoverPiResources(
+          { ...settings, suiteRoot: cwd },
+          cwd,
+          process.env,
+        );
+        NodeAssert.deepEqual(incompleteDiscovery, { status: "unavailable", reason: "failed" });
       } finally {
         yield* Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true }));
       }

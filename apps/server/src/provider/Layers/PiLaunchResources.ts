@@ -12,6 +12,7 @@ const TAKOMI_EXTENSION_NAMES = [
   "takomi-context-manager",
   "notify-sound",
   "antigravity-provider",
+  "takomi-vault",
 ] as const;
 
 const decodeJsonString = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown));
@@ -43,6 +44,23 @@ function npmPackageName(source: string): string | undefined {
   if (slash < 0) return undefined;
   const version = spec.indexOf("@", slash);
   return version < 0 ? spec : spec.slice(0, version);
+}
+
+function isCanonicalExtensionName(name: string): boolean {
+  return TAKOMI_EXTENSION_NAMES.some((canonicalName) => canonicalName === name);
+}
+
+function canonicalExtensionEntryName(entry: string): string {
+  return entry.replace(/\.[cm]?[jt]s$/u, "");
+}
+
+function isCanonicalExtensionEntry(path: Path.Path, entryPath: string): boolean {
+  const entryName = path.basename(entryPath);
+  if (isCanonicalExtensionName(canonicalExtensionEntryName(entryName))) return true;
+  return (
+    /^index\.[cm]?[jt]s$/u.test(entryName) &&
+    isCanonicalExtensionName(path.basename(path.dirname(entryPath)))
+  );
 }
 
 function packageExtensionEntries(raw: string): readonly string[] {
@@ -86,8 +104,8 @@ function discoverPiCompanionExtensions(input: {
       .readDirectory(globalExtensionsDir)
       .pipe(Effect.orElseSucceed(() => [] as string[]));
     for (const entry of globalEntries) {
-      const extensionName = entry.replace(/\.ts$/u, "");
-      if (TAKOMI_EXTENSION_NAMES.some((name) => name === extensionName)) {
+      const extensionName = canonicalExtensionEntryName(entry);
+      if (isCanonicalExtensionName(extensionName)) {
         continue;
       }
       candidates.push(
@@ -99,7 +117,7 @@ function discoverPiCompanionExtensions(input: {
 
     for (const source of settings.packages) {
       const packageName = npmPackageName(source);
-      if (!packageName) continue;
+      if (!packageName || isCanonicalExtensionName(packageName.split("/").at(-1) ?? "")) continue;
       const packageDir = input.path.join(
         agentDir,
         "npm",
@@ -131,7 +149,10 @@ function discoverPiCompanionExtensions(input: {
       }
     }
 
-    return yield* Effect.filter([...new Set(candidates)], (candidate) =>
+    const filteredCandidates = candidates.filter(
+      (candidate) => !isCanonicalExtensionEntry(input.path, candidate),
+    );
+    return yield* Effect.filter([...new Set(filteredCandidates)], (candidate) =>
       input.fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false)),
     );
   });

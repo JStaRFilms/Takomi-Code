@@ -35,6 +35,9 @@ import { ServerConfig } from "../../config.ts";
 import type { ProviderAdapterError } from "../Errors.ts";
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
+const decodeStringArrayJson = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
 const piMockPeer = NodePath.join(import.meta.dirname, "../testFixtures/piMockPeer.mjs");
 const piAdapterTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-pi-adapter-test-",
@@ -61,6 +64,7 @@ function runPiProcessScenario(
     readonly waitFor: (predicate: (event: ProviderRuntimeEvent) => boolean) => Effect.Effect<void>;
   }) => Effect.Effect<void, ProviderAdapterError>,
   peerPath = piMockPeer,
+  suiteRoot = "",
 ) {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -69,6 +73,7 @@ function runPiProcessScenario(
         decodePiSettings({
           binaryPath: process.execPath,
           launchArgs: `"${peerPath}"`,
+          suiteRoot,
         }),
         {
           instanceId: ProviderInstanceId.make("pi-conformance"),
@@ -1884,6 +1889,40 @@ describe("Pi adapter process-path JSONL decoding", () => {
       ),
   );
 
+  effectIt.live("loads canonical suite Vault in the Pi session arguments", () => {
+    const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pi-vault-suite-"));
+    const argsPath = NodePath.join(cwd, "launch-args.json");
+    NodeFS.mkdirSync(NodePath.join(cwd, ".pi", "prompts"), { recursive: true });
+    for (const name of [
+      "takomi-runtime",
+      "takomi-subagents",
+      "oauth-router",
+      "takomi-context-manager",
+      "notify-sound",
+      "antigravity-provider",
+      "takomi-vault",
+    ]) {
+      const extension = NodePath.join(cwd, ".pi", "extensions", name);
+      NodeFS.mkdirSync(extension, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(extension, "index.ts"), "");
+    }
+    return runPiProcessScenario(
+      { ...process.env, T3_PI_CONFORMANCE_LAUNCH_ARGS_PATH: argsPath },
+      ({ adapter, threadId }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession({ ...startInput(threadId), cwd });
+          const args = decodeStringArrayJson(NodeFS.readFileSync(argsPath, "utf8"));
+          const vaultPath = NodePath.join(cwd, ".pi", "extensions", "takomi-vault", "index.ts");
+          expect(args.filter((arg) => arg === vaultPath)).toHaveLength(1);
+          yield* adapter.stopSession(threadId);
+        }),
+      piMockPeer,
+      cwd,
+    ).pipe(
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(cwd, { recursive: true, force: true }))),
+    );
+  });
+
   effectIt.live(
     "matches discovery's trust gate when starting in an inferred Takomi checkout",
     () => {
@@ -1904,6 +1943,7 @@ describe("Pi adapter process-path JSONL decoding", () => {
         "takomi-context-manager",
         "notify-sound",
         "antigravity-provider",
+        "takomi-vault",
       ]) {
         const extension = NodePath.join(cwd, ".pi", "extensions", name);
         NodeFS.mkdirSync(extension, { recursive: true });
