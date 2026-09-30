@@ -66,6 +66,7 @@ const REASONING_DETAIL_LIMIT = 16_000;
 const REASONING_EMIT_INTERVAL = 500;
 const MAX_DYNAMIC_PAYLOAD_BYTES = 1024 * 1024;
 const MAX_DYNAMIC_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
+const MAX_PENDING_PROMPTS = 100;
 const MAX_UI_REQUEST_BYTES = 1024 * 1024;
 const MAX_UI_TITLE_CODE_POINTS = 4096;
 const MAX_UI_TITLE_BYTES = 16 * 1024;
@@ -175,6 +176,13 @@ interface PendingUiRequest {
   readonly archive?: boolean;
 }
 
+interface PendingPiPrompt {
+  readonly turnId: TurnId;
+  readonly ownsTurn: boolean;
+  readonly commandName: string | undefined;
+  error?: string;
+}
+
 interface PiTurnSnapshot {
   readonly id: TurnId;
   readonly items: Array<unknown>;
@@ -190,6 +198,8 @@ interface PiSessionContext {
   readonly sensitiveUiIds: Set<string>;
   readonly settledUi: Set<RuntimeRequestId>;
   readonly pendingRpc: Map<string, Deferred.Deferred<PiRpcMessage>>;
+  readonly pendingPrompts: Map<string, PendingPiPrompt>;
+  nativeRunActive: boolean;
   /** Skills accepted by this exact Pi process, for native `/skill:name` dispatch. */
   skillNames: ReadonlySet<string> | undefined;
   vaultCommandNames: ReadonlySet<string>;
@@ -207,7 +217,6 @@ interface PiSessionContext {
         readonly generation: number;
         readonly turnId: TurnId;
         readonly commandName: string;
-        error?: string;
       }
     | undefined;
   readonly toolActivityByCallId: Map<
@@ -1878,15 +1887,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
     ) {
       const turnId = context.activeTurnId;
       if (!turnId) return;
-      yield* emit({
-        ...(yield* eventBase(context)),
-        type: "turn.completed",
-        turnId,
-        payload: {
-          state,
-          ...(message ? { errorMessage: message } : {}),
-        },
-      });
+      // Claim the terminal transition before yielding to stop/send paths.
       context.activeTurnId = undefined;
       if (context.pendingVaultPrompt?.turnId === turnId) context.pendingVaultPrompt = undefined;
       context.reasoningBlocks.clear();
@@ -1899,6 +1900,15 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       };
       delete (nextSession as { activeTurnId?: TurnId }).activeTurnId;
       context.session = nextSession;
+      yield* emit({
+        ...(yield* eventBase(context)),
+        type: "turn.completed",
+        turnId,
+        payload: {
+          state,
+          ...(message ? { errorMessage: message } : {}),
+        },
+      });
     });
 
     const settlePendingUi = Effect.fn("settlePendingPiUi")(function* (
@@ -2157,7 +2167,6 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         const responseId = readString(message.id);
         const pendingResponse = responseId ? context.pendingRpc.get(responseId) : undefined;
         const command = readString(message.command);
-        const pendingVaultPrompt = context.pendingVaultPrompt;
         if (command === "get_state" && message.success === true && isRecord(message.data)) {
           const sessionFile = readString(message.data.sessionFile);
           const sessionId = readString(message.data.sessionId);
@@ -2183,26 +2192,55 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
               payload: { providerThreadId: sessionId },
             });
           }
-        } else if (
-          command === "prompt" &&
-          message.success === true &&
-          pendingVaultPrompt &&
-          responseId === pendingVaultPrompt.id &&
-          pendingVaultPrompt.generation === context.generation &&
-          pendingVaultPrompt.turnId === context.activeTurnId
-        ) {
-          const failure = pendingVaultPrompt.error;
-          context.pendingVaultPrompt = undefined;
-          yield* completeTurn(context, failure ? "failed" : "completed", failure);
-        } else if (command === "prompt" && message.success === false) {
-          const error = readString(message.error) ?? "Pi rejected the prompt.";
-          context.turnFailure = error;
-          yield* emit({
-            ...(yield* eventBase(context, message)),
-            type: "runtime.error",
-            payload: { message: error, class: "provider_error" },
-          });
-          yield* completeTurn(context, "failed", error);
+        } else if (command === "prompt" && responseId) {
+          const pending = context.pendingPrompts.get(responseId);
+          if (pending && typeof message.success === "boolean") {
+            const disposition = isRecord(message.data) ? message.data.disposition : undefined;
+            const legacyResponse =
+              message.data === undefined ||
+              (isRecord(message.data) && !Object.hasOwn(message.data, "disposition"));
+            const invalidDisposition =
+              message.success === true &&
+              !legacyResponse &&
+              disposition !== "started" &&
+              disposition !== "queued" &&
+              disposition !== "handled";
+            const failure =
+              pending.error ??
+              (invalidDisposition
+                ? "Pi returned an invalid prompt disposition."
+                : message.success === false
+                  ? (readString(message.error) ?? "Pi rejected the prompt.")
+                  : undefined);
+            // A malformed acknowledgement is a terminal protocol failure for this
+            // submission. Consume it once so corrected duplicates cannot reclassify it.
+            context.pendingPrompts.delete(responseId);
+            const legacyVaultHandled =
+              legacyResponse && context.pendingVaultPrompt?.id === responseId;
+            if (failure || disposition === "handled" || legacyVaultHandled) {
+              yield* emit({
+                ...(yield* eventBase(context)),
+                turnId: pending.turnId,
+                type: "runtime.warning",
+                payload: {
+                  message: failure ?? "Pi handled the submitted input.",
+                  detail: {
+                    kind: "pi.prompt-outcome",
+                    requestId: responseId,
+                    outcome: failure ? "failed" : "handled",
+                    ...(pending.commandName ? { commandName: pending.commandName } : {}),
+                  },
+                },
+              });
+              if (pending.ownsTurn && pending.turnId === context.activeTurnId) {
+                if (failure) context.turnFailure = failure;
+                // Handled describes this input, not work started independently by its handler.
+                if (!context.nativeRunActive) {
+                  yield* completeTurn(context, failure ? "failed" : "completed", failure);
+                }
+              }
+            }
+          }
         }
         if (pendingResponse) {
           yield* Deferred.succeed(pendingResponse, message).pipe(Effect.ignore);
@@ -2211,6 +2249,30 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       }
 
       switch (message.type) {
+        case "agent_start": {
+          context.nativeRunActive = true;
+          if (!context.activeTurnId) {
+            // Extension work can begin after handled has already closed the submission.
+            // Allocate a new canonical turn; terminal turn IDs are never reused.
+            const turnId = TurnId.make(`pi-turn-${yield* randomId}`);
+            context.activeTurnId = turnId;
+            context.turnFailure = undefined;
+            context.session = {
+              ...context.session,
+              status: "running",
+              activeTurnId: turnId,
+              updatedAt: yield* nowIso,
+            };
+            context.turns.push({ id: turnId, items: [] });
+            yield* emit({
+              ...(yield* eventBase(context, message)),
+              type: "turn.started",
+              turnId,
+              payload: {},
+            });
+          }
+          break;
+        }
         case "message_update": {
           const update = isRecord(message.assistantMessageEvent)
             ? message.assistantMessageEvent
@@ -2491,22 +2553,28 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         }
         case "extension_error": {
           const error = readString(message.error) ?? "A Pi extension failed.";
-          const pending = context.pendingVaultPrompt;
-          if (
-            pending?.generation === context.generation &&
-            pending.turnId === context.activeTurnId &&
-            message.event === "command" &&
-            message.extensionPath === `command:${pending.commandName}`
-          )
-            pending.error = error;
+          // Stock Pi supplies a command name, not a prompt ID. Attribute only a
+          // unique outstanding match; input/runtime errors have no such correlation.
+          const matching =
+            message.event === "command"
+              ? [...context.pendingPrompts.values()].filter(
+                  (pending) =>
+                    pending.commandName !== undefined &&
+                    message.extensionPath === `command:${pending.commandName}`,
+                )
+              : [];
+          const pending = matching.length === 1 ? matching[0] : undefined;
+          if (pending) pending.error = error;
           yield* emit({
             ...(yield* eventBase(context, message)),
-            type: "runtime.error",
-            payload: { message: error, class: "provider_error", detail: message },
+            type: "runtime.warning",
+            ...(pending ? { turnId: pending.turnId } : {}),
+            payload: { message: error, detail: { kind: "pi.extension-error", ...message } },
           });
           break;
         }
         case "agent_settled":
+          context.nativeRunActive = false;
           for (const contentIndex of context.reasoningBlocks.keys()) {
             yield* emitReasoningProgress(context, contentIndex, message, true);
             context.reasoningBlocks.delete(contentIndex);
@@ -2540,12 +2608,13 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       emitExit: boolean,
     ) {
       if (context.stopped) return;
+      context.outputFenced = true;
       yield* resolvePendingUiAsCancelled(context);
       context.stopped = true;
       if (sessions.get(context.session.threadId) === context) {
         sessions.delete(context.session.threadId);
       }
-      if (emitExit && context.activeTurnId) {
+      if (context.activeTurnId) {
         context.abortingTurnId = undefined;
         yield* completeTurn(context, "interrupted");
       }
@@ -2558,6 +2627,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         }).pipe(Effect.ignore);
       }
       context.pendingRpc.clear();
+      context.pendingPrompts.clear();
+      context.pendingVaultPrompt = undefined;
+      context.pendingVaultExport = undefined;
+      context.nativeRunActive = false;
       if (emitExit) {
         yield* emit({
           ...(yield* eventBase(context)),
@@ -2688,6 +2761,8 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         sensitiveUiIds: new Set(),
         settledUi: new Set(),
         pendingRpc: new Map(),
+        pendingPrompts: new Map(),
+        nativeRunActive: false,
         skillNames: undefined,
         vaultCommandNames: new Set(),
         pendingVaultPrompt: undefined,
@@ -2816,6 +2891,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                   }).pipe(Effect.ignore);
                 }
                 context.pendingRpc.clear();
+                context.pendingPrompts.clear();
+                context.pendingVaultPrompt = undefined;
+                context.pendingVaultExport = undefined;
+                context.nativeRunActive = false;
                 yield* resolvePendingUiAsCancelled(context);
                 yield* emit({
                   ...(yield* eventBase(context)),
@@ -2977,15 +3056,31 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         });
       }
 
+      const message =
+        context.skillNames === undefined || input.input === undefined
+          ? (input.input ?? "")
+          : expandPiSkillReferences(input.input, context.skillNames);
+      const promptId = `prompt-${yield* randomId}`;
+      const commandName = message.startsWith("/") ? message.slice(1).split(" ", 1)[0] : undefined;
+      const newTurnId = TurnId.make(`pi-turn-${yield* randomId}`);
+      const updatedAt = yield* nowIso;
+      if (context.pendingPrompts.size >= MAX_PENDING_PROMPTS) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "prompt",
+          detail: "Pi has too many unacknowledged prompts. Wait for command handling to finish.",
+        });
+      }
       const existingTurn = context.activeTurnId;
-      const turnId = existingTurn ?? TurnId.make(`pi-turn-${yield* randomId}`);
+      const turnId = existingTurn ?? newTurnId;
+      context.pendingPrompts.set(promptId, { turnId, ownsTurn: !existingTurn, commandName });
       context.activeTurnId = turnId;
-      context.turnFailure = undefined;
+      if (!existingTurn) context.turnFailure = undefined;
       context.session = {
         ...context.session,
         status: "running",
         activeTurnId: turnId,
-        updatedAt: yield* nowIso,
+        updatedAt,
       };
       if (!existingTurn) {
         context.turns.push({ id: turnId, items: [] });
@@ -2997,12 +3092,6 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         });
       }
 
-      const message =
-        context.skillNames === undefined || input.input === undefined
-          ? (input.input ?? "")
-          : expandPiSkillReferences(input.input, context.skillNames);
-      const promptId = `prompt-${yield* randomId}`;
-      const commandName = message.startsWith("/") ? message.slice(1).split(" ", 1)[0] : undefined;
       if (!existingTurn && commandName && context.vaultCommandNames.has(commandName)) {
         context.pendingVaultPrompt = {
           id: promptId,
@@ -3020,6 +3109,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       }).pipe(
         Effect.onError(() =>
           Effect.sync(() => {
+            context.pendingPrompts.delete(promptId);
             if (context.pendingVaultPrompt?.id === promptId) context.pendingVaultPrompt = undefined;
           }),
         ),

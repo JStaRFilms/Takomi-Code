@@ -60,6 +60,7 @@ function runPiProcessScenario(
     readonly threadId: ThreadId;
     readonly waitFor: (predicate: (event: ProviderRuntimeEvent) => boolean) => Effect.Effect<void>;
   }) => Effect.Effect<void, ProviderAdapterError>,
+  peerPath = piMockPeer,
 ) {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -67,7 +68,7 @@ function runPiProcessScenario(
       const adapter = yield* makePiAdapter(
         decodePiSettings({
           binaryPath: process.execPath,
-          launchArgs: `"${piMockPeer}"`,
+          launchArgs: `"${peerPath}"`,
         }),
         {
           instanceId: ProviderInstanceId.make("pi-conformance"),
@@ -120,6 +121,155 @@ function runPiProcessScenario(
     }),
   ).pipe(Effect.provide(piAdapterTestLayer));
 }
+
+const lifecyclePeer = String.raw`
+let input = "";
+let previousPrompt;
+let heldPrompt;
+let heldCount = 0;
+let delayedPrompt;
+const ambiguousPrompts = [];
+const emit = (record) => process.stdout.write(JSON.stringify(record) + "\n");
+const notify = (message) => emit({ type: "extension_ui_request", id: "notice-" + message, method: "notify", message });
+const control = (id) => emit({ type: "extension_ui_request", id, method: "confirm", title: id, message: "Advance controlled peer" });
+const ack = (id, disposition, success = true) => emit({ type: "response", id, command: "prompt", success,
+  ...(success ? { data: { disposition } } : { error: "Synthetic rejection." }) });
+const work = () => {
+  emit({ type: "agent_start" });
+  emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Native review text" } });
+  emit({ type: "tool_execution_start", toolCallId: "review-read", toolName: "read", args: { path: "synthetic.txt" } });
+  emit({ type: "tool_execution_end", toolCallId: "review-read", toolName: "read", result: {} });
+};
+process.stdin.on("data", (chunk) => {
+  input += chunk;
+  let newline;
+  while ((newline = input.indexOf("\n")) >= 0) {
+    const record = JSON.parse(input.slice(0, newline));
+    input = input.slice(newline + 1);
+    if (record.type === "get_state") {
+      emit({ type: "response", id: record.id, command: record.type, success: true,
+        data: { sessionFile: "/synthetic/lifecycle.jsonl", sessionId: "lifecycle" } });
+    } else if (record.type === "get_commands") {
+      emit({ type: "response", id: record.id, command: record.type, success: true,
+        data: { commands: [] } });
+    } else if (record.type === "prompt") {
+      const text = record.message;
+      if (text === "/delayed-a") {
+        delayedPrompt = record.id;
+        work();
+        emit({ type: "agent_settled" });
+      } else if (text.startsWith("/invalid-")) {
+        const invalid = text.slice(9);
+        const data = invalid === "data-null" ? null
+          : invalid === "data-array" ? ["private-invalid-disposition"]
+          : invalid === "missing" ? {}
+          : { disposition: invalid === "null" ? null
+              : invalid === "object" ? { value: "private-invalid-disposition" }
+              : "private-invalid-disposition" };
+        emit({ type: "response", id: record.id, command: "prompt", success: true, data });
+        if (invalid !== "missing") {
+          ack(record.id, "handled");
+          ack(record.id, "started");
+          ack(record.id, "handled");
+        }
+      } else if (text === "/ambiguous") {
+        ambiguousPrompts.push(record.id);
+        if (ambiguousPrompts.length === 2) {
+          emit({ type: "extension_error", extensionPath: "command:ambiguous", event: "command", error: "Unattributed command failure." });
+          for (const id of ambiguousPrompts) ack(id, "handled");
+          notify("Ambiguous commands drained");
+        }
+      } else if (text === "/hold") {
+        heldPrompt = record.id;
+        if (++heldCount === 1) control("release-held");
+        notify("Held prompt count: " + heldCount);
+      } else if (text === "/run-before" || text === "/run-finished-before-ack" || text === "/fail-run-before") {
+        work();
+        if (text === "/run-finished-before-ack") emit({ type: "agent_settled" });
+        if (text === "/fail-run-before") emit({ type: "extension_error", extensionPath: "command:fail-run-before", event: "command", error: "Synthetic extension failure." });
+        ack(record.id, "handled");
+        if (text !== "/run-finished-before-ack") control("settle-before");
+        if (delayedPrompt) control("report-delayed-a");
+      } else if (text === "/run-after") {
+        ack(record.id, "handled");
+        control("start-after");
+      } else if (text === "/run-started" || text === "/run-queued") {
+        ack(record.id, text.slice(5));
+        // A contradictory duplicate cannot change the first authoritative disposition.
+        ack(record.id, "handled");
+        control("start-accepted");
+      } else if (text === "/reject" || text === "/reject-active") {
+        ack(record.id, undefined, false);
+        ack(record.id, "handled");
+      } else if (text === "/fail-command" || text === "/unrelated-error" || text === "input notice") {
+        emit({ type: "extension_error", extensionPath: text === "/fail-command" ? "command:fail-command" : "command:other",
+          event: text === "input notice" ? "input" : "command", error: "Synthetic extension failure." });
+        ack(record.id, "handled");
+      } else if (text === "steer input") {
+        notify("Streaming behavior: " + record.streamingBehavior);
+        ack(record.id, "queued");
+        ack(record.id, "handled");
+      } else {
+        ack(record.id, "handled");
+        ack(record.id, "handled");
+        ack(record.id, undefined, false);
+      }
+      // A stale rejection for the preceding prompt must not affect this turn.
+      if (previousPrompt) ack(previousPrompt, undefined, false);
+      if (text !== "/hold" && text !== "/ambiguous" && text !== "/delayed-a") previousPrompt = record.id;
+      notify("Prompt drained: " + text);
+    } else if (record.type === "extension_ui_response") {
+      if (record.id === "report-delayed-a") {
+        emit({ type: "extension_error", extensionPath: "command:delayed-a", event: "command", error: "Delayed A failure." });
+        ack(delayedPrompt, "handled");
+        ack(delayedPrompt, "handled");
+      } else if (record.id === "start-after" || record.id === "start-accepted") {
+        work();
+        control("settle-native");
+      } else if (record.id.startsWith("settle-")) {
+        emit({ type: "agent_end", messages: [], willRetry: false });
+        notify("Low-level run ended");
+        control("finish-settlement");
+      } else if (record.id === "finish-settlement") {
+        emit({ type: "agent_settled" });
+        emit({ type: "agent_settled" });
+      } else if (record.id === "release-held") {
+        ack(heldPrompt, "handled");
+        work();
+      }
+      notify("Control drained: " + record.id);
+    }
+  }
+});
+`;
+
+function runPiLifecycleScenario(use: Parameters<typeof runPiProcessScenario>[1]) {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pi-lifecycle-"));
+  const peerPath = NodePath.join(directory, "peer.mjs");
+  NodeFS.writeFileSync(peerPath, lifecyclePeer);
+  return runPiProcessScenario(process.env, use, peerPath).pipe(
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true }))),
+  );
+}
+
+type PiProcessScenario = Parameters<Parameters<typeof runPiProcessScenario>[1]>[0];
+
+const advancePeer = Effect.fnUntraced(function* (scenario: PiProcessScenario, nativeId: string) {
+  const { adapter, events, threadId, waitFor } = scenario;
+  yield* waitFor(
+    (event) =>
+      event.type === "request.opened" && event.requestId?.endsWith(`-${nativeId}`) === true,
+  );
+  const request = events.findLast(
+    (event) => event.type === "request.opened" && event.requestId?.endsWith(`-${nativeId}`),
+  );
+  if (!request?.requestId) throw new Error(`Missing controlled peer request: ${nativeId}`);
+  yield* adapter.respondToRequest(threadId, ApprovalRequestId.make(request.requestId), "accept");
+  yield* waitFor(
+    (event) =>
+      event.type === "runtime.warning" && event.payload.message === `Control drained: ${nativeId}`,
+  );
+});
 
 describe("Pi adapter capabilities", () => {
   effectIt.effect("declares conversation rollback unsupported for provider preflight", () =>
@@ -1188,6 +1338,551 @@ describe("Pi adapter process-path JSONL decoding", () => {
     cwd: process.cwd(),
     runtimeMode: "full-access" as const,
   });
+
+  effectIt.live("keeps delayed A command notices on A while native B is running", () =>
+    runPiLifecycleScenario((scenario) =>
+      Effect.gen(function* () {
+        const { adapter, events, threadId, waitFor } = scenario;
+        yield* adapter.startSession(startInput(threadId));
+        const a = yield* adapter.sendTurn({ threadId, input: "/delayed-a", attachments: [] });
+        yield* waitFor(
+          (event) =>
+            event.type === "runtime.warning" &&
+            event.payload.message === "Prompt drained: /delayed-a",
+        );
+        expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+          { turnId: a.turnId, payload: { state: "completed" } },
+        ]);
+        const b = yield* adapter.sendTurn({ threadId, input: "/run-before", attachments: [] });
+        yield* waitFor(
+          (event) =>
+            event.type === "runtime.warning" &&
+            event.payload.message === "Prompt drained: /run-before",
+        );
+        yield* advancePeer(scenario, "report-delayed-a");
+        const notices = events.filter(
+          (event) =>
+            event.type === "runtime.warning" && event.payload.message === "Delayed A failure.",
+        );
+        expect(notices).toHaveLength(2);
+        expect(notices.map((event) => event.turnId)).toEqual([a.turnId, a.turnId]);
+        expect(notices.map((event) => event.payload)).toMatchObject([
+          { detail: { kind: "pi.extension-error" } },
+          { detail: { kind: "pi.prompt-outcome", outcome: "failed", commandName: "delayed-a" } },
+        ]);
+        expect((yield* adapter.listSessions())[0]).toMatchObject({
+          status: "running",
+          activeTurnId: b.turnId,
+        });
+        expect(events.filter((event) => event.type === "turn.started")).toHaveLength(2);
+        expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        yield* advancePeer(scenario, "settle-before");
+        yield* advancePeer(scenario, "finish-settlement");
+        expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+          { turnId: a.turnId, payload: { state: "completed" } },
+          { turnId: b.turnId, payload: { state: "completed" } },
+        ]);
+        yield* adapter.stopSession(threadId);
+      }),
+    ),
+  );
+
+  for (const invalid of ["string", "null", "object", "data-null", "data-array"]) {
+    for (const active of [false, true]) {
+      effectIt.live(
+        `rejects invalid prompt disposition ${invalid} with unrelated run active=${active}`,
+        () =>
+          runPiLifecycleScenario((scenario) =>
+            Effect.gen(function* () {
+              const { adapter, events, threadId, waitFor } = scenario;
+              yield* adapter.startSession(startInput(threadId));
+              if (active) {
+                yield* adapter.sendTurn({ threadId, input: "/run-before", attachments: [] });
+                yield* waitFor(
+                  (event) =>
+                    event.type === "runtime.warning" &&
+                    event.payload.message === "Prompt drained: /run-before",
+                );
+              }
+              const turn = yield* adapter.sendTurn({
+                threadId,
+                input: `/invalid-${invalid}`,
+                attachments: [],
+              });
+              yield* waitFor(
+                (event) =>
+                  event.type === "runtime.warning" &&
+                  event.payload.message === `Prompt drained: /invalid-${invalid}`,
+              );
+              const outcomes = events.filter(
+                (event) =>
+                  event.type === "runtime.warning" &&
+                  isRecord(event.payload.detail) &&
+                  event.payload.detail.kind === "pi.prompt-outcome",
+              );
+              expect(outcomes).toHaveLength(active ? 2 : 1);
+              expect(outcomes.at(-1)).toMatchObject({
+                turnId: turn.turnId,
+                payload: {
+                  message: "Pi returned an invalid prompt disposition.",
+                  detail: {
+                    outcome: "failed",
+                    commandName: `invalid-${invalid}`,
+                    requestId: expect.stringMatching(/^prompt-/),
+                  },
+                },
+              });
+              expect(JSON.stringify(events)).not.toContain("private-invalid-disposition");
+              expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(
+                active ? 0 : 1,
+              );
+              if (active) {
+                expect((yield* adapter.listSessions())[0]).toMatchObject({
+                  status: "running",
+                  activeTurnId: turn.turnId,
+                });
+                yield* advancePeer(scenario, "settle-before");
+                yield* advancePeer(scenario, "finish-settlement");
+                expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+                  { turnId: turn.turnId, payload: { state: "completed" } },
+                ]);
+              } else {
+                expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+                  {
+                    turnId: turn.turnId,
+                    payload: {
+                      state: "failed",
+                      errorMessage: "Pi returned an invalid prompt disposition.",
+                    },
+                  },
+                ]);
+                expect((yield* adapter.listSessions())[0]?.status).toBe("error");
+              }
+              yield* adapter.stopSession(threadId);
+            }),
+          ),
+      );
+    }
+  }
+
+  effectIt.live("preserves legacy absent disposition without treating it as invalid", () =>
+    runPiLifecycleScenario(({ adapter, events, threadId, waitFor }) =>
+      Effect.gen(function* () {
+        yield* adapter.startSession(startInput(threadId));
+        const turn = yield* adapter.sendTurn({
+          threadId,
+          input: "/invalid-missing",
+          attachments: [],
+        });
+        yield* waitFor(
+          (event) =>
+            event.type === "runtime.warning" &&
+            event.payload.message === "Prompt drained: /invalid-missing",
+        );
+        expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(0);
+        expect(
+          events.some(
+            (event) =>
+              event.type === "runtime.warning" &&
+              isRecord(event.payload.detail) &&
+              event.payload.detail.kind === "pi.prompt-outcome",
+          ),
+        ).toBe(false);
+        expect((yield* adapter.listSessions())[0]).toMatchObject({
+          status: "running",
+          activeTurnId: turn.turnId,
+        });
+        yield* adapter.stopSession(threadId);
+      }),
+    ),
+  );
+
+  for (const input of ["/takomi-status", "consumed by an input handler"]) {
+    effectIt.live(`settles handled input without a native run: ${input}`, () =>
+      runPiLifecycleScenario(({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          const turn = yield* adapter.sendTurn({ threadId, input, attachments: [] });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === `Prompt drained: ${input}`,
+          );
+          expect(
+            events.filter(
+              (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+            ),
+          ).toMatchObject([{ payload: { state: "completed" } }]);
+          expect((yield* adapter.listSessions())[0]?.status).toBe("ready");
+          expect(
+            events.some(
+              (event) => event.type === "content.delta" || event.type === "item.completed",
+            ),
+          ).toBe(false);
+          yield* adapter.stopSession(threadId);
+          expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+        }),
+      ),
+    );
+  }
+
+  for (const input of ["/run-before", "/run-after", "/run-started", "/run-queued"]) {
+    effectIt.live(`keeps native work visible through settlement: ${input}`, () =>
+      runPiLifecycleScenario((scenario) =>
+        Effect.gen(function* () {
+          const { adapter, events, threadId, waitFor } = scenario;
+          yield* adapter.startSession(startInput(threadId));
+          const submission = yield* adapter.sendTurn({ threadId, input, attachments: [] });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === `Prompt drained: ${input}`,
+          );
+          if (input === "/run-after") {
+            expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+              { turnId: submission.turnId, payload: { state: "completed" } },
+            ]);
+            expect((yield* adapter.listSessions())[0]?.status).toBe("ready");
+            yield* advancePeer(scenario, "start-after");
+          } else if (input !== "/run-before") {
+            expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(0);
+            yield* advancePeer(scenario, "start-accepted");
+          }
+          const nativeTurn = (yield* adapter.listSessions())[0]?.activeTurnId;
+          expect(nativeTurn).toBeDefined();
+          expect((yield* adapter.listSessions())[0]?.status).toBe("running");
+          expect(nativeTurn === submission.turnId).toBe(input !== "/run-after");
+          expect(events.filter((event) => event.type === "turn.started")).toHaveLength(
+            input === "/run-after" ? 2 : 1,
+          );
+          expect(events.find((event) => event.type === "content.delta")).toMatchObject({
+            turnId: nativeTurn,
+            payload: { delta: "Native review text" },
+          });
+          expect(
+            events.find(
+              (event) => event.type === "item.completed" && event.itemId === "review-read",
+            ),
+          ).toMatchObject({ turnId: nativeTurn });
+          expect(
+            events.some((event) => event.type === "turn.completed" && event.turnId === nativeTurn),
+          ).toBe(false);
+          yield* advancePeer(scenario, input === "/run-before" ? "settle-before" : "settle-native");
+          // agent_end is not the session-level settlement boundary.
+          expect((yield* adapter.listSessions())[0]?.status).toBe("running");
+          expect(
+            events.some((event) => event.type === "turn.completed" && event.turnId === nativeTurn),
+          ).toBe(false);
+          yield* advancePeer(scenario, "finish-settlement");
+          expect(
+            events.filter(
+              (event) => event.type === "turn.completed" && event.turnId === nativeTurn,
+            ),
+          ).toMatchObject([{ payload: { state: "completed" } }]);
+          expect((yield* adapter.listSessions())[0]?.status).toBe("ready");
+          const snapshot = yield* adapter.readThread(threadId);
+          expect(snapshot.turns.map((turn) => turn.id)).toEqual(
+            events.filter((event) => event.type === "turn.started").map((event) => event.turnId),
+          );
+          expect(snapshot.turns.find((turn) => turn.id === nativeTurn)?.items).toHaveLength(1);
+          yield* adapter.stopSession(threadId);
+        }),
+      ),
+    );
+  }
+
+  effectIt.live(
+    "waits for native settlement when an associated command failure precedes handled",
+    () =>
+      runPiLifecycleScenario((scenario) =>
+        Effect.gen(function* () {
+          const { adapter, events, threadId, waitFor } = scenario;
+          yield* adapter.startSession(startInput(threadId));
+          const turn = yield* adapter.sendTurn({
+            threadId,
+            input: "/fail-run-before",
+            attachments: [],
+          });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Prompt drained: /fail-run-before",
+          );
+          expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(0);
+          expect((yield* adapter.listSessions())[0]?.status).toBe("running");
+          // A subsequent handled input must not erase the run's recorded failure.
+          yield* adapter.sendTurn({ threadId, input: "/takomi-status", attachments: [] });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Prompt drained: /takomi-status",
+          );
+          yield* advancePeer(scenario, "settle-before");
+          yield* advancePeer(scenario, "finish-settlement");
+          expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+            {
+              turnId: turn.turnId,
+              payload: { state: "failed", errorMessage: "Synthetic extension failure." },
+            },
+          ]);
+          yield* adapter.stopSession(threadId);
+        }),
+      ),
+  );
+
+  effectIt.live(
+    "keeps a command-name-only error unattributed when matching submissions overlap",
+    () =>
+      runPiLifecycleScenario(({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          const turn = yield* adapter.sendTurn({ threadId, input: "/ambiguous", attachments: [] });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Prompt drained: /ambiguous",
+          );
+          yield* adapter.sendTurn({ threadId, input: "/ambiguous", attachments: [] });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Ambiguous commands drained",
+          );
+          expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+            { turnId: turn.turnId, payload: { state: "completed" } },
+          ]);
+          expect(
+            events.find(
+              (event) =>
+                event.type === "runtime.warning" &&
+                event.payload.message === "Unattributed command failure.",
+            )?.payload,
+          ).toMatchObject({ detail: { kind: "pi.extension-error" } });
+          expect(
+            events.filter(
+              (event) =>
+                event.type === "runtime.warning" &&
+                isRecord(event.payload.detail) &&
+                event.payload.detail.outcome === "failed",
+            ),
+          ).toHaveLength(0);
+          yield* adapter.stopSession(threadId);
+        }),
+      ),
+  );
+
+  effectIt.live(
+    "bounds outstanding acknowledgement correlation and frees it on response and teardown",
+    () =>
+      runPiLifecycleScenario((scenario) =>
+        Effect.gen(function* () {
+          const { adapter, threadId, waitFor } = scenario;
+          yield* adapter.startSession(startInput(threadId));
+          for (let count = 1; count <= 100; count++) {
+            yield* adapter.sendTurn({ threadId, input: "/hold", attachments: [] });
+            yield* waitFor(
+              (event) =>
+                event.type === "runtime.warning" &&
+                event.payload.message === `Held prompt count: ${count}`,
+            );
+          }
+          const full = yield* Effect.exit(
+            adapter.sendTurn({ threadId, input: "/hold", attachments: [] }),
+          );
+          expect(Exit.isFailure(full)).toBe(true);
+          yield* advancePeer(scenario, "release-held");
+          yield* adapter.sendTurn({ threadId, input: "/takomi-status", attachments: [] });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Prompt drained: /takomi-status",
+          );
+          yield* adapter.stopSession(threadId);
+          yield* adapter.startSession(startInput(threadId));
+          yield* adapter.sendTurn({ threadId, input: "/hold", attachments: [] });
+          yield* adapter.stopSession(threadId);
+        }),
+      ),
+  );
+
+  effectIt.live(
+    "ignores acknowledgements after native settlement without reopening a terminal turn",
+    () =>
+      runPiLifecycleScenario(({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          const turn = yield* adapter.sendTurn({
+            threadId,
+            input: "/run-finished-before-ack",
+            attachments: [],
+          });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Prompt drained: /run-finished-before-ack",
+          );
+          expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+            { turnId: turn.turnId, payload: { state: "completed" } },
+          ]);
+          const next = yield* adapter.sendTurn({
+            threadId,
+            input: "/takomi-status",
+            attachments: [],
+          });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Prompt drained: /takomi-status",
+          );
+          expect(events.filter((event) => event.type === "turn.started")).toHaveLength(2);
+          expect(
+            events.filter(
+              (event) => event.type === "turn.completed" && event.turnId === next.turnId,
+            ),
+          ).toMatchObject([{ payload: { state: "completed" } }]);
+          expect((yield* adapter.listSessions())[0]?.status).toBe("ready");
+          yield* adapter.stopSession(threadId);
+        }),
+      ),
+  );
+
+  for (const input of [
+    "/takomi-status",
+    "consumed by an input handler",
+    "steer input",
+    "/reject-active",
+    "/fail-command",
+    "/unrelated-error",
+  ]) {
+    effectIt.live(`preserves an existing native run while submitting: ${input}`, () =>
+      runPiLifecycleScenario((scenario) =>
+        Effect.gen(function* () {
+          const { adapter, events, threadId, waitFor } = scenario;
+          yield* adapter.startSession(startInput(threadId));
+          const active = yield* adapter.sendTurn({
+            threadId,
+            input: "/run-before",
+            attachments: [],
+          });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Prompt drained: /run-before",
+          );
+          const command = yield* adapter.sendTurn({ threadId, input, attachments: [] });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === `Prompt drained: ${input}`,
+          );
+          expect(command.turnId).toBe(active.turnId);
+          expect(events.filter((event) => event.type === "turn.started")).toHaveLength(1);
+          expect(events.filter((event) => event.type === "turn.completed")).toHaveLength(0);
+          expect((yield* adapter.listSessions())[0]).toMatchObject({
+            status: "running",
+            activeTurnId: active.turnId,
+          });
+          const outcomes = events.filter(
+            (event) =>
+              event.type === "runtime.warning" &&
+              isRecord(event.payload.detail) &&
+              event.payload.detail.kind === "pi.prompt-outcome",
+          );
+          if (input !== "steer input") {
+            expect(outcomes.at(-1)?.payload).toMatchObject({
+              detail: {
+                outcome:
+                  input === "/reject-active" || input === "/fail-command" ? "failed" : "handled",
+              },
+            });
+          } else {
+            expect(
+              events.some(
+                (event) =>
+                  event.type === "runtime.warning" &&
+                  event.payload.message === "Streaming behavior: steer",
+              ),
+            ).toBe(true);
+          }
+          expect(events.filter((event) => event.type === "runtime.error")).toHaveLength(0);
+          yield* advancePeer(scenario, "settle-before");
+          yield* advancePeer(scenario, "finish-settlement");
+          expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+            { turnId: active.turnId, payload: { state: "completed" } },
+          ]);
+          yield* adapter.stopSession(threadId);
+        }),
+      ),
+    );
+  }
+
+  for (const [input, state] of [
+    ["/reject", "failed"],
+    ["/fail-command", "failed"],
+    ["/unrelated-error", "completed"],
+    ["input notice", "completed"],
+  ] as const) {
+    effectIt.live(`attributes only correlated prompt failures: ${input}`, () =>
+      runPiLifecycleScenario(({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          const turn = yield* adapter.sendTurn({ threadId, input, attachments: [] });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === `Prompt drained: ${input}`,
+          );
+          expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
+            { turnId: turn.turnId, payload: { state } },
+          ]);
+          expect((yield* adapter.listSessions())[0]?.status).toBe(
+            state === "failed" ? "error" : "ready",
+          );
+          yield* adapter.stopSession(threadId);
+        }),
+      ),
+    );
+  }
+
+  effectIt.live(
+    "fences pending command acknowledgements and native work from a replaced generation",
+    () =>
+      runPiLifecycleScenario(({ adapter, events, threadId, waitFor }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession(startInput(threadId));
+          const old = yield* adapter.sendTurn({ threadId, input: "/hold", attachments: [] });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message === "Prompt drained: /hold",
+          );
+          yield* adapter.startSession(startInput(threadId));
+          const next = yield* adapter.sendTurn({
+            threadId,
+            input: "/takomi-status",
+            attachments: [],
+          });
+          yield* waitFor(
+            (event) =>
+              event.type === "runtime.warning" &&
+              event.payload.message === "Prompt drained: /takomi-status",
+          );
+          expect(
+            events.filter(
+              (event) => event.type === "turn.completed" && event.turnId === old.turnId,
+            ),
+          ).toMatchObject([{ payload: { state: "interrupted" } }]);
+          expect(
+            events.filter(
+              (event) => event.type === "turn.completed" && event.turnId === next.turnId,
+            ),
+          ).toMatchObject([{ payload: { state: "completed" } }]);
+          expect(events.filter((event) => event.type === "turn.started")).toHaveLength(2);
+          expect(events.some((event) => event.type === "content.delta")).toBe(false);
+          expect((yield* adapter.listSessions())[0]?.status).toBe("ready");
+          yield* adapter.stopSession(threadId);
+        }),
+      ),
+  );
 
   effectIt.live(
     "matches discovery's trust gate when starting in an inferred Takomi checkout",

@@ -441,6 +441,211 @@ describe("ProviderRuntimeIngestion", () => {
     };
   }
 
+  it("projects independent Pi work after handled completion without reopening the submission", async () => {
+    const harness = await createHarness({ serverSettings: { responseStreamingMode: "token" } });
+    const threadId = asThreadId("thread-1");
+    const submissionId = asTurnId("pi-handled-submission");
+    const nativeRunId = asTurnId("pi-independent-run");
+    const base = {
+      provider: ProviderDriverKind.make("pi"),
+      threadId,
+      createdAt: "2026-01-01T00:00:01.000Z",
+    };
+    await harness.emitAndDrain([
+      {
+        ...base,
+        type: "turn.started",
+        eventId: asEventId("pi-submission-start"),
+        turnId: submissionId,
+        payload: {},
+      },
+      {
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("pi-submission-handled"),
+        turnId: submissionId,
+        payload: { state: "completed" },
+      },
+    ]);
+    expect(await harness.readTurn(submissionId)).toMatchObject({ state: "completed" });
+    expect((await harness.readThreadShell()).session).toMatchObject({
+      status: "ready",
+      activeTurnId: null,
+    });
+
+    // No thread.turn.start request or pending user message exists for this native run.
+    await harness.emitAndDrain([
+      {
+        ...base,
+        type: "turn.started",
+        eventId: asEventId("pi-native-start"),
+        turnId: nativeRunId,
+        payload: {},
+      },
+      {
+        ...base,
+        type: "content.delta",
+        eventId: asEventId("pi-native-text"),
+        turnId: nativeRunId,
+        payload: { streamKind: "assistant_text", delta: "Native review text" },
+      },
+      {
+        ...base,
+        type: "item.completed",
+        eventId: asEventId("pi-native-tool"),
+        turnId: nativeRunId,
+        itemId: asItemId("review-read"),
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: "completed",
+          title: "read",
+          data: { toolName: "read", args: { path: "synthetic.txt" } },
+        },
+      },
+      {
+        ...base,
+        type: "runtime.warning",
+        eventId: asEventId("pi-active-command-failed"),
+        turnId: nativeRunId,
+        payload: {
+          message: "Synthetic command failed.",
+          detail: { kind: "pi.prompt-outcome", outcome: "failed", requestId: "prompt-synthetic" },
+        },
+      },
+    ]);
+    const running = (await harness.readModel()).threads.find((thread) => thread.id === threadId);
+    expect(running?.session).toMatchObject({ status: "running", activeTurnId: nativeRunId });
+    expect(running?.latestTurn).toMatchObject({ turnId: nativeRunId, state: "running" });
+    expect(running?.messages).toContainEqual(
+      expect.objectContaining({ turnId: nativeRunId, text: "Native review text" }),
+    );
+    expect(running?.activities).toContainEqual(
+      expect.objectContaining({
+        turnId: nativeRunId,
+        kind: "tool.completed",
+        payload: expect.objectContaining({ itemType: "dynamic_tool_call" }),
+      }),
+    );
+    expect(await harness.readTurn(submissionId)).toMatchObject({ state: "completed" });
+    expect(await harness.readTurn(nativeRunId)).toMatchObject({
+      state: "running",
+      pendingMessageId: null,
+    });
+
+    await harness.emitAndDrain([
+      {
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("pi-native-settled"),
+        turnId: nativeRunId,
+        payload: { state: "completed" },
+      },
+    ]);
+    expect((await harness.readThreadShell()).session).toMatchObject({
+      status: "ready",
+      activeTurnId: null,
+    });
+    expect(await harness.readTurn(submissionId)).toMatchObject({ state: "completed" });
+    expect(await harness.readTurn(nativeRunId)).toMatchObject({ state: "completed" });
+  });
+
+  it("persists delayed Pi command notices on completed A while native B remains running", async () => {
+    const harness = await createHarness();
+    const a = asTurnId("pi-delayed-a");
+    const b = asTurnId("pi-active-b");
+    const base = {
+      provider: ProviderDriverKind.make("pi"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+    };
+    await harness.emitAndDrain([
+      { ...base, type: "turn.started", eventId: asEventId("pi-a-started"), turnId: a, payload: {} },
+      {
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("pi-a-settled"),
+        turnId: a,
+        payload: { state: "completed" },
+      },
+      { ...base, type: "turn.started", eventId: asEventId("pi-b-started"), turnId: b, payload: {} },
+    ]);
+    const completedA = await harness.readTurn(a);
+    await harness.emitAndDrain([
+      {
+        ...base,
+        type: "runtime.warning",
+        eventId: asEventId("pi-delayed-a-error"),
+        turnId: a,
+        payload: {
+          message: "Delayed A failure.",
+          detail: {
+            kind: "pi.extension-error",
+            event: "command",
+            extensionPath: "command:delayed-a",
+          },
+        },
+      },
+      {
+        ...base,
+        type: "runtime.warning",
+        eventId: asEventId("pi-delayed-a-outcome"),
+        turnId: a,
+        payload: {
+          message: "Delayed A failure.",
+          detail: {
+            kind: "pi.prompt-outcome",
+            outcome: "failed",
+            requestId: "prompt-a",
+            commandName: "delayed-a",
+          },
+        },
+      },
+    ]);
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === base.threadId);
+    expect(
+      thread?.activities.filter(
+        (activity) =>
+          activity.id === "pi-delayed-a-error" || activity.id === "pi-delayed-a-outcome",
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "pi-delayed-a-error",
+          turnId: a,
+          payload: expect.objectContaining({
+            detail: expect.objectContaining({ kind: "pi.extension-error" }),
+          }),
+        }),
+        expect.objectContaining({
+          id: "pi-delayed-a-outcome",
+          turnId: a,
+          payload: expect.objectContaining({
+            detail: expect.objectContaining({ requestId: "prompt-a", outcome: "failed" }),
+          }),
+        }),
+      ]),
+    );
+    expect(thread?.session).toMatchObject({ status: "running", activeTurnId: b });
+    expect(thread?.latestTurn).toMatchObject({ turnId: b, state: "running" });
+    expect(await harness.readTurn(a)).toEqual(completedA);
+    expect(await harness.readTurn(b)).toMatchObject({ state: "running" });
+    await harness.emitAndDrain([
+      {
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("pi-b-settled"),
+        turnId: b,
+        payload: { state: "completed" },
+      },
+    ]);
+    expect(await harness.readTurn(a)).toEqual(completedA);
+    expect(await harness.readTurn(b)).toMatchObject({ state: "completed" });
+    expect((await harness.readThreadShell()).session).toMatchObject({
+      status: "ready",
+      activeTurnId: null,
+    });
+  });
+
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
