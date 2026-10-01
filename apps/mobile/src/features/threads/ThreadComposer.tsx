@@ -61,6 +61,7 @@ import type { ComposerDocumentAttachment } from "../../lib/composerContext";
 import { useProject } from "../../state/entities";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { ProviderExtensionText } from "./ProviderExtensionText";
+import { ProviderEditorSuggestion } from "./ProviderEditorSuggestion";
 
 import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentButton } from "../../components/ComposerAttachmentButton";
@@ -703,6 +704,17 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         <ProviderExtensionText
           threadRef={scopeThreadRef(props.environmentId, props.selectedThread.id)}
           section="aboveEditor"
+        />
+        <ProviderEditorSuggestion
+          threadRef={scopeThreadRef(props.environmentId, props.selectedThread.id)}
+          draftKey={composerOwnerKey}
+          canEdit={
+            props.connectionState === "connected" &&
+            !contextImports[composerOwnerKey] &&
+            !voiceInput.freezesEditor
+          }
+          editorRef={inputRef}
+          moveCaret={composerMenu.onSelectionChange}
         />
         <ComposerSurface
           style={

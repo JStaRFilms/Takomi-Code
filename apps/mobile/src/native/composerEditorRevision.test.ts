@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   acknowledgeComposerNativeEvent,
+  readComposerNativeSnapshot,
   assumeComposerControlledState,
   isComposerNativeEcho,
   pruneAcknowledgedComposerNativeEvents,
@@ -190,6 +191,46 @@ describe("assumeComposerControlledState", () => {
     expect(resolveComposerControlledEventCount("typed", { start: 5, end: 5 }, 3, snapshots)).toBe(
       3,
     );
+  });
+});
+
+describe("reading native state for an editor suggestion", () => {
+  it("captures native text and selection ahead of a delayed controlled render", () => {
+    expect(
+      readComposerNativeSnapshot(
+        [{ eventCount: 4, value: "typed!", selection: { start: 2, end: 4 } }],
+        4,
+        "typed",
+        { start: 5, end: 5 },
+      ),
+    ).toEqual({ eventCount: 4, value: "typed!", selection: { start: 2, end: 4 } });
+  });
+
+  it("reads the assumed suggestion edit without resurrecting older acknowledged text", () => {
+    const applied = assumeComposerControlledState(
+      [{ eventCount: 4, value: "typed", selection: { start: 5, end: 5 } }],
+      4,
+      "suggestion",
+    );
+    const selection = { start: 10, end: 10 };
+    const snapshot = readComposerNativeSnapshot(applied, 4, "suggestion", selection);
+    expect(snapshot).toEqual({ eventCount: 4, value: "suggestion", selection });
+    expect(
+      resolveComposerControlledEventCount(snapshot.value, snapshot.selection, 4, applied),
+    ).toBe(4);
+    expect(isComposerNativeEcho(snapshot.value, snapshot.selection, 4, applied)).toBe(false);
+  });
+
+  it("retains a racing native keystroke instead of accepting the suggestion's older controlled state", () => {
+    const snapshots = [
+      { eventCount: 4, value: "typed", selection: { start: 5, end: 5 } },
+      { eventCount: 5, value: "typed!", selection: { start: 6, end: 6 } },
+    ];
+    const applied = assumeComposerControlledState(snapshots, 4, "suggestion");
+    expect(readComposerNativeSnapshot(applied, 5, "suggestion", { start: 10, end: 10 })).toEqual(
+      snapshots[1],
+    );
+    expect(acknowledgeComposerNativeEvent(5, 4)).toBeNull();
   });
 });
 

@@ -195,6 +195,10 @@
       "types": "./src/state/usage.ts",
       "default": "./src/state/usage.ts"
     },
+    "./editorSuggestion": {
+      "types": "./src/editorSuggestion.ts",
+      "default": "./src/editorSuggestion.ts"
+    },
     "./state/providerExtensionState": {
       "types": "./src/state/providerExtensionState.ts",
       "default": "./src/state/providerExtensionState.ts"

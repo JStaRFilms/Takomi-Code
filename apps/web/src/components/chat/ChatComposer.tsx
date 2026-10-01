@@ -319,6 +319,7 @@ import {
 } from "./composerSubmission";
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
 import { ProviderExtensionText } from "./ProviderExtensionText";
+import { ProviderEditorSuggestion } from "./ProviderEditorSuggestion";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { pendingDraftWork } from "./pendingDraftWork";
 import { isTimelineScrollTarget } from "./timelineScrollTarget";
@@ -6423,6 +6424,28 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         <>
           <ProviderExtensionText threadRef={routeThreadRef} section="statuses" />
           <ProviderExtensionText threadRef={routeThreadRef} section="aboveEditor" />
+          <ProviderEditorSuggestion
+            threadRef={routeThreadRef}
+            canEdit={
+              !environmentUnavailable &&
+              !isConnecting &&
+              !isComposerApprovalState &&
+              !projectSelectionRequired &&
+              !isChoiceOnlyPendingQuestion &&
+              !isSensitivePendingQuestion &&
+              !activePendingIsResponding &&
+              !activePendingProgress &&
+              !questionAttachmentTarget &&
+              composerDraftTargetKey === composerTargetKey(routeThreadRef)
+            }
+            editorRef={composerEditorRef}
+            moveCaret={(text, cursor) => {
+              const collapsedCursor = collapseExpandedComposerCursor(text, cursor);
+              // Commit the controlled value before focusAt can report the editor's old text.
+              flushSync(() => setComposerCursor(collapsedCursor));
+              composerEditorRef.current?.focusAt(collapsedCursor);
+            }}
+          />
         </>
       ) : null}
       <div className="relative">

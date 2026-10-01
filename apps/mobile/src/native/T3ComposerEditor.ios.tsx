@@ -27,6 +27,7 @@ import { useFontFamily } from "../lib/useFontFamily";
 import { useScaledTextRole } from "../features/settings/appearance/useScaledTextRole";
 import {
   acknowledgeComposerNativeEvent,
+  readComposerNativeSnapshot,
   assumeComposerControlledState,
   isComposerNativeEcho,
   pruneAcknowledgedComposerNativeEvents,
@@ -149,8 +150,15 @@ export function ComposerEditor({
       blur: () => void nativeRef.current?.blur(),
       setSelection: (nextSelection) =>
         void nativeRef.current?.setSelection(nextSelection.start, nextSelection.end),
+      readSnapshot: () =>
+        readComposerNativeSnapshot(
+          nativeEventSnapshotsRef.current,
+          mostRecentEventCountRef.current,
+          props.value,
+          selection ?? null,
+        ),
     }),
-    [],
+    [props.value, selection, mostRecentEventCountRef, nativeEventSnapshotsRef],
   );
 
   const skillLabels = useMemo(
@@ -237,7 +245,14 @@ export function ComposerEditor({
       controlledEventCount,
       assumedValue,
     );
-  }, [assumedValue, controlledEventCount, isNativeEcho, controlledDocumentJson]);
+  }, [
+    assumedValue,
+    controlledEventCount,
+    isNativeEcho,
+    controlledDocumentJson,
+    mostRecentEventCountRef,
+    nativeEventSnapshotsRef,
+  ]);
   const acceptNativeEvent = useCallback(
     (eventCount: number, value: string, nextSelection: ComposerEditorSelection) => {
       const acknowledgedEventCount = acknowledgeComposerNativeEvent(
@@ -255,7 +270,7 @@ export function ComposerEditor({
       });
       return acknowledgedEventCount;
     },
-    [],
+    [mostRecentEventCountRef, nativeEventSnapshotsRef],
   );
   const themeJson = JSON.stringify(createNativeComposerTheme(theme));
   const resolvedTextStyle = StyleSheet.flatten(textStyle) ?? {};

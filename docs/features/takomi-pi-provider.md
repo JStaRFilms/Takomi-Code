@@ -98,7 +98,9 @@ ProviderService reserves the actual registry adapter before startup. The adapter
 
 The contract bounds status/widget/subtitle text to 128 KiB total and editor text to 512 KiB. It also bounds keys, entries, lines and serialized snapshots, strips terminal controls, preserves exact keys and placement, and reports truncation/overflow. The shared state atoms subscribe only with explicit `extensionState: "text-v1"` capability metadata. Older Pi/server metadata remains unknown; other providers do not advertise this implementation. Shared client state is scoped by environment, thread and current connection session, with disconnected snapshots marked stale.
 
-Web, desktop and mobile show keyed statuses near the composer, widgets above or below the editor, and runtime text as a separate subtitle. Open a text entry to read its full bounded content. Cached disconnected text is labeled last known, and truncation or omitted output is marked. The active session's provider instance and owning environment determine support, not a future model choice. Editor-suggestion actions remain pending; this path never applies or sends suggested text. Runtime subtitles never rename manual/native thread names or the application window. Ordinary producer text is not universally secret-safe; private Vault answers and transfers remain on their existing separate paths.
+Web, desktop and mobile show keyed statuses near the composer, widgets above or below the editor, and runtime text as a separate subtitle. Open a text entry to read its full bounded content. Cached disconnected text is labeled last known, and truncation or omitted output is marked. The active session's provider instance and owning environment determine support, not a future model choice. Runtime subtitles never rename manual/native thread names or the application window. Ordinary producer text is not universally secret-safe; private Vault answers and transfers remain on their existing separate paths.
+
+Editor suggestions offer Replace, Insert and Dismiss beside the composer. Review the current and proposed text before confirming. These actions change only this device's draft text and never send it. If edits, attachments or the selection change during review, confirmation refreshes without overwriting the draft. Empty suggestions propose clearing text only. Oversized or possibly truncated suggestions are blocked, with the full received text available in details. Dismiss hides the current suggestion on this device, not on the server or other devices.
 
 The dialog bridge also carries Takomi's `ask_user_question` RPC fallback. It presents questions one at a time through Pi's `select` and `input` dialogs.
 
@@ -112,7 +114,7 @@ Current fidelity limitations:
 - option descriptions currently repeat the option label
 - preview text embedded in Pi dialog titles appears in the question body, without a side-by-side preview pane
 - multi-select metadata is not explicitly mapped
-- custom terminal components remain unsupported; statuses, text widgets and subtitles are shown, but editor-suggestion actions remain pending
+- custom terminal components remain unsupported; text entries and explicit local editor suggestions are available
 
 Core Takomi tools now use the semantic tool presentation described in [Takomi tool-call UI](./takomi-tool-call-ui-audit.md). Unknown tools intentionally retain the generic fallback.
 

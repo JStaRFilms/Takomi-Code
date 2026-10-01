@@ -1263,6 +1263,14 @@ export function setComposerDraftText(draftKey: string, value: string): void {
   scheduleUnusedComposerAttachmentCleanup(removed);
 }
 
+/** Native suggestions change plaintext only. Keep attachments and context even when references disappear. */
+export function setComposerDraftSuggestionText(draftKey: string, text: string): void {
+  updateComposerDrafts((current) => {
+    const existing = normalizeDraft(current[draftKey]);
+    return { ...current, [draftKey]: { ...existing, text } };
+  });
+}
+
 export function insertComposerDraftText(
   draftKey: string,
   value: string,

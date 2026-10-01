@@ -9,6 +9,25 @@ interface ComposerEditorSelection {
   readonly end: number;
 }
 
+/** Read the latest acknowledged event rather than a potentially delayed controlled render. */
+export function readComposerNativeSnapshot(
+  snapshots: ReadonlyArray<ComposerNativeEventSnapshot>,
+  eventCount: number,
+  value: string,
+  selection: ComposerEditorSelection | null,
+): ComposerNativeEventSnapshot {
+  for (let index = snapshots.length - 1; index >= 0; index--) {
+    const snapshot = snapshots[index];
+    if (snapshot?.eventCount === eventCount) {
+      return {
+        ...snapshot,
+        selection: snapshot.selection ?? (snapshot.value === value ? selection : null),
+      };
+    }
+  }
+  return { eventCount, value, selection };
+}
+
 export function acknowledgeComposerNativeEvent(
   mostRecentEventCount: number,
   incomingEventCount: number,

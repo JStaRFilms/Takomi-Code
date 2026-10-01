@@ -22,6 +22,12 @@ export interface ComposerEditorHandle {
   focus: () => void;
   blur: () => void;
   setSelection: (selection: ComposerEditorSelection) => void;
+  /** Latest JS-acknowledged native value/caret, including events ahead of a React render. */
+  readSnapshot?: () => {
+    readonly value: string;
+    readonly selection: ComposerEditorSelection | null;
+    readonly eventCount: number;
+  };
 }
 
 export interface ComposerEditorProps {

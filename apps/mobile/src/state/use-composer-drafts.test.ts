@@ -195,6 +195,23 @@ import {
 } from "./use-composer-drafts";
 import { retainComposerAttachmentFileForPreview } from "../lib/composerAttachmentPreviewRetention";
 
+import {
+  EditorSuggestionDismissals,
+  type EditorSuggestion,
+  type EditorSuggestionIntent,
+} from "@t3tools/client-runtime/editorSuggestion";
+import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
+import { createNativeEditorSuggestionActions } from "../features/threads/editorSuggestionActions";
+import {
+  readComposerNativeSnapshot,
+  type ComposerNativeEventSnapshot,
+} from "../native/composerEditorRevision";
+import {
+  setComposerDraftSuggestionText,
+  readComposerDraftSelection,
+  updateComposerDraftSettings,
+} from "./use-composer-drafts";
+
 const DRAFT: ComposerDraft = {
   text: "hello",
   attachments: [],
@@ -236,6 +253,264 @@ function contextDraft(start: number, count: number): ComposerDraft {
     attachments: [],
   };
 }
+
+describe("mobile native editor suggestion drafts", () => {
+  const key = "one:same-thread";
+  const otherKey = "two:same-thread";
+  function requireIntent(value: EditorSuggestionIntent | null) {
+    if (!value) throw new Error("Expected intent");
+    return value;
+  }
+  function fixture() {
+    vi.useFakeTimers();
+    appAtomRegistry.set(composerDraftsAtom, {
+      [key]: { text: "before selected after", attachments: [] },
+      [otherKey]: { text: "other environment draft", attachments: [] },
+    });
+    let source: EditorSuggestion | null = {
+      scope: "one:thread",
+      id: "one:thread:pi:generation:suggestion",
+      text: "suggested",
+      blocked: null,
+      connectionGeneration: 1,
+    };
+    let selection = { start: 7, end: 15 };
+    let eventCount = 1;
+    let snapshots: ComposerNativeEventSnapshot[] = [];
+    const moveCaret = vi.fn((value: typeof selection) => {
+      selection = value;
+      snapshots = [];
+    });
+    const binding = createNativeEditorSuggestionActions({
+      draftKey: key,
+      readSource: () => source,
+      readEditor: () => ({
+        focus: () => {},
+        blur: () => {},
+        setSelection: () => {},
+        readSnapshot: () =>
+          readComposerNativeSnapshot(
+            snapshots,
+            eventCount,
+            getComposerDraftSnapshot(key).text,
+            selection,
+          ),
+      }),
+      moveCaret,
+      dismissals: new EditorSuggestionDismissals(),
+    });
+    return {
+      ...binding,
+      moveCaret,
+      source(value: EditorSuggestion | null) {
+        source = value;
+        binding.actions.observeSource();
+      },
+      select(value: typeof selection) {
+        selection = value;
+        eventCount++;
+      },
+      native(value: string) {
+        eventCount++;
+        snapshots = [{ eventCount, value, selection }];
+      },
+    };
+  }
+
+  it.each(["replace", "insert", "append"] as const)(
+    "applies explicit %s without changing another draft or queuing a message",
+    (action) => {
+      const f = fixture();
+      try {
+        const queue = appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom);
+        const proposal = requireIntent(f.actions.request(action));
+        expect(getComposerDraftSnapshot(key).text).toBe("before selected after");
+        expect(f.actions.apply(proposal)).toEqual({ status: "applied" });
+        expect(getComposerDraftSnapshot(key).text).toBe(
+          action === "replace"
+            ? "suggested"
+            : action === "insert"
+              ? "before suggested after"
+              : "before selected aftersuggested",
+        );
+        expect(readComposerDraftSelection(key, proposal.text)).toEqual({
+          start: proposal.cursor,
+          end: proposal.cursor,
+        });
+        expect(f.moveCaret).toHaveBeenCalledWith({ start: proposal.cursor, end: proposal.cursor });
+        expect(getComposerDraftSnapshot(otherKey).text).toBe("other environment draft");
+        expect(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).toBe(queue);
+      } finally {
+        f.dispose();
+      }
+    },
+  );
+
+  it("preserves file/image/context/model/options metadata through repeated refreshed confirmations and empty clear", () => {
+    const f = fixture();
+    try {
+      const first = requireIntent(f.actions.request("replace"));
+      setComposerDraftText(key, "my new edit @mention");
+      const refreshed = f.actions.apply(first);
+      expect(refreshed.status).toBe("refresh");
+      if (refreshed.status !== "refresh") throw new Error("Expected refresh");
+      appendComposerDraftAttachments(
+        key,
+        [
+          {
+            id: "file",
+            type: "file",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            sizeBytes: 4,
+            fileUri: "file:///notes.txt",
+          },
+          {
+            id: "image",
+            type: "image",
+            name: "image.png",
+            mimeType: "image/png",
+            sizeBytes: 4,
+            fileUri: "file:///image.png",
+            previewUri: "file:///image.png",
+          },
+        ],
+        { appendReference: true },
+      );
+      updateComposerDraftSettings(key, {
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("pi"),
+          model: "model",
+          options: [{ id: "thinking", value: "high" }],
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      });
+      const again = f.actions.apply(refreshed.intent);
+      expect(again.status).toBe("refresh");
+      if (again.status !== "refresh") throw new Error("Expected refresh");
+      const before = getComposerDraftSnapshot(key);
+      expect(before.text).toContain("my new edit");
+      expect(f.actions.apply(again.intent)).toEqual({ status: "applied" });
+      expect(getComposerDraftSnapshot(key)).toEqual({ ...before, text: "suggested" });
+      f.source({
+        scope: "one:thread",
+        id: "clear",
+        text: "",
+        blocked: null,
+        connectionGeneration: 1,
+      });
+      expect(f.actions.apply(requireIntent(f.actions.request("replace")))).toEqual({
+        status: "applied",
+      });
+      expect(getComposerDraftSnapshot(key)).toEqual({ ...before, text: "" });
+      expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
+      expect(composerAttachmentCleanupMocks.releaseUploads).not.toHaveBeenCalled();
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("guards native events ahead of React, moved selections and edit-away/edit-back revisions", () => {
+    const f = fixture();
+    try {
+      const proposal = requireIntent(f.actions.request("insert"));
+      setComposerDraftText(key, "transient edit");
+      setComposerDraftText(key, "before selected after");
+      const revised = f.actions.apply(proposal);
+      expect(revised.status).toBe("refresh");
+      if (revised.status !== "refresh") throw new Error("Expected refresh");
+      f.select({ start: 0, end: 6 });
+      const moved = f.actions.apply(revised.intent);
+      expect(moved.status).toBe("refresh");
+      if (moved.status !== "refresh") throw new Error("Expected refresh");
+      f.native("native keystroke not rendered yet");
+      expect(f.actions.apply(moved.intent)).toEqual({ status: "stale" });
+      expect(f.actions.request("replace")).toBeNull();
+      expect(getComposerDraftSnapshot(key).text).toBe("before selected after");
+      expect(f.moveCaret).not.toHaveBeenCalled();
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("never retargets stale actions after navigation, disconnection, inactive ownership or a new generation", () => {
+    for (const source of [
+      null,
+      {
+        scope: "two:thread",
+        id: "new-owner-generation",
+        text: "new suggestion",
+        blocked: null,
+        connectionGeneration: 1,
+      },
+    ]) {
+      const f = fixture();
+      try {
+        const proposal = requireIntent(f.actions.request("replace"));
+        f.source(source);
+        expect(f.actions.apply(proposal)).toEqual({ status: "stale" });
+        expect(getComposerDraftSnapshot(key).text).toBe("before selected after");
+        expect(getComposerDraftSnapshot(otherKey).text).toBe("other environment draft");
+      } finally {
+        f.dispose();
+      }
+    }
+    const f = fixture();
+    const proposal = requireIntent(f.actions.request("replace"));
+    f.dispose();
+    expect(f.actions.apply(proposal)).toEqual({ status: "stale" });
+  });
+
+  it("keeps context-only and share metadata when an explicit suggestion clears the text", () => {
+    const f = fixture();
+    try {
+      const before = { ...contextDraft(0, 1), importedShareIds: ["shared"] };
+      appAtomRegistry.set(composerDraftsAtom, {
+        ...appAtomRegistry.get(composerDraftsAtom),
+        [key]: before,
+      });
+      f.source({
+        scope: "one:thread",
+        id: "clear-context",
+        text: "",
+        blocked: null,
+        connectionGeneration: 1,
+      });
+      expect(f.actions.apply(requireIntent(f.actions.request("replace")))).toEqual({
+        status: "applied",
+      });
+      expect(getComposerDraftSnapshot(key)).toEqual({ ...before, text: "" });
+      expect(getComposerDraftSnapshot(otherKey).text).toBe("other environment draft");
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it("blocks oversized received text and oversized insertion without silent clipping", () => {
+    const f = fixture();
+    try {
+      setComposerDraftSuggestionText(key, "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS));
+      const proposal = requireIntent(f.actions.request("append"));
+      expect(proposal.blocked).not.toBeNull();
+      expect(f.actions.apply(proposal).status).toBe("refresh");
+      expect(getComposerDraftSnapshot(key).text).toHaveLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
+      f.source({
+        scope: "one:thread",
+        id: "oversized",
+        text: "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS + 1),
+        blocked: "Too long",
+        connectionGeneration: 1,
+      });
+      const replacement = requireIntent(f.actions.request("replace"));
+      expect(f.actions.apply(replacement).status).toBe("refresh");
+      expect(replacement.text).toHaveLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS + 1);
+      expect(getComposerDraftSnapshot(key).text).toHaveLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
+    } finally {
+      f.dispose();
+    }
+  });
+});
 
 describe("mobile composer drafts", () => {
   it.each([false, true])(

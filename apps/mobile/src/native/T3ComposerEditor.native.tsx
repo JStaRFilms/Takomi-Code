@@ -30,6 +30,7 @@ import { useUniwindTheme } from "../lib/useUniwindTheme";
 import { createNativeComposerTheme } from "../lib/nativeComposerTheme";
 import {
   acknowledgeComposerNativeEvent,
+  readComposerNativeSnapshot,
   assumeComposerControlledState,
   isComposerNativeEcho,
   pruneAcknowledgedComposerNativeEvents,
@@ -149,8 +150,15 @@ export function ComposerEditor({
       blur: () => void nativeRef.current?.blur(),
       setSelection: (nextSelection) =>
         void nativeRef.current?.setSelection(nextSelection.start, nextSelection.end),
+      readSnapshot: () =>
+        readComposerNativeSnapshot(
+          nativeEventSnapshotsRef.current,
+          mostRecentEventCountRef.current,
+          props.value,
+          selection ?? null,
+        ),
     }),
-    [],
+    [props.value, selection, mostRecentEventCountRef, nativeEventSnapshotsRef],
   );
 
   const skillLabels = useMemo(
