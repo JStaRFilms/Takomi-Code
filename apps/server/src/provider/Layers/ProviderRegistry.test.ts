@@ -55,6 +55,7 @@ import {
   resolveProviderStatusCachePath,
   writeProviderStatusCache,
 } from "../providerStatusCache.ts";
+import { ProviderExtensionState } from "../ProviderExtensionState.ts";
 import { COMPACT_SLASH_COMMAND } from "../providerSnapshot.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
@@ -90,7 +91,10 @@ const TestHttpClientLive = Layer.succeed(
   HttpClient.make((request) =>
     Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ version: "0.0.0" }))),
   ),
-).pipe(Layer.provideMerge(ModelManifest.layerTest));
+).pipe(
+  Layer.provideMerge(ModelManifest.layerTest),
+  Layer.provideMerge(ProviderExtensionState.layer),
+);
 
 const BackgroundPolicyAlwaysRunLayer = Layer.mock(BackgroundPolicy.BackgroundPolicy)({
   reportClientActivity: () => Effect.void,

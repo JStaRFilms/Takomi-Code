@@ -111,6 +111,7 @@ import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { HTTP_ROUTER_CONFIG, makeRoutesLayer } from "./server.ts";
+import { ProviderExtensionState } from "./provider/ProviderExtensionState.ts";
 import {
   isThreadDetailEvent,
   resolveAvailableEditorsForConfig,
@@ -527,6 +528,7 @@ const buildAppUnderTest = (options?: {
     modelManifest?: Partial<ModelManifest.ModelManifest["Service"]>;
     usageLimitSources?: Partial<UsageLimitSources.UsageLimitSources["Service"]>;
     providerService?: Partial<ProviderService.ProviderService["Service"]>;
+    extensionState?: ProviderExtensionState["Service"];
     providerAuth?: Partial<ProviderAuthService["Service"]>;
     providerInstanceRegistry?: Partial<ProviderInstanceRegistry["Service"]>;
     antigravityInstallation?: Partial<AntigravityInstallation["Service"]>;
@@ -1243,7 +1245,15 @@ const buildAppUnderTest = (options?: {
           : Layer.succeed(HttpClient.HttpClient, options.layers.httpClient),
       ),
       Layer.provide(GitHubCli.layer.pipe(Layer.provideMerge(VcsProcess.layer))),
-      Layer.provide(layerConfig),
+      Layer.provide(
+        layerConfig.pipe(
+          Layer.provideMerge(
+            options?.layers?.extensionState === undefined
+              ? ProviderExtensionState.layer
+              : Layer.succeed(ProviderExtensionState, options.layers.extensionState),
+          ),
+        ),
+      ),
     );
 
     yield* Layer.build(appLayer);
@@ -6437,6 +6447,139 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }
       assert.equal(calls, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "extension state RPC authorizes reads, rejects missing threads, and coalesces behind a held client acknowledgement",
+    () =>
+      Effect.gen(function* () {
+        const extension = yield* ProviderExtensionState;
+        const publisher = yield* extension.publisher(ProviderInstanceId.make("pi"));
+        const adapter = {};
+        yield* extension.associate(adapter, publisher);
+        const start = yield* extension.startAdmission(defaultThreadId);
+        yield* extension.reserve(start, adapter);
+        const reservation = yield* extension.admission(defaultThreadId, publisher);
+        if (!reservation) return yield* Effect.die("Missing reservation");
+        const lease = yield* extension.open(defaultThreadId, publisher, reservation);
+        if (!lease) return yield* Effect.die("Missing lease");
+        yield* extension.write(lease, {
+          method: "setWidget",
+          widgetKey: "rpc",
+          widgetLines: ["initial"],
+        });
+        yield* buildAppUnderTest({
+          layers: {
+            extensionState: extension,
+            projectionSnapshotQuery: {
+              getThreadShellById: (threadId) =>
+                Effect.succeed(
+                  threadId === defaultThreadId
+                    ? Option.some(makeDefaultOrchestrationThreadShell())
+                    : Option.none(),
+                ),
+            },
+          },
+        });
+        const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "orchestration:read",
+        });
+        const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+          headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+        });
+        const { ticket } = yield* responseJsonEffect<{ readonly ticket: string }>(ticketResponse);
+        const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket)}`;
+        const held = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const collected = yield* makeWsRpcClient.pipe(
+              Effect.flatMap((client) =>
+                client[WS_METHODS.providerExtensionStateSubscribe](
+                  { threadId: defaultThreadId },
+                  { streamBufferSize: 1 },
+                ).pipe(Stream.take(2), Stream.runCollect),
+              ),
+              Effect.provide(withFirstWsAckHeld(wsUrl, held, release)),
+              Effect.forkScoped,
+            );
+            yield* Deferred.await(held).pipe(
+              Effect.race(
+                Fiber.join(collected).pipe(
+                  Effect.andThen(Effect.die("Subscription ended before the first acknowledgement")),
+                ),
+              ),
+            );
+            for (let n = 0; n < 500; n++)
+              yield* extension.write(lease, {
+                method: "setWidget",
+                widgetKey: "rpc",
+                widgetLines: [String(n)],
+              });
+            yield* Deferred.succeed(release, undefined);
+            const snapshots = yield* Fiber.join(collected);
+            assert.equal(snapshots.length, 2);
+            assert.deepEqual(snapshots[0]?.widgets[0]?.lines, ["initial"]);
+            assert.deepEqual(snapshots[1]?.widgets[0]?.lines, ["499"]);
+            assert.equal(snapshots[1]?.revision, 501);
+            assert.equal(snapshots[1]?.generation, lease.generation);
+          }),
+        );
+        const missing = yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[WS_METHODS.providerExtensionStateSubscribe]({
+            threadId: ThreadId.make("missing-extension-thread"),
+          }).pipe(Stream.runHead, Effect.flip),
+        );
+        assert.equal(missing._tag, "ProviderExtensionStateError");
+        yield* extension.close(lease);
+        const ended = yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          client[WS_METHODS.providerExtensionStateSubscribe]({ threadId: defaultThreadId }).pipe(
+            Stream.runHead,
+            Effect.map(Option.getOrThrow),
+          ),
+        );
+        assert.equal(ended.active, false);
+        assert.deepEqual(ended.widgets, []);
+      }).pipe(
+        Effect.provide(Layer.mergeAll(ProviderExtensionState.layer, NodeHttpServer.layerTest)),
+      ),
+  );
+
+  it.effect(
+    "extension state RPC denies a client without orchestration read scope before querying the thread",
+    () =>
+      Effect.gen(function* () {
+        let queried = 0;
+        yield* buildAppUnderTest({
+          layers: {
+            projectionSnapshotQuery: {
+              getThreadShellById: () =>
+                Effect.sync(() => {
+                  queried++;
+                  return Option.none();
+                }),
+            },
+          },
+        });
+        const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "terminal:operate",
+        });
+        const response = yield* HttpClient.post("/api/auth/websocket-ticket", {
+          headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+        });
+        const { ticket } = yield* responseJsonEffect<{ readonly ticket: string }>(response);
+        const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket)}`;
+        const denied = yield* withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.providerExtensionStateSubscribe]({ threadId: defaultThreadId }).pipe(
+            Stream.runHead,
+            Effect.flip,
+          ),
+        );
+        assert.equal(denied._tag, "EnvironmentAuthorizationError");
+        if (denied._tag === "EnvironmentAuthorizationError")
+          assert.equal(denied.requiredScope, "orchestration:read");
+        assert.equal(queried, 0);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("provider setup lets read-only clients observe installation but not change setup", () =>

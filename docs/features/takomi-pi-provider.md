@@ -77,17 +77,30 @@ T3 sends Pi's abort command and then terminates the RPC process after settlement
 
 Pi `extension_ui_request` messages are mapped as follows:
 
-| Pi method | T3 event/UI                  | Response to Pi                    |
-| --------- | ---------------------------- | --------------------------------- |
-| `select`  | `user-input.requested`       | `extension_ui_response.value`     |
-| `input`   | `user-input.requested`       | `extension_ui_response.value`     |
-| `editor`  | `user-input.requested`       | `extension_ui_response.value`     |
-| `confirm` | `request.opened` approval UI | `extension_ui_response.confirmed` |
-| `notify`  | `runtime.warning`            | none                              |
+| Pi method                                               | T3 event/UI                       | Response to Pi                    |
+| ------------------------------------------------------- | --------------------------------- | --------------------------------- |
+| `select`                                                | `user-input.requested`            | `extension_ui_response.value`     |
+| `input`                                                 | `user-input.requested`            | `extension_ui_response.value`     |
+| `editor`                                                | `user-input.requested`            | `extension_ui_response.value`     |
+| `confirm`                                               | `request.opened` approval UI      | `extension_ui_response.confirmed` |
+| `notify`                                                | `runtime.warning`                 | none                              |
+| `setStatus`, `setWidget`, `setTitle`, `set_editor_text` | ephemeral current extension state | none                              |
 
 Notifications stay in the work log on web, desktop, and mobile. Native `notifyType` selects info, warning, or error presentation. Missing or unknown types display as info and do not change model-run state. Handled submission results show the command name when available, or "Submitted input" for an input handler; failed results are labeled failed and retain their originating turn. Older events without severity keep their warning indicator. Vault notices and transfers keep their dedicated paths. Ordinary extension notifications can still contain private OAuth URLs or device codes; severity does not make their content secret-safe.
 
-This also carries Takomi's `ask_user_question` RPC fallback. It presents questions one at a time through Pi's `select` and `input` dialogs.
+### Current extension state
+
+Pi's text status, string-array widgets, runtime subtitle and latest editor suggestion travel directly from the adapter to one shared ephemeral service. They do not enter the runtime-event queue, work-log journal, thread title or drafts. This path matters during startup, before a persisted session binding exists, and prevents widget refreshes from growing durable history.
+
+ProviderService reserves the actual registry adapter before startup. The adapter opens a process lease before reading stdout. Replacement, deletion, process exit and adapter retirement invalidate that owner; verified live recovery retains its lease. Late output or cleanup from an old process cannot alter replacement state.
+
+`provider.extensionState.subscribe` accepts only a thread ID, requires orchestration read scope and verifies that the thread exists. Each subscriber receives a captured initial snapshot followed by current replacement snapshots. A capacity-one wake queue coalesces updates rather than storing snapshot history. RPC acknowledgements and the existing socket output budget bound delivery to slow clients. State lasts only while a start, process or subscriber needs it, not across server restarts.
+
+The contract bounds status/widget/subtitle text to 128 KiB total and editor text to 512 KiB. It also bounds keys, entries, lines and serialized snapshots, strips terminal controls, preserves exact keys and placement, and reports truncation/overflow. The shared state atoms subscribe only with explicit `extensionState: "text-v1"` capability metadata. Older Pi/server metadata remains unknown; other providers do not advertise this implementation. Shared client state is scoped by environment, thread and current connection session, with disconnected snapshots marked stale.
+
+Web/desktop/mobile rendering and explicit local editor-suggestion actions are still pending. This backend path never applies or sends suggested text. Runtime subtitles never rename manual/native thread names or the application window. Ordinary producer text is not universally secret-safe; private Vault answers and transfers remain on their existing separate paths.
+
+The dialog bridge also carries Takomi's `ask_user_question` RPC fallback. It presents questions one at a time through Pi's `select` and `input` dialogs.
 
 Takomi Vault secret input is the exception. When the vault extension requests an `input` whose title starts with `[takomi-vault-secret] `, the adapter publishes only a pending question marked `sensitive`. Web, desktop, and mobile collect its value in a masked field and call `provider.respondPiSecretInput` directly on the owning environment. The authenticated server checks the live Pi request and sends a one-use `extension_ui_response` to that process. It records a resolution with empty answers and a `privateResponse` marker on successful entry, never the value. The work log distinguishes that from cancellation. Ordinary `thread.user-input.respond` commands cannot answer a sensitive question. Stopping or replacing the Pi process invalidates its pending request. The Pi host opts into this protocol through `T3_TAKOMI_VAULT_SECRET_UI`; other RPC hosts keep the vault's TUI-only secret entry.
 
@@ -99,7 +112,7 @@ Current fidelity limitations:
 - option descriptions currently repeat the option label
 - preview text embedded in Pi dialog titles appears in the question body, without a side-by-side preview pane
 - multi-select metadata is not explicitly mapped
-- unsupported Pi extension UI methods are ignored
+- custom terminal components remain unsupported; text setters are captured as current state, with client presentation pending
 
 Core Takomi tools now use the semantic tool presentation described in [Takomi tool-call UI](./takomi-tool-call-ui-audit.md). Unknown tools intentionally retain the generic fallback.
 

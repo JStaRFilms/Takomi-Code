@@ -4,6 +4,7 @@ import {
   EventId,
   type OrchestrationEvent,
   ThreadId,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import { it as effectIt } from "@effect/vitest";
 import * as Cause from "effect/Cause";
@@ -12,8 +13,11 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import { ProviderExtensionState } from "../../provider/ProviderExtensionState.ts";
+import { ProviderValidationError } from "../../provider/Errors.ts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -79,6 +83,57 @@ describe("ThreadDeletionReactor drain", () => {
     payload: { threadId, deletedAt: now },
   });
 
+  effectIt.effect("invalidates UI before provider cleanup even when stopping fails", () =>
+    Effect.gen(function* () {
+      const extension = yield* ProviderExtensionState;
+      const publisher = yield* extension.publisher(ProviderInstanceId.make("pi"));
+      const adapter = {};
+      yield* extension.associate(adapter, publisher);
+      const start = yield* extension.startAdmission(threadId);
+      yield* extension.reserve(start, adapter);
+      const reservation = yield* extension.admission(threadId, publisher);
+      if (!reservation) return yield* Effect.die("Missing reservation");
+      const lease = yield* extension.open(threadId, publisher, reservation);
+      if (!lease) return yield* Effect.die("Missing lease");
+      yield* extension.write(lease, { method: "setStatus", statusKey: "s", statusText: "live" });
+      const layer = ThreadDeletionReactorLive.pipe(
+        Layer.provide(Layer.succeed(ProviderExtensionState, extension)),
+        Layer.provide(
+          Layer.mock(ProviderService)({
+            stopSession: () =>
+              Effect.gen(function* () {
+                const state = Option.getOrThrow(
+                  yield* Stream.runHead(extension.observe(threadId, Effect.void)),
+                );
+                expect(state.active).toBe(false);
+                expect(state.statuses).toEqual([]);
+                return yield* new ProviderValidationError({
+                  operation: "stopSession",
+                  issue: "Synthetic cleanup failure",
+                });
+              }),
+          }),
+        ),
+        Layer.provide(Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void })),
+        Layer.provide(
+          Layer.mock(OrchestrationEngineService)({
+            latestSequence: Effect.succeed(0),
+            streamDomainEvents: Stream.make(deletedEvent(1)),
+          }),
+        ),
+      );
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const reactor = yield* ThreadDeletionReactor;
+          yield* reactor.start();
+          yield* reactor.drainThrough(1);
+        }).pipe(Effect.provide(layer)),
+      );
+      expect(yield* extension.open(threadId, publisher, reservation)).toBeUndefined();
+      expect(yield* extension.retainedRecords).toBe(0);
+    }).pipe(Effect.provide(ProviderExtensionState.layer)),
+  );
+
   effectIt.effect("waits for a published deletion the subscriber has not consumed yet", () =>
     Effect.gen(function* () {
       const stops: Array<number> = [];
@@ -109,6 +164,7 @@ describe("ThreadDeletionReactor drain", () => {
         close: () => Effect.void,
       } as unknown as TerminalManager.TerminalManager["Service"];
       const layer = ThreadDeletionReactorLive.pipe(
+        Layer.provideMerge(ProviderExtensionState.layer),
         Layer.provide(Layer.succeed(ProviderService, providerService)),
         Layer.provide(Layer.succeed(TerminalManager.TerminalManager, terminalManager)),
         Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),

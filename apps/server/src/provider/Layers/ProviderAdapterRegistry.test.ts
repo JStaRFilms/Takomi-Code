@@ -12,9 +12,11 @@ import * as Fiber from "effect/Fiber";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import * as ProviderAuthFlow from "../ProviderAuthFlow.ts";
+import { ProviderExtensionState } from "../ProviderExtensionState.ts";
 
 import type * as ClaudeAdapter from "../Services/ClaudeAdapter.ts";
 import type * as CodexAdapter from "../Services/CodexAdapter.ts";
@@ -155,7 +157,7 @@ const fakeInstanceRegistryLayer = Layer.succeed(ProviderInstanceRegistry.Provide
 const layer = Layer.mergeAll(
   Layer.provide(
     ProviderAdapterRegistryLayer.ProviderAdapterRegistryLive,
-    fakeInstanceRegistryLayer,
+    fakeInstanceRegistryLayer.pipe(Layer.provideMerge(ProviderExtensionState.layer)),
   ),
   NodeServices.layer,
 );
@@ -191,6 +193,56 @@ it.layer(layer)("ProviderAdapterRegistryLive", (it) => {
       ]);
     }));
 });
+
+it.effect("the actual credential-guarded registry adapter owns the same extension publisher", () =>
+  Effect.gen(function* () {
+    const extension = yield* ProviderExtensionState;
+    const base = makeFakeInstance("codex", fakeCodexAdapter);
+    const auth = yield* ProviderAuthFlow.make({
+      instanceId: base.instanceId,
+      credentialBinding: { owner: "provider", key: "wrapper-fixture" },
+      methods: Effect.succeed([]),
+      authenticate: () => Effect.void,
+      logout: Effect.void,
+    });
+    const instance = { ...base, auth };
+    const publisher = yield* extension.publisher(instance.instanceId);
+    yield* extension.associate(instance.adapter, publisher);
+    const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry.pipe(
+      Effect.provide(
+        ProviderAdapterRegistryLayer.ProviderAdapterRegistryLive.pipe(
+          Layer.provide(
+            Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+              getInstance: () => Effect.succeed(instance),
+              listInstances: Effect.succeed([instance]),
+            }),
+          ),
+          Layer.provide(Layer.succeed(ProviderExtensionState, extension)),
+        ),
+      ),
+    );
+    const actual = yield* registry.getByInstance(instance.instanceId);
+    assert.notStrictEqual(actual, instance.adapter);
+    assert.strictEqual(yield* registry.getByInstance(instance.instanceId), actual);
+    const threadId = ThreadId.make("guarded-extension-thread");
+    const start = yield* extension.startAdmission(threadId);
+    yield* extension.reserve(start, actual);
+    const reservation = yield* extension.admission(threadId, publisher);
+    if (!reservation) return yield* Effect.die("Registry wrapper lost its publisher");
+    const lease = yield* extension.open(threadId, publisher, reservation);
+    if (!lease) return yield* Effect.die("Registry wrapper could not open its lease");
+    yield* extension.write(lease, {
+      method: "setStatus",
+      statusKey: "guarded",
+      statusText: "owned",
+    });
+    const state = Option.getOrThrow(
+      yield* Stream.runHead(extension.observe(threadId, Effect.void)),
+    );
+    assert.equal(state.generation, lease.generation);
+    assert.deepEqual(state.statuses, [{ key: "guarded", text: "owned" }]);
+  }).pipe(Effect.provide(Layer.mergeAll(ProviderExtensionState.layer, NodeServices.layer))),
+);
 
 it.effect("blocks shared credential session startup and preserves guarded adapter identity", () =>
   Effect.gen(function* () {
@@ -229,6 +281,7 @@ it.effect("blocks shared credential session startup and preserves guarded adapte
     const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry.pipe(
       Effect.provide(
         ProviderAdapterRegistryLayer.ProviderAdapterRegistryLive.pipe(
+          Layer.provideMerge(ProviderExtensionState.layer),
           Layer.provide(
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
               getInstance: (id) =>

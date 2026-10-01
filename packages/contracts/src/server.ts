@@ -76,6 +76,7 @@ export type ServerProviderAuth = typeof ServerProviderAuth.Type;
  * a provider that definitively lacks the resource.
  */
 export const ServerProviderCapabilities = Schema.Struct({
+  extensionState: Schema.optional(Schema.Literal("text-v1")),
   runtimeModes: Schema.optional(Schema.Array(RuntimeMode)),
   interactionModes: Schema.optional(Schema.Array(ProviderInteractionMode)),
   modelSwitching: Schema.optional(Schema.Boolean),

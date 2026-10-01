@@ -44,6 +44,7 @@ import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
+import { ProviderExtensionState } from "../ProviderExtensionState.ts";
 import type { BuiltInDriversEnv } from "../builtInDrivers.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
 import { ServerConfig } from "../../config.ts";
@@ -594,7 +595,10 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
   // provides `OpenCodeRuntimeLive`'s deps while keeping its own outputs
   // surfaced; that merged layer then provides `ServerConfig.layerTest`'s
   // `FileSystem` dep while keeping everything else surfaced to the test.
-  const infraLayer = OpenCodeRuntimeLive.pipe(Layer.provideMerge(NodeServices.layer));
+  const infraLayer = OpenCodeRuntimeLive.pipe(
+    Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(ProviderExtensionState.layer),
+  );
   const testLayer = AntigravityInstallation.layer.pipe(
     Layer.provideMerge(
       ServerConfig.layerTest(process.cwd(), {

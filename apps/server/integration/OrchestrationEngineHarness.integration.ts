@@ -45,6 +45,7 @@ import {
   NoOpProviderEventLoggers,
   ProviderEventLoggers,
 } from "../src/provider/Layers/ProviderEventLoggers.ts";
+import { ProviderExtensionState } from "../src/provider/ProviderExtensionState.ts";
 import { ProviderService } from "../src/provider/Services/ProviderService.ts";
 import { ProviderAuthService } from "../src/provider/Services/ProviderAuthService.ts";
 import { AnalyticsService } from "../src/telemetry/AnalyticsService.ts";
@@ -434,6 +435,7 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
       Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(ProviderExtensionState.layer),
       Layer.provideMerge(
         options?.tracer ? Layer.succeed(Tracer.Tracer, options.tracer) : Layer.empty,
       ),

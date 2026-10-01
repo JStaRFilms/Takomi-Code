@@ -32,7 +32,8 @@ import {
   planStepsFromTodoTasks,
 } from "./PiAdapter.ts";
 import { ServerConfig } from "../../config.ts";
-import type { ProviderAdapterError } from "../Errors.ts";
+import { ProviderAdapterValidationError, type ProviderAdapterError } from "../Errors.ts";
+import { ProviderExtensionState } from "../ProviderExtensionState.ts";
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
 const decodeStringArrayJson = Schema.decodeUnknownSync(
@@ -41,7 +42,7 @@ const decodeStringArrayJson = Schema.decodeUnknownSync(
 const piMockPeer = NodePath.join(import.meta.dirname, "../testFixtures/piMockPeer.mjs");
 const piAdapterTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-pi-adapter-test-",
-}).pipe(Layer.provideMerge(NodeServices.layer));
+}).pipe(Layer.provideMerge(NodeServices.layer), Layer.provideMerge(ProviderExtensionState.layer));
 
 type TestPiAdapter = Effect.Success<ReturnType<typeof makePiAdapter>>;
 
@@ -116,8 +117,33 @@ function runPiProcessScenario(
             ),
           );
         });
+      const extensionState = yield* ProviderExtensionState;
       yield* use({
-        adapter,
+        adapter: {
+          ...adapter,
+          startSession: (input) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const start = yield* extensionState.startAdmission(input.threadId);
+                return yield* extensionState.withStart(
+                  start,
+                  extensionState
+                    .reserve(start, adapter)
+                    .pipe(Effect.andThen(adapter.startSession(input))),
+                );
+              }),
+            ).pipe(
+              Effect.catchTag(
+                "ProviderValidationError",
+                (error) =>
+                  new ProviderAdapterValidationError({
+                    provider: adapter.provider,
+                    operation: "startSession",
+                    issue: error.issue,
+                  }),
+              ),
+            ),
+        },
         events,
         nativeRecords,
         threadId: ThreadId.make("pi-decoder-process-path"),
@@ -2696,16 +2722,16 @@ describe("Pi adapter process-path JSONL decoding", () => {
     ),
   );
 
-  effectIt.live("writes each native Pi record and settles open UI waiters once on stop", () =>
+  effectIt.live("logs non-setter native Pi records and settles open UI waiters once on stop", () =>
     runPiProcessScenario(process.env, ({ adapter, events, nativeRecords, threadId, waitFor }) =>
       Effect.gen(function* () {
         yield* adapter.startSession(startInput(threadId));
         yield* adapter.sendTurn({ threadId, input: "Native logging", attachments: [] });
         yield* waitFor((event) => event.type === "turn.completed");
         yield* adapter.stopSession(threadId);
-        // get_state, get_commands, and prompt responses plus every one of
-        // the 32 synthetic native events.
-        expect(nativeRecords).toHaveLength(35);
+        // Three RPC responses and 28 native events. Four current-state setters
+        // bypass raw logging.
+        expect(nativeRecords).toHaveLength(31);
         const openedIds = events
           .filter(
             (event) => event.type === "request.opened" || event.type === "user-input.requested",

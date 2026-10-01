@@ -55,6 +55,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as Stream from "effect/Stream";
 
+import { ProviderExtensionState } from "../ProviderExtensionState.ts";
 import { appendUserInputAttachmentPaths } from "../userInputAttachments.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
@@ -486,6 +487,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   // no-op.
   const canonicalEventLogger = options?.canonicalEventLogger ?? eventLoggers.canonical;
 
+  const extensionState = yield* ProviderExtensionState;
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -1238,6 +1240,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     readonly binding: ProviderSessionDirectory.ProviderRuntimeBinding;
     readonly operation: string;
   }) {
+    const start = yield* extensionState.startAdmission(input.binding.threadId);
     const bindingInstanceId = yield* requireBindingInstanceId(input.operation, input.binding);
     yield* Effect.annotateCurrentSpan({
       "provider.operation": "recover-session",
@@ -1280,6 +1283,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
 
       yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+      if ((yield* registry.getByInstance(bindingInstanceId)) !== adapter)
+        return yield* toValidationError(input.operation, "Provider changed during recovery.");
+      yield* extensionState.reserve(start, adapter);
       const resumed = yield* adapter
         .startSession({
           threadId: input.binding.threadId,
@@ -1290,8 +1296,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
           runtimeMode: input.binding.runtimeMode ?? "full-access",
         })
-        .pipe(Effect.onError(() => clearMcpSession(input.binding.threadId)));
+        .pipe(
+          Effect.onError(() =>
+            extensionState
+              .failStart(input.binding.threadId, adapter)
+              .pipe(Effect.andThen(clearMcpSession(input.binding.threadId))),
+          ),
+        );
       if (resumed.provider !== adapter.provider) {
+        yield* extensionState.failStart(input.binding.threadId, adapter);
         yield* clearMcpSession(input.binding.threadId);
         return yield* toValidationError(
           input.operation,
@@ -1302,7 +1315,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       yield* upsertSessionBinding(
         { ...resumed, providerInstanceId: bindingInstanceId },
         input.binding.threadId,
-      );
+      ).pipe(Effect.onError(() => extensionState.failStart(input.binding.threadId, adapter)));
       yield* analytics.record("provider.session.recovered", {
         provider: resumed.provider,
         strategy: "resume-thread",
@@ -1316,8 +1329,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           operation: "recover",
         }),
       }),
+      (effect) => extensionState.withStart(start, effect),
     );
-  });
+  }, Effect.scoped);
 
   const resolveRoutableSession = Effect.fn("resolveRoutableSession")(function* (input: {
     readonly threadId: ThreadId;
@@ -1404,177 +1418,193 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
-  const startSession: ProviderServiceMethod<"startSession"> = Effect.fn("startSession")(
-    function* (threadId, rawInput) {
-      const parsed = yield* decodeInputOrValidationError({
-        operation: "ProviderService.startSession",
-        schema: ProviderSessionStartInput,
-        payload: rawInput,
-      });
+  const startSession: ProviderServiceMethod<"startSession"> = Effect.fn("startSession")(function* (
+    threadId,
+    rawInput,
+  ) {
+    const start = yield* extensionState.startAdmission(threadId);
+    const parsed = yield* decodeInputOrValidationError({
+      operation: "ProviderService.startSession",
+      schema: ProviderSessionStartInput,
+      payload: rawInput,
+    });
 
-      const resolvedInstanceId = yield* requireBindingInstanceId(
-        "ProviderService.startSession",
-        parsed,
-      );
-      let metricProvider = parsed.provider ?? String(resolvedInstanceId);
-      yield* Effect.annotateCurrentSpan({
-        "provider.operation": "start-session",
-        "provider.instance_id": resolvedInstanceId,
-        "provider.thread_id": threadId,
-        "provider.runtime_mode": parsed.runtimeMode,
-      });
-      return yield* Effect.gen(function* () {
-        const instanceInfo = yield* registry.getInstanceInfo(resolvedInstanceId);
-        const resolvedProvider = instanceInfo.driverKind;
-        metricProvider = resolvedProvider;
-        if (parsed.provider !== undefined && parsed.provider !== resolvedProvider) {
-          return yield* toValidationError(
-            "ProviderService.startSession",
-            `Provider instance '${resolvedInstanceId}' belongs to driver '${resolvedProvider}', not '${parsed.provider}'.`,
-          );
-        }
-        const input = {
-          ...parsed,
-          threadId,
-          provider: resolvedProvider,
-        };
-        if (!instanceInfo.enabled) {
-          return yield* toValidationError(
-            "ProviderService.startSession",
-            `Provider instance '${resolvedInstanceId}' is disabled in T3 Code settings.`,
-          );
-        }
-        const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+    const resolvedInstanceId = yield* requireBindingInstanceId(
+      "ProviderService.startSession",
+      parsed,
+    );
+    let metricProvider = parsed.provider ?? String(resolvedInstanceId);
+    yield* Effect.annotateCurrentSpan({
+      "provider.operation": "start-session",
+      "provider.instance_id": resolvedInstanceId,
+      "provider.thread_id": threadId,
+      "provider.runtime_mode": parsed.runtimeMode,
+    });
+    return yield* Effect.gen(function* () {
+      const instanceInfo = yield* registry.getInstanceInfo(resolvedInstanceId);
+      const resolvedProvider = instanceInfo.driverKind;
+      metricProvider = resolvedProvider;
+      if (parsed.provider !== undefined && parsed.provider !== resolvedProvider) {
+        return yield* toValidationError(
+          "ProviderService.startSession",
+          `Provider instance '${resolvedInstanceId}' belongs to driver '${resolvedProvider}', not '${parsed.provider}'.`,
+        );
+      }
+      const input = {
+        ...parsed,
+        threadId,
+        provider: resolvedProvider,
+      };
+      if (!instanceInfo.enabled) {
+        return yield* toValidationError(
+          "ProviderService.startSession",
+          `Provider instance '${resolvedInstanceId}' is disabled in T3 Code settings.`,
+        );
+      }
+      const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      if (
+        persistedBinding?.provider === resolvedProvider &&
+        persistedBinding.providerInstanceId !== resolvedInstanceId &&
+        (input.resumeCursor != null || persistedBinding.resumeCursor != null)
+      ) {
+        const previousInstanceId = yield* requireBindingInstanceId(
+          "ProviderService.startSession",
+          persistedBinding,
+        );
+        const previousInfo = yield* registry.getInstanceInfo(previousInstanceId);
         if (
-          persistedBinding?.provider === resolvedProvider &&
-          persistedBinding.providerInstanceId !== resolvedInstanceId &&
-          (input.resumeCursor != null || persistedBinding.resumeCursor != null)
+          previousInfo.continuationIdentity.continuationKey !==
+          instanceInfo.continuationIdentity.continuationKey
         ) {
-          const previousInstanceId = yield* requireBindingInstanceId(
-            "ProviderService.startSession",
-            persistedBinding,
-          );
-          const previousInfo = yield* registry.getInstanceInfo(previousInstanceId);
-          if (
-            previousInfo.continuationIdentity.continuationKey !==
-            instanceInfo.continuationIdentity.continuationKey
-          ) {
-            return yield* toValidationError(
-              "ProviderService.startSession",
-              `Thread '${threadId}' cannot switch from instance '${previousInstanceId}' to '${resolvedInstanceId}' because their provider resume state is incompatible.`,
-            );
-          }
-        }
-        const effectiveResumeCursor =
-          input.resumeCursor ??
-          (persistedBinding?.providerInstanceId === resolvedInstanceId
-            ? persistedBinding.resumeCursor
-            : undefined);
-        const effectiveCwd =
-          input.cwd ??
-          (persistedBinding?.providerInstanceId === resolvedInstanceId
-            ? readPersistedCwd(persistedBinding.runtimePayload)
-            : undefined);
-        yield* Effect.annotateCurrentSpan({
-          "provider.kind": resolvedProvider,
-          "provider.resume_cursor.source":
-            input.resumeCursor !== undefined
-              ? "request"
-              : effectiveResumeCursor !== undefined &&
-                  persistedBinding?.providerInstanceId === resolvedInstanceId
-                ? "persisted"
-                : "none",
-          "provider.resume_cursor.present": effectiveResumeCursor !== undefined,
-          "provider.cwd.source":
-            input.cwd !== undefined
-              ? "request"
-              : effectiveCwd !== undefined &&
-                  persistedBinding?.providerInstanceId === resolvedInstanceId
-                ? "persisted"
-                : "none",
-          "provider.cwd.effective": effectiveCwd ?? "",
-        });
-        if (effectiveCwd !== undefined) {
-          // Fail fast with an actionable error when the workspace folder is
-          // gone (e.g. moved, deleted, or replaced by a plain file).
-          // Otherwise every adapter surfaces this as a misleading "failed to
-          // spawn <binary>" process error. Stat failures other than "missing"
-          // fall through to the adapter.
-          const workspaceIsDirectory = yield* fileSystem.stat(effectiveCwd).pipe(
-            Effect.map((workspaceStat) => workspaceStat.type === "Directory"),
-            Effect.catch((statError) => Effect.succeed(statError.reason._tag !== "NotFound")),
-          );
-          if (!workspaceIsDirectory) {
-            return yield* new ProviderWorkspaceMissingError({ threadId, cwd: effectiveCwd });
-          }
-        }
-        const adapter = yield* registry.getByInstance(resolvedInstanceId);
-        yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
-        yield* prepareMcpSession(threadId, resolvedInstanceId);
-        const session = yield* adapter
-          .startSession({
-            ...input,
-            providerInstanceId: resolvedInstanceId,
-            ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
-            ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
-          })
-          .pipe(Effect.onError(() => clearMcpSession(threadId)));
-
-        if (session.provider !== adapter.provider) {
-          yield* clearMcpSession(threadId);
           return yield* toValidationError(
             "ProviderService.startSession",
-            `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
+            `Thread '${threadId}' cannot switch from instance '${previousInstanceId}' to '${resolvedInstanceId}' because their provider resume state is incompatible.`,
           );
         }
-        const sessionWithInstance = {
-          ...session,
-          providerInstanceId: resolvedInstanceId,
-        };
-
-        yield* stopStaleSessionsForThread({
-          threadId,
-          currentInstanceId: resolvedInstanceId,
-        });
-        yield* upsertSessionBinding(sessionWithInstance, threadId, {
-          modelSelection: input.modelSelection,
-        });
-        yield* analytics.record("provider.session.started", {
-          provider: sessionWithInstance.provider,
-          runtimeMode: input.runtimeMode,
-          hasResumeCursor: sessionWithInstance.resumeCursor !== undefined,
-          hasCwd: typeof effectiveCwd === "string" && effectiveCwd.trim().length > 0,
-          hasModel:
-            typeof input.modelSelection?.model === "string" &&
-            input.modelSelection.model.trim().length > 0,
-        });
-        timedOutNativeCompactions.delete(threadId);
-
-        // Changing runtime mode restarts the session, so the transition is only
-        // observable here, by diffing against the mode the previous session for
-        // this thread was bound to. Recording it separately is what makes the
-        // "started supervised, switched to full access" funnel answerable.
-        const previousRuntimeMode = persistedBinding?.runtimeMode;
-        if (previousRuntimeMode !== undefined && previousRuntimeMode !== input.runtimeMode) {
-          yield* analytics.record("provider.runtime_mode.changed", {
-            provider: sessionWithInstance.provider,
-            from: previousRuntimeMode,
-            to: input.runtimeMode,
-          });
+      }
+      const effectiveResumeCursor =
+        input.resumeCursor ??
+        (persistedBinding?.providerInstanceId === resolvedInstanceId
+          ? persistedBinding.resumeCursor
+          : undefined);
+      const effectiveCwd =
+        input.cwd ??
+        (persistedBinding?.providerInstanceId === resolvedInstanceId
+          ? readPersistedCwd(persistedBinding.runtimePayload)
+          : undefined);
+      yield* Effect.annotateCurrentSpan({
+        "provider.kind": resolvedProvider,
+        "provider.resume_cursor.source":
+          input.resumeCursor !== undefined
+            ? "request"
+            : effectiveResumeCursor !== undefined &&
+                persistedBinding?.providerInstanceId === resolvedInstanceId
+              ? "persisted"
+              : "none",
+        "provider.resume_cursor.present": effectiveResumeCursor !== undefined,
+        "provider.cwd.source":
+          input.cwd !== undefined
+            ? "request"
+            : effectiveCwd !== undefined &&
+                persistedBinding?.providerInstanceId === resolvedInstanceId
+              ? "persisted"
+              : "none",
+        "provider.cwd.effective": effectiveCwd ?? "",
+      });
+      if (effectiveCwd !== undefined) {
+        // Fail fast with an actionable error when the workspace folder is
+        // gone (e.g. moved, deleted, or replaced by a plain file).
+        // Otherwise every adapter surfaces this as a misleading "failed to
+        // spawn <binary>" process error. Stat failures other than "missing"
+        // fall through to the adapter.
+        const workspaceIsDirectory = yield* fileSystem.stat(effectiveCwd).pipe(
+          Effect.map((workspaceStat) => workspaceStat.type === "Directory"),
+          Effect.catch((statError) => Effect.succeed(statError.reason._tag !== "NotFound")),
+        );
+        if (!workspaceIsDirectory) {
+          return yield* new ProviderWorkspaceMissingError({ threadId, cwd: effectiveCwd });
         }
+      }
+      const adapter = yield* registry.getByInstance(resolvedInstanceId);
+      yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
+      yield* prepareMcpSession(threadId, resolvedInstanceId);
+      if ((yield* registry.getByInstance(resolvedInstanceId)) !== adapter)
+        return yield* toValidationError(
+          "ProviderService.startSession",
+          "Provider changed during startup.",
+        );
+      yield* extensionState.reserve(start, adapter);
+      const session = yield* adapter
+        .startSession({
+          ...input,
+          providerInstanceId: resolvedInstanceId,
+          ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
+          ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
+        })
+        .pipe(
+          Effect.onError(() =>
+            extensionState
+              .failStart(threadId, adapter)
+              .pipe(Effect.andThen(clearMcpSession(threadId))),
+          ),
+        );
 
-        return sessionWithInstance;
-      }).pipe(
-        withMetrics({
-          counter: providerSessionsTotal,
-          attributes: () =>
-            providerMetricAttributes(metricProvider, {
-              operation: "start",
-            }),
-        }),
-      );
-    },
-  );
+      if (session.provider !== adapter.provider) {
+        yield* extensionState.failStart(threadId, adapter);
+        yield* clearMcpSession(threadId);
+        return yield* toValidationError(
+          "ProviderService.startSession",
+          `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
+        );
+      }
+      const sessionWithInstance = {
+        ...session,
+        providerInstanceId: resolvedInstanceId,
+      };
+
+      yield* stopStaleSessionsForThread({
+        threadId,
+        currentInstanceId: resolvedInstanceId,
+      });
+      yield* upsertSessionBinding(sessionWithInstance, threadId, {
+        modelSelection: input.modelSelection,
+      }).pipe(Effect.onError(() => extensionState.failStart(threadId, adapter)));
+      yield* analytics.record("provider.session.started", {
+        provider: sessionWithInstance.provider,
+        runtimeMode: input.runtimeMode,
+        hasResumeCursor: sessionWithInstance.resumeCursor !== undefined,
+        hasCwd: typeof effectiveCwd === "string" && effectiveCwd.trim().length > 0,
+        hasModel:
+          typeof input.modelSelection?.model === "string" &&
+          input.modelSelection.model.trim().length > 0,
+      });
+      timedOutNativeCompactions.delete(threadId);
+
+      // Changing runtime mode restarts the session, so the transition is only
+      // observable here, by diffing against the mode the previous session for
+      // this thread was bound to. Recording it separately is what makes the
+      // "started supervised, switched to full access" funnel answerable.
+      const previousRuntimeMode = persistedBinding?.runtimeMode;
+      if (previousRuntimeMode !== undefined && previousRuntimeMode !== input.runtimeMode) {
+        yield* analytics.record("provider.runtime_mode.changed", {
+          provider: sessionWithInstance.provider,
+          from: previousRuntimeMode,
+          to: input.runtimeMode,
+        });
+      }
+
+      return sessionWithInstance;
+    }).pipe(
+      withMetrics({
+        counter: providerSessionsTotal,
+        attributes: () =>
+          providerMetricAttributes(metricProvider, {
+            operation: "start",
+          }),
+      }),
+      (effect) => extensionState.withStart(start, effect),
+    );
+  }, Effect.scoped);
 
   const sendTurn: ProviderServiceMethod<"sendTurn"> = Effect.fn("sendTurn")(function* (rawInput) {
     const parsed = yield* decodeInputOrValidationError({

@@ -78,6 +78,8 @@ const makeRecordingAnalytics = Effect.gen(function* () {
   return { layer, get: Ref.get(recorded) } as const;
 });
 
+import { ProviderExtensionState } from "../src/provider/ProviderExtensionState.ts";
+
 const makeIntegrationFixture = (options?: { readonly analytics?: Layer.Layer<AnalyticsService> }) =>
   Effect.gen(function* () {
     const cwd = yield* makeWorkspaceDirectory;
@@ -92,6 +94,7 @@ const makeIntegrationFixture = (options?: { readonly analytics?: Layer.Layer<Ana
     );
 
     const shared = Layer.mergeAll(
+      ProviderExtensionState.layer,
       directoryLayer,
       Layer.succeed(ProviderAdapterRegistry, registry),
       ServerConfig.layerTest(cwd, cwd).pipe(Layer.provide(NodeServices.layer)),

@@ -60,6 +60,7 @@ import {
   ProjectWriteFileError,
   ProviderUploadFeedbackError,
   ProviderPiSecretInputError,
+  ProviderExtensionStateError,
   ProviderPiVaultExportError,
   PiSessionCatalogError,
   ProviderSetupError,
@@ -119,6 +120,7 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import { ProviderExtensionState } from "./provider/ProviderExtensionState.ts";
 import {
   listBoundedPiSessions,
   validatePiSessionProvider,
@@ -931,6 +933,7 @@ const makeWsRpcLayer = (
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const modelManifest = yield* ModelManifest.ModelManifest;
       const providerVersionCache = yield* ProviderMaintenance.ProviderVersionCache;
+      const extensionState = yield* ProviderExtensionState;
       const providerService = yield* ProviderService.ProviderService;
       const providerSessionDirectory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
@@ -3367,6 +3370,26 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.providerAuthLogout, providerAuth.logout(input), {
             "rpc.aggregate": "provider",
           }),
+        [WS_METHODS.providerExtensionStateSubscribe]: (input) =>
+          observeRpcStream(
+            WS_METHODS.providerExtensionStateSubscribe,
+            extensionState.observe(
+              input.threadId,
+              projectionSnapshotQuery.getThreadShellById(input.threadId).pipe(
+                Effect.mapError(
+                  () => new ProviderExtensionStateError({ message: "The thread is unavailable." }),
+                ),
+                Effect.flatMap((thread) =>
+                  Option.isSome(thread)
+                    ? Effect.void
+                    : Effect.fail(
+                        new ProviderExtensionStateError({ message: "The thread is unavailable." }),
+                      ),
+                ),
+              ),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
         [WS_METHODS.providerAuthSubscribe]: (input) =>
           observeRpcStream(
             WS_METHODS.providerAuthSubscribe,

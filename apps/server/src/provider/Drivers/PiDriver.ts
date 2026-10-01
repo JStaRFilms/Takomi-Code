@@ -25,6 +25,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makePiAdapter } from "../Layers/PiAdapter.ts";
+import { ProviderExtensionState } from "../ProviderExtensionState.ts";
 import {
   checkPiProviderStatus,
   discoverPiResources,
@@ -68,6 +69,7 @@ export type PiDriverEnv =
   | FileSystem.FileSystem
   | Path.Path
   | ProviderEventLoggers
+  | ProviderExtensionState
   | ServerConfig
   | ServerSettingsService;
 

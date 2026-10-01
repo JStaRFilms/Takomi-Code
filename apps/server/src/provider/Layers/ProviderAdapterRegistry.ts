@@ -32,6 +32,7 @@ import {
   type ProviderAdapterRegistryShape,
 } from "../Services/ProviderAdapterRegistry.ts";
 
+import { ProviderExtensionState } from "../ProviderExtensionState.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 
@@ -39,6 +40,7 @@ const isSetupError = Schema.is(ProviderSetupError);
 
 const makeProviderAdapterRegistry = Effect.fn("makeProviderAdapterRegistry")(function* () {
   const registry = yield* ProviderInstanceRegistry;
+  const extensionState = yield* ProviderExtensionState;
   // Stable identity keeps ProviderService's event subscriptions attached once.
   const guarded = new WeakMap<ProviderInstance, ProviderAdapterShape<ProviderAdapterError>>();
   const guard = (instance: ProviderInstance) => {
@@ -108,7 +110,11 @@ const makeProviderAdapterRegistry = Effect.fn("makeProviderAdapterRegistry")(fun
                 provider: instanceId,
               }),
             )
-          : Effect.succeed(guard(instance)),
+          : Effect.gen(function* () {
+              const adapter = guard(instance);
+              yield* extensionState.inherit(adapter, instance.adapter);
+              return adapter;
+            }),
       ),
     );
 

@@ -52,6 +52,7 @@ describe("Pi provider snapshot", () => {
         interactionModes: ["default"],
         modelSwitching: true,
         conversationRollback: false,
+        extensionState: "text-v1",
         commandDiscovery: "unavailable",
         skillDiscovery: "unavailable",
         workspaceSnapshotFreshness: true,

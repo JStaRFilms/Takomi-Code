@@ -47,6 +47,8 @@ import {
   ProviderAdapterValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
+import { ProviderExtensionState, type ExtensionLease } from "../ProviderExtensionState.ts";
+import { isExtensionStateSetter } from "../extensionState.ts";
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { PiJsonlDecoder, type PiJsonlFrame } from "./PiProtocolConformance.ts";
@@ -189,6 +191,7 @@ interface PiTurnSnapshot {
 }
 
 interface PiSessionContext {
+  extensionLease?: ExtensionLease | undefined;
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly generation: number;
@@ -1591,6 +1594,8 @@ function firstAnswer(answers: ProviderUserInputAnswers, requestId: string): unkn
 
 export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
   return Effect.gen(function* () {
+    const extensionState = yield* ProviderExtensionState;
+    const publisher = yield* extensionState.publisher(options.instanceId);
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -2628,6 +2633,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
     ) {
       if (context.stopped) return;
       context.outputFenced = true;
+      if (context.extensionLease) yield* extensionState.close(context.extensionLease);
       yield* resolvePendingUiAsCancelled(context);
       context.stopped = true;
       if (sessions.get(context.session.threadId) === context) {
@@ -2671,6 +2677,13 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
     const startSession: ProviderAdapterShape<ProviderAdapterError>["startSession"] = Effect.fn(
       "startPiSession",
     )(function* (input: ProviderSessionStartInput) {
+      const reservation = yield* extensionState.admission(input.threadId, publisher);
+      if (!reservation)
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: "Pi startup ownership is no longer current.",
+        });
       if (input.runtimeMode !== "full-access") {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
@@ -2803,6 +2816,15 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         stopped: false,
       };
       sessions.set(input.threadId, context);
+      context.extensionLease = yield* extensionState.open(input.threadId, publisher, reservation);
+      if (!context.extensionLease) {
+        yield* stopContext(context, false);
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: "Pi startup ownership was invalidated.",
+        });
+      }
 
       yield* Stream.run(Stream.fromQueue(rpcInput), process.stdin).pipe(
         Effect.ignore,
@@ -2817,6 +2839,11 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           frames,
           (frame) => {
             if (frame.type === "record") {
+              if (isExtensionStateSetter(frame.record)) {
+                return isLiveContext(context, sessionGeneration) && context.extensionLease
+                  ? extensionState.write(context.extensionLease, frame.record)
+                  : Effect.void;
+              }
               return logNativePiRecord(context, frame.record as PiRpcMessage).pipe(
                 Effect.andThen(
                   Effect.gen(function* () {
@@ -2890,6 +2917,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 // Drain and EOF-flush stdout before publishing termination. Closing
                 // the session scope first would race and discard the final frame.
                 yield* Deferred.await(stdoutFinished);
+                if (context.extensionLease) yield* extensionState.close(context.extensionLease);
                 context.stopped = true;
                 if (sessions.get(input.threadId) === context) sessions.delete(input.threadId);
                 if (context.activeTurnId) {
@@ -3150,6 +3178,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       // Fence buffered stdout before asking Pi to abort: the acknowledgement may
       // be followed by lifecycle records from a tool that was already stopping.
       context.outputFenced = true;
+      if (context.extensionLease) yield* extensionState.close(context.extensionLease);
       yield* resolvePendingUiAsCancelled(context);
       yield* emit({
         ...(yield* eventBase(context)),
@@ -3333,6 +3362,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       streamEvents: Stream.fromQueue(runtimeEvents),
     };
 
+    yield* extensionState.associate(adapter, publisher);
     return adapter;
   });
 }

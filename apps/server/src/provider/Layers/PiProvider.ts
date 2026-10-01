@@ -67,6 +67,7 @@ const piCapabilities = (resourcesAvailable: boolean, sessionCatalogAvailable: bo
     interactionModes: ["default"],
     modelSwitching: true,
     conversationRollback: false,
+    extensionState: "text-v1",
     commandDiscovery: resourcesAvailable ? "available" : "unavailable",
     skillDiscovery: resourcesAvailable ? "available" : "unavailable",
     workspaceSnapshotFreshness: true,

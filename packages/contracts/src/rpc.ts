@@ -1,4 +1,9 @@
 import * as Schema from "effect/Schema";
+import {
+  ProviderExtensionStateInput,
+  ProviderExtensionStateSnapshot,
+  ProviderExtensionStateError,
+} from "./providerExtensionState.ts";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -329,6 +334,7 @@ export const WS_METHODS = {
   providerAuthCancel: "provider.auth.cancel",
   providerAuthLogout: "provider.auth.logout",
   providerAuthSubscribe: "provider.auth.subscribe",
+  providerExtensionStateSubscribe: "provider.extensionState.subscribe",
   providerInstallStart: "provider.install.start",
   providerInstallCancel: "provider.install.cancel",
   providerInstallSubscribe: "provider.install.subscribe",
@@ -560,6 +566,13 @@ const WsProviderAuthLogoutRpc = Rpc.make(WS_METHODS.providerAuthLogout, {
   payload: ProviderSetupInput,
   success: ProviderAuthState,
   error: ProviderSetupRpcError,
+});
+
+const WsProviderExtensionStateSubscribeRpc = Rpc.make(WS_METHODS.providerExtensionStateSubscribe, {
+  payload: ProviderExtensionStateInput,
+  success: ProviderExtensionStateSnapshot,
+  error: Schema.Union([ProviderExtensionStateError, EnvironmentAuthorizationError]),
+  stream: true,
 });
 
 const WsProviderAuthSubscribeRpc = Rpc.make(WS_METHODS.providerAuthSubscribe, {
@@ -1479,6 +1492,7 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
 });
 
 export const WsRpcGroup = RpcGroup.make(
+  WsProviderExtensionStateSubscribeRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,

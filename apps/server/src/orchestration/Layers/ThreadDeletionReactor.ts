@@ -7,6 +7,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderExtensionState } from "../../provider/ProviderExtensionState.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
@@ -40,6 +41,7 @@ export const logCleanupCauseUnlessInterrupted = <R, E>({
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
+  const extensionState = yield* ProviderExtensionState;
   const terminalManager = yield* TerminalManager.TerminalManager;
 
   const stopProviderSession = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
@@ -60,6 +62,7 @@ const make = Effect.gen(function* () {
     event: ThreadDeletedEvent,
   ) {
     const { threadId } = event.payload;
+    yield* extensionState.delete(threadId);
     yield* stopProviderSession(threadId);
     yield* closeThreadTerminals(threadId);
   });

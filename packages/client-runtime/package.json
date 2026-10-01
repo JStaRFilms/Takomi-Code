@@ -195,6 +195,10 @@
       "types": "./src/state/usage.ts",
       "default": "./src/state/usage.ts"
     },
+    "./state/providerExtensionState": {
+      "types": "./src/state/providerExtensionState.ts",
+      "default": "./src/state/providerExtensionState.ts"
+    },
     "./state/server": {
       "types": "./src/state/server.ts",
       "default": "./src/state/server.ts"

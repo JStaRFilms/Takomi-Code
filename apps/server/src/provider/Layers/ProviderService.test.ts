@@ -79,9 +79,13 @@ import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 
+import { ProviderExtensionState } from "../ProviderExtensionState.ts";
+
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
 const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
 const serverConfigTestLayer = ServerConfig.layerTest(process.cwd(), process.cwd()).pipe(
+  Layer.provideMerge(ProviderExtensionState.layer),
   Layer.provide(NodeServices.layer),
 );
 
@@ -463,6 +467,7 @@ function makeProviderServiceLayer(
       directoryLayer,
 
       runtimeRepositoryLayer,
+      serverConfigTestLayer,
       NodeServices.layer,
     ),
   );
@@ -1618,6 +1623,45 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect(
+    "a successful non-Pi start invalidates Pi extension ownership through the real controller",
+    () =>
+      Effect.gen(function* () {
+        const extension = yield* ProviderExtensionState;
+        const service = yield* ProviderService.ProviderService;
+        const threadId = asThreadId("pi-ui-to-codex");
+        const publisher = yield* extension.publisher(ProviderInstanceId.make("old-pi"));
+        const oldAdapter = {};
+        yield* extension.associate(oldAdapter, publisher);
+        const start = yield* extension.startAdmission(threadId);
+        yield* extension.reserve(start, oldAdapter);
+        const reservation = yield* extension.admission(threadId, publisher);
+        if (!reservation) return yield* Effect.die("Missing reservation");
+        const lease = yield* extension.open(threadId, publisher, reservation);
+        if (!lease) return yield* Effect.die("Missing lease");
+        yield* extension.write(lease, {
+          method: "setWidget",
+          widgetKey: "old",
+          widgetLines: ["Pi UI"],
+        });
+        yield* service.startSession(threadId, {
+          threadId,
+          providerInstanceId: codexInstanceId,
+          runtimeMode: "full-access",
+          cwd: process.cwd(),
+        });
+        yield* extension.write(lease, { method: "setTitle", title: "late" });
+        yield* extension.close(lease);
+        assert.equal(yield* extension.open(threadId, publisher, reservation), undefined);
+        const state = Option.getOrThrow(
+          yield* Stream.runHead(extension.observe(threadId, Effect.void)),
+        );
+        assert.equal(state.active, false);
+        assert.deepEqual(state.widgets, []);
+        assert.equal(state.subtitle, null);
+        yield* service.stopSession({ threadId });
+      }),
+  );
   it.effect.each([CODEX_DRIVER, CLAUDE_AGENT_DRIVER, CURSOR_DRIVER])(
     "rejects missing, file, and saved workspace paths before starting %s",
     (driver) =>

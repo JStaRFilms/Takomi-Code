@@ -42,6 +42,7 @@ type RpcMethod<TTag extends EnvironmentRpcTag> = WsRpcProtocolClient[TTag];
 
 export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.providerAuthSubscribe
+  | typeof WS_METHODS.providerExtensionStateSubscribe
   | typeof WS_METHODS.providerInstallSubscribe
   | typeof ORCHESTRATION_WS_METHODS.subscribeShell
   | typeof ORCHESTRATION_WS_METHODS.subscribeThread
@@ -181,8 +182,10 @@ interface SubscriptionOptions<TTag extends EnvironmentSubscriptionRpcTag> {
   ) => Effect.Effect<void, never, never>;
   readonly onExpectedFailure?: (
     cause: Cause.Cause<EnvironmentRpcStreamFailure<TTag>>,
+    session: RpcSession,
   ) => Effect.Effect<void, never, never>;
   readonly retryExpectedFailureAfter?: Duration.Input;
+  readonly onTransportFailure?: (session: RpcSession) => Effect.Effect<void>;
   readonly resubscribe?: Stream.Stream<unknown, never, never>;
 }
 
@@ -213,135 +216,148 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
               ),
             );
       return sessions.pipe(
-        Stream.switchMap(({ session: sessionOption, restoring }) =>
-          Option.match(sessionOption, {
-            onNone: () => Stream.empty,
-            onSome: (session) => {
-              const method = (
-                tag === WS_METHODS.subscribeServerConfig
-                  ? session.subscribeServerConfig
-                  : session.client[tag]
-              ) as (
-                input: EnvironmentRpcInput<TTag>,
-              ) => Stream.Stream<
-                EnvironmentRpcStreamValue<TTag>,
-                EnvironmentRpcStreamFailure<TTag>
-              >;
-              const subscribeToSession = (
-                isRestoration = restoring,
-                onEstablished: Effect.Effect<void> = Effect.void,
-                onUnestablished: Effect.Effect<void> = Effect.void,
-              ): Stream.Stream<A, EnvironmentRpcStreamFailure<TTag>> => {
-                const establish = Stream.suspend(() =>
-                  Stream.unwrap(
-                    Effect.gen(function* () {
-                      const input = yield* makeInput(session);
-                      const completeObservation = yield* observer.observe({
-                        environmentId: supervisor.target.environmentId,
-                        method: tag,
-                        input,
-                      });
-                      const stream = mapStream(session, method(input));
-                      // An evicted preview host completes its registration stream.
-                      // Re-register only after completion; failures still follow the
-                      // session recovery policy and browser actions are never replayed.
-                      return (
-                        tag === WS_METHODS.previewAutomationConnect
-                          ? stream.pipe(Stream.repeat(Schedule.spaced("1 second")))
-                          : stream
-                      ).pipe(
-                        Stream.onFirst(() => onUnestablished.pipe(Effect.andThen(onEstablished))),
-                        Stream.ensuring(completeObservation),
-                        // This finalizer belongs to one request attempt, so a
-                        // failed restoration releases its permit before retrying.
-                        Stream.ensuring(onUnestablished),
-                      );
-                    }),
-                  ).pipe(
-                    Stream.tapCause((cause) =>
-                      options?.onDefect !== undefined &&
-                      cause.reasons.some(
-                        (reason) =>
-                          reason._tag === "Die" ||
-                          (reason._tag === "Fail" &&
-                            isRpcClientError(reason.error) &&
-                            reason.error.reason._tag === "RpcClientDefect"),
-                      )
-                        ? options.onDefect(cause)
-                        : Effect.void,
-                    ),
-                    Stream.catchCause((cause) => {
-                      const hasOnlyExpectedFailures =
-                        cause.reasons.length > 0 &&
-                        cause.reasons.every((reason) => reason._tag === "Fail");
-                      const isTransportFailure =
-                        hasOnlyExpectedFailures &&
-                        cause.reasons.every(
-                          (reason) => reason._tag === "Fail" && isRpcClientError(reason.error),
-                        );
-                      if (isTransportFailure) {
-                        return Stream.fromEffect(
-                          Effect.logWarning(
-                            "Durable RPC subscription lost its transport; waiting for the next session.",
-                            {
-                              cause: Cause.pretty(cause),
-                              method: tag,
-                              environmentId: supervisor.target.environmentId,
-                            },
-                          ),
-                        ).pipe(Stream.drain);
-                      }
-                      if (hasOnlyExpectedFailures && options?.onExpectedFailure !== undefined) {
-                        const handled = Stream.fromEffect(options.onExpectedFailure(cause)).pipe(
-                          Stream.drain,
-                        );
-                        if (options.retryExpectedFailureAfter === undefined) {
-                          return handled;
-                        }
-                        return handled.pipe(
-                          Stream.concat(
-                            Stream.fromEffect(Effect.sleep(options.retryExpectedFailureAfter)).pipe(
-                              Stream.drain,
-                            ),
-                          ),
-                          Stream.concat(subscribeToSession(false, onEstablished, onUnestablished)),
-                        );
-                      }
-                      return Stream.failCause(cause);
-                    }),
-                  ),
-                );
-
-                const semaphore = supervisor.restorationSemaphore;
-                if (!isRestoration || semaphore === undefined) return establish;
-                return Stream.fromEffect(
-                  Effect.acquireRelease(
-                    semaphore.take(1).pipe(
-                      Effect.map(() => {
-                        let held = true;
-                        return Effect.suspend(() => {
-                          if (!held) return Effect.void;
-                          held = false;
-                          return semaphore.release(1).pipe(Effect.asVoid);
+        Stream.switchMap(
+          ({ session: sessionOption, restoring }) =>
+            Option.match(sessionOption, {
+              onNone: () => Stream.empty,
+              onSome: (session) => {
+                const method = (
+                  tag === WS_METHODS.subscribeServerConfig
+                    ? session.subscribeServerConfig
+                    : session.client[tag]
+                ) as (
+                  input: EnvironmentRpcInput<TTag>,
+                  options?: { readonly streamBufferSize: number },
+                ) => Stream.Stream<
+                  EnvironmentRpcStreamValue<TTag>,
+                  EnvironmentRpcStreamFailure<TTag>
+                >;
+                const subscribeToSession = (
+                  isRestoration = restoring,
+                  onEstablished: Effect.Effect<void> = Effect.void,
+                  onUnestablished: Effect.Effect<void> = Effect.void,
+                ): Stream.Stream<A, EnvironmentRpcStreamFailure<TTag>> => {
+                  const establish = Stream.suspend(() =>
+                    Stream.unwrap(
+                      Effect.gen(function* () {
+                        const input = yield* makeInput(session);
+                        const completeObservation = yield* observer.observe({
+                          environmentId: supervisor.target.environmentId,
+                          method: tag,
+                          input,
                         });
+                        const stream = mapStream(
+                          session,
+                          tag === WS_METHODS.providerExtensionStateSubscribe
+                            ? method(input, { streamBufferSize: 1 })
+                            : method(input),
+                        );
+                        // An evicted preview host completes its registration stream.
+                        // Re-register only after completion; failures still follow the
+                        // session recovery policy and browser actions are never replayed.
+                        return (
+                          tag === WS_METHODS.previewAutomationConnect
+                            ? stream.pipe(Stream.repeat(Schedule.spaced("1 second")))
+                            : stream
+                        ).pipe(
+                          Stream.onFirst(() => onUnestablished.pipe(Effect.andThen(onEstablished))),
+                          Stream.ensuring(completeObservation),
+                          // This finalizer belongs to one request attempt, so a
+                          // failed restoration releases its permit before retrying.
+                          Stream.ensuring(onUnestablished),
+                        );
+                      }),
+                    ).pipe(
+                      Stream.tapCause((cause) =>
+                        options?.onDefect !== undefined &&
+                        cause.reasons.some(
+                          (reason) =>
+                            reason._tag === "Die" ||
+                            (reason._tag === "Fail" &&
+                              isRpcClientError(reason.error) &&
+                              reason.error.reason._tag === "RpcClientDefect"),
+                        )
+                          ? options.onDefect(cause)
+                          : Effect.void,
+                      ),
+                      Stream.catchCause((cause) => {
+                        const hasOnlyExpectedFailures =
+                          cause.reasons.length > 0 &&
+                          cause.reasons.every((reason) => reason._tag === "Fail");
+                        const isTransportFailure =
+                          hasOnlyExpectedFailures &&
+                          cause.reasons.every(
+                            (reason) => reason._tag === "Fail" && isRpcClientError(reason.error),
+                          );
+                        if (isTransportFailure) {
+                          return Stream.fromEffect(
+                            Effect.logWarning(
+                              "Durable RPC subscription lost its transport; waiting for the next session.",
+                              {
+                                cause: Cause.pretty(cause),
+                                method: tag,
+                                environmentId: supervisor.target.environmentId,
+                              },
+                            ),
+                          ).pipe(
+                            Stream.tap(() => options?.onTransportFailure?.(session) ?? Effect.void),
+                            Stream.drain,
+                          );
+                        }
+                        if (hasOnlyExpectedFailures && options?.onExpectedFailure !== undefined) {
+                          const handled = Stream.fromEffect(
+                            options.onExpectedFailure(cause, session),
+                          ).pipe(Stream.drain);
+                          if (options.retryExpectedFailureAfter === undefined) {
+                            return handled;
+                          }
+                          return handled.pipe(
+                            Stream.concat(
+                              Stream.fromEffect(
+                                Effect.sleep(options.retryExpectedFailureAfter),
+                              ).pipe(Stream.drain),
+                            ),
+                            Stream.concat(
+                              subscribeToSession(false, onEstablished, onUnestablished),
+                            ),
+                          );
+                        }
+                        return Stream.failCause(cause);
                       }),
                     ),
-                    (release) => release,
-                  ),
-                ).pipe(
-                  Stream.flatMap((release) =>
-                    subscribeToSession(
-                      false,
-                      supervisor.reportSubscriptionRestored?.(tag) ?? Effect.void,
-                      release,
+                  );
+
+                  const semaphore = supervisor.restorationSemaphore;
+                  if (!isRestoration || semaphore === undefined) return establish;
+                  return Stream.fromEffect(
+                    Effect.acquireRelease(
+                      semaphore.take(1).pipe(
+                        Effect.map(() => {
+                          let held = true;
+                          return Effect.suspend(() => {
+                            if (!held) return Effect.void;
+                            held = false;
+                            return semaphore.release(1).pipe(Effect.asVoid);
+                          });
+                        }),
+                      ),
+                      (release) => release,
                     ),
-                  ),
-                  Stream.scoped,
-                );
-              };
-              return subscribeToSession();
-            },
-          }),
+                  ).pipe(
+                    Stream.flatMap((release) =>
+                      subscribeToSession(
+                        false,
+                        supervisor.reportSubscriptionRestored?.(tag) ?? Effect.void,
+                        release,
+                      ),
+                    ),
+                    Stream.scoped,
+                  );
+                };
+                return subscribeToSession();
+              },
+            }),
+          tag === WS_METHODS.providerExtensionStateSubscribe ? { bufferSize: 1 } : undefined,
         ),
       );
     }),

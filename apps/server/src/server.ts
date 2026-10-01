@@ -54,6 +54,7 @@ import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as ResetCreditCoordinator from "./provider/Layers/resetCreditCoordinator.ts";
 import * as ProviderEventLoggers from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
+import { ProviderExtensionState } from "./provider/ProviderExtensionState.ts";
 import { ProviderAuthServiceLive } from "./provider/Layers/ProviderAuthService.ts";
 import { AntigravityInstallation } from "./provider/AntigravityInstallation.ts";
 import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
@@ -532,6 +533,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // with explicit `providerInstances` entries on boot.
   Layer.provideMerge(ProviderInstanceRegistryHydrationLive),
 ).pipe(
+  Layer.provideMerge(ProviderExtensionState.layer),
   Layer.provideMerge(AntigravityInstallation.layer),
   // Shared native/canonical NDJSON writers used by both the per-instance
   // drivers (native stream, written from inside each `<X>Adapter`) and
