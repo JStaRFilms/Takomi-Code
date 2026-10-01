@@ -7,6 +7,9 @@ import {
 import { useWorktreeSetup } from "./use-worktree-setup";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import { ScreenHeader } from "../../components/ScreenHeader";
+import { useAtomValue } from "@effect/atom-react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { environmentExtensionState } from "../../state/providerExtensionState";
 import { ScreenHeaderButton } from "../../components/ScreenHeaderButton";
 import type { ScreenHeaderAction } from "../../components/ScreenHeader.types";
 import { useThreadHeaderOptions } from "./useThreadHeaderOptions";
@@ -25,6 +28,7 @@ import {
   EnvironmentId,
   ThreadId,
   type ProjectScript,
+  type ScopedThreadRef,
 } from "@t3tools/contracts";
 import {
   requestOlderThreadTurns,
@@ -94,6 +98,7 @@ import { threadRouteIsHydrating } from "./thread-route-hydration";
 
 function ThreadHeader(
   props: Parameters<typeof useThreadHeaderOptions>[0] & {
+    readonly threadRef: ScopedThreadRef;
     readonly hasThreadCwd: boolean;
     readonly hasWorkspaceRoot: boolean;
     readonly fileInspectorSupported: boolean;
@@ -106,7 +111,11 @@ function ThreadHeader(
   const navigation = useNavigation();
   const { layout, panes, toggleAuxiliaryPane } = useAdaptiveWorkspaceLayout();
   const { onOpenTerminal } = props.gitControls;
-  const native = useThreadHeaderOptions(props);
+  const extension = useAtomValue(environmentExtensionState.presentationAtom(props.threadRef));
+  const subtitle = extension.subtitle
+    ? `${props.subtitle} · ${extension.notice ? "Last known runtime" : "Runtime"}: ${extension.subtitle.text}`
+    : props.subtitle;
+  const native = useThreadHeaderOptions({ ...props, subtitle });
   const androidHeaderActions = useMemo<ReadonlyArray<ScreenHeaderAction>>(() => {
     const actions: ScreenHeaderAction[] = [];
     if (props.onReturnToThread) {
@@ -154,7 +163,7 @@ function ThreadHeader(
     <>
       <ScreenHeader
         title={props.title}
-        subtitle={props.subtitle}
+        subtitle={subtitle}
         sidebar={native.sidebar}
         options={native.options}
         optionsVersion={props.gitControls.projectScripts}
@@ -1044,6 +1053,7 @@ function ThreadRouteContent(
     <>
       {activeInspectorRenderer ? <InspectorPaneRoleActivation /> : null}
       <ThreadHeader
+        threadRef={scopeThreadRef(environmentId, selectedThread.id)}
         title={selectedThread.title}
         subtitle={headerSubtitle}
         headerColor={headerColor}

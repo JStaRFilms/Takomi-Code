@@ -313,6 +313,7 @@ import {
   submitComposerDraft,
 } from "./composerSubmission";
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
+import { ProviderExtensionText } from "./ProviderExtensionText";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { pendingDraftWork } from "./pendingDraftWork";
 import { isTimelineScrollTarget } from "./timelineScrollTarget";
@@ -6408,6 +6409,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           />
         ) : null}
       </ComposerBanner.Dock>
+      {routeKind === "server" ? (
+        <>
+          <ProviderExtensionText threadRef={routeThreadRef} section="statuses" />
+          <ProviderExtensionText threadRef={routeThreadRef} section="aboveEditor" />
+        </>
+      ) : null}
       <div className="relative">
         <ComposerSurface.Main
           ref={composerMainSurfaceRef}
@@ -7109,6 +7116,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           </div>
         </ComposerSurface.Main>
       </div>
+      {routeKind === "server" ? (
+        <ProviderExtensionText threadRef={routeThreadRef} section="belowEditor" />
+      ) : null}
     </form>
   );
 });

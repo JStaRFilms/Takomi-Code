@@ -58,7 +58,8 @@ import {
 } from "../../state/use-composer-drafts";
 import type { ComposerDocumentAttachment } from "../../lib/composerContext";
 import { useProject } from "../../state/entities";
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { ProviderExtensionText } from "./ProviderExtensionText";
 
 import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentButton } from "../../components/ComposerAttachmentButton";
@@ -686,6 +687,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </Pressable>
         ) : null}
 
+        <ProviderExtensionText
+          threadRef={scopeThreadRef(props.environmentId, props.selectedThread.id)}
+          section="statuses"
+        />
+        <ProviderExtensionText
+          threadRef={scopeThreadRef(props.environmentId, props.selectedThread.id)}
+          section="aboveEditor"
+        />
         <ComposerSurface
           style={
             isExpanded
@@ -1013,6 +1022,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             </ComposerDictationToolbar>
           </Animated.View>
         </ComposerSurface>
+        <ProviderExtensionText
+          threadRef={scopeThreadRef(props.environmentId, props.selectedThread.id)}
+          section="belowEditor"
+        />
       </Animated.View>
 
       <VideoPreviewModal source={previewVideo} onRequestClose={closePreview} />

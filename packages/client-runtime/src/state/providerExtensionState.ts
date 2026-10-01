@@ -40,6 +40,69 @@ export type ThreadExtensionState =
       readonly snapshot: ProviderExtensionStateSnapshot | null;
     };
 
+export interface ExtensionTextEntry {
+  readonly id: string;
+  readonly key: string;
+  readonly text: string;
+}
+
+export interface ThreadExtensionPresentation {
+  readonly subtitle: ExtensionTextEntry | null;
+  readonly statuses: ReadonlyArray<ExtensionTextEntry>;
+  readonly aboveEditor: ReadonlyArray<ExtensionTextEntry>;
+  readonly belowEditor: ReadonlyArray<ExtensionTextEntry>;
+  readonly notice: string | null;
+  readonly omitted: boolean;
+}
+
+/** Read-only text projection. Editor suggestions require separate, explicit draft actions. */
+export function extensionStatePresentation(
+  ref: ScopedThreadRef,
+  state: ThreadExtensionState,
+): ThreadExtensionPresentation {
+  const snapshot = state.snapshot?.active ? state.snapshot : null;
+  const entry = (kind: string, key: string, text: string): ExtensionTextEntry => ({
+    id: JSON.stringify([
+      ref.environmentId,
+      ref.threadId,
+      snapshot?.providerInstanceId,
+      snapshot?.generation,
+      kind,
+      key,
+      text,
+    ]),
+    key,
+    text,
+  });
+  return {
+    subtitle: snapshot?.subtitle ? entry("subtitle", "Runtime subtitle", snapshot.subtitle) : null,
+    statuses: snapshot?.statuses.map(({ key, text }) => entry("status", key, text)) ?? [],
+    aboveEditor:
+      snapshot?.widgets
+        .filter((widget) => widget.placement === "aboveEditor")
+        .map(({ key, lines }) => entry("widget", key, lines.join("\n"))) ?? [],
+    belowEditor:
+      snapshot?.widgets
+        .filter((widget) => widget.placement === "belowEditor")
+        .map(({ key, lines }) => entry("widget", key, lines.join("\n"))) ?? [],
+    notice:
+      state.status === "unsupported"
+        ? state.support === "unknown"
+          ? "Extension text support is unknown."
+          : "Extension text is not supported by this provider."
+        : state.status === "disconnected"
+          ? snapshot
+            ? "Disconnected. Extension text is last known."
+            : "Disconnected. Extension text is unavailable."
+          : state.status === "stale"
+            ? snapshot
+              ? "Reconnecting. Extension text is last known."
+              : "Waiting for extension text."
+            : null,
+    omitted: snapshot !== null && (snapshot.truncated || snapshot.overflow),
+  };
+}
+
 export function threadExtensionStateChanges(threadId: ThreadId) {
   return Stream.unwrap(
     Effect.gen(function* () {
@@ -125,16 +188,26 @@ export function createEnvironmentExtensionStateAtoms<R, E>(
     return Atom.make((get): ThreadExtensionState => {
       const thread = get(options.threadShellAtom(ref));
       const config = get(options.configValueAtom(ref.environmentId));
-      const provider = config?.providers.find(
-        (provider) => provider.instanceId === thread?.modelSelection.instanceId,
-      );
+      const instanceId = thread?.session?.providerInstanceId ?? thread?.modelSelection.instanceId;
+      const provider = config?.providers.find((provider) => provider.instanceId === instanceId);
       const support = extensionStateSupport(provider);
       if (support !== "supported") return { status: "unsupported", support, snapshot: null };
       const value = get(raw(key));
-      return AsyncResult.isSuccess(value)
-        ? value.value
-        : { status: "disconnected", snapshot: null };
+      if (!AsyncResult.isSuccess(value)) return { status: "disconnected", snapshot: null };
+      // The shell can announce a replacement before its first snapshot arrives.
+      // Cached output from the former owner must not become the new owner's text.
+      if (value.value.snapshot?.active && value.value.snapshot.providerInstanceId !== instanceId)
+        return { status: "stale", snapshot: null };
+      return value.value;
     }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-data:extension-state:${key}`));
   });
-  return { stateAtom: (ref: ScopedThreadRef) => family(threadKey(ref)) };
+  const presentation = Atom.family((key: string) =>
+    Atom.make((get) => extensionStatePresentation(parseThreadKey(key), get(family(key)))).pipe(
+      Atom.setIdleTTL(0),
+    ),
+  );
+  return {
+    stateAtom: (ref: ScopedThreadRef) => family(threadKey(ref)),
+    presentationAtom: (ref: ScopedThreadRef) => presentation(threadKey(ref)),
+  };
 }
