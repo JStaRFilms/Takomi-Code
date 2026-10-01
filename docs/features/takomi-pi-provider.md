@@ -112,7 +112,7 @@ Current fidelity limitations:
 - option descriptions currently repeat the option label
 - preview text embedded in Pi dialog titles appears in the question body, without a side-by-side preview pane
 - multi-select metadata is not explicitly mapped
-- custom terminal components remain unsupported; text setters are captured as current state, with client presentation pending
+- custom terminal components remain unsupported; statuses, text widgets and subtitles are shown, but editor-suggestion actions remain pending
 
 Core Takomi tools now use the semantic tool presentation described in [Takomi tool-call UI](./takomi-tool-call-ui-audit.md). Unknown tools intentionally retain the generic fallback.
 

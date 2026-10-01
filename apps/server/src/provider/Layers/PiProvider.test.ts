@@ -71,6 +71,7 @@ describe("Pi provider snapshot", () => {
       NodeAssert.equal(piSessionCatalogSupported("0.99.0"), false);
       NodeAssert.equal(piSessionCatalogSupported("0.84.5"), false);
       NodeAssert.equal(piSessionCatalogSupported("0.85.0"), false);
+      NodeAssert.equal(piSessionCatalogSupported("0.98.0"), false);
     }),
   );
 });

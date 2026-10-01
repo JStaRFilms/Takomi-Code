@@ -26,8 +26,9 @@ function frameBytes(frame: Uint8Array | string | Socket.CloseEvent): number {
  *
  * The transport applies its own native backpressure (a write resolves once the
  * frame is flushed), so bytes are counted as outstanding from budget check
- * until the write settles. The high-water mark is the peak outstanding load
- * offered to the transport, including writes that later fail.
+ * until the write settles. An idle writer may send one frame larger than the
+ * budget so a large RPC response does not cause a permanent reconnect loop.
+ * The high-water mark includes that frame and writes that later fail.
  */
 export function withWebSocketBackpressure(
   socket: Socket.Socket,
@@ -64,7 +65,7 @@ export function withWebSocketBackpressure(
       if (Socket.isCloseEvent(frame)) return write(frame);
       const bytes = frameBytes(frame);
       if (closedForBackpressure) return Effect.void;
-      if (outstandingBytes + bytes > limit) {
+      if (outstandingBytes > 0 && outstandingBytes + bytes > limit) {
         closedForBackpressure = true;
         return Effect.logWarning("websocket client exceeded output buffer budget", {
           outstandingBytes,
