@@ -135,7 +135,7 @@ This preserves tools such as `ask_user_question`, `todo`, browser/preview extens
 
 Focused verification includes:
 
-- `apps/server/test/ActivityPayloadProjection.test.ts`
+- `apps/server/src/orchestration/ActivityPayloadProjection.test.ts`
 - `apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.test.ts`
 - `apps/web/src/session-logic.test.ts`
 - contracts, server, and web typechecks

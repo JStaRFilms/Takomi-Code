@@ -159,6 +159,44 @@ describe("readTranscriptRecords resume", () => {
     assert.strictEqual(second.records[0]?.sessionId, "takomi-session-1");
   });
 
+  it("preserves Takomi usage and resume state when large records stream selected fields", async () => {
+    const path = NodePath.join(dir, "takomi-large.jsonl");
+    const padding = "x".repeat(300 * 1024);
+    const largeSession = `${JSON.stringify({ type: "session", id: "takomi-session-1", padding })}\n`;
+    const largeModel = `${JSON.stringify({ type: "model_change", modelId: "gpt-6.1-sol", padding })}\n`;
+    const largeUsage = JSON.stringify({
+      type: "message",
+      id: "large-message",
+      timestamp: "2026-08-01T10:00:05Z",
+      message: {
+        role: "assistant",
+        content: padding,
+        usage: { input: 100, output: 9, cost: { total: 0.25 } },
+      },
+    });
+    await NodeFSP.writeFile(path, largeSession + largeModel + largeUsage);
+    const native = await readTranscriptRecords(path, "takomi");
+    const streamed = await readTranscriptRecords(path, "takomi", undefined, {
+      streamingThresholdBytes: 128,
+    });
+    assert.isNotNull(native);
+    assert.deepStrictEqual(streamed, native);
+    assert.strictEqual(streamed?.tailRecords[0]?.reportedCostUsd, 0.25);
+    assert.strictEqual(streamed?.tailRecords[0]?.model, "gpt-6.1-sol");
+    await NodeFSP.appendFile(path, `\n${takomiUsageLine(11)}`);
+    const resumed = await readTranscriptRecords(path, "takomi", native.position, {
+      streamingThresholdBytes: 128,
+    });
+    assert.isNotNull(resumed);
+    assert.isTrue(resumed.resumed);
+    assert.deepStrictEqual(
+      resumed.records.map((record) => record.totals.outputTokens),
+      [9, 11],
+    );
+    assert.strictEqual(resumed.records[1]?.model, "gpt-6.1-sol");
+    assert.strictEqual(resumed.records[1]?.sessionId, "takomi-session-1");
+  });
+
   it("suppresses a Codex duplicate usage event that straddles the boundary", async () => {
     const path = NodePath.join(dir, "rollout.jsonl");
     await NodeFSP.writeFile(

@@ -61,7 +61,9 @@ builds manually.
 4. Review public configuration in the repository-root `.env` or `.env.local` when the build needs
    T3 Connect, Clerk, or relay configuration. Never commit secrets.
 
-Current source versions are desktop `1.2.4` and mobile `1.3.1`.
+Current source versions match upstream: desktop `0.0.44` and mobile `1.3.1`.
+Desktop builds replace the previous fork-only `1.2.4` numbering. Install this build manually;
+a version-based updater would treat it as a downgrade.
 
 ## Build both applications
 
