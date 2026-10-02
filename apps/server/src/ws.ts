@@ -13,6 +13,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
+import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
@@ -64,6 +66,10 @@ import {
   ProviderUploadFeedbackError,
   ProviderPiSessionStatsError,
   ProviderPiQueueStateError,
+  ProviderSubmitPiQueuedInputInput,
+  ProviderPiQueuedInputError,
+  type PiInputSubmission,
+  piInputRecordCommandId,
   ProviderPiSecretInputError,
   ProviderExtensionStateError,
   ProviderPiVaultExportError,
@@ -114,7 +120,10 @@ import { makeLiveStreamBudget, type RetainedLiveItem } from "./orchestration/Liv
 import {
   cleanupFailedUploadedAttachments,
   normalizeDispatchCommand,
+  normalizeMessageAttachments,
+  cleanupPreparedAttachments,
 } from "./orchestration/Normalizer.ts";
+import { OrchestrationPiInputConflictError } from "./orchestration/Errors.ts";
 import { makeThreadLiveEventCoalescer } from "./orchestration/ThreadLiveEventCoalescer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -395,6 +404,8 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
       | "thread.message-sent"
       | "thread.proposed-plan-upserted"
       | "thread.activity-appended"
+      | "thread.pi-input-recorded"
+      | "thread.pi-input-resolved"
       | "thread.turn-diff-completed"
       | "thread.reverted"
       | "thread.session-set";
@@ -404,11 +415,26 @@ export function isThreadDetailEvent(event: OrchestrationEvent): event is Extract
     event.type === "thread.message-sent" ||
     event.type === "thread.proposed-plan-upserted" ||
     event.type === "thread.activity-appended" ||
+    event.type === "thread.pi-input-recorded" ||
+    event.type === "thread.pi-input-resolved" ||
     event.type === "thread.turn-diff-completed" ||
     event.type === "thread.reverted" ||
     event.type === "thread.session-set"
   );
 }
+
+const isPiQueuedInputError = Schema.is(ProviderPiQueuedInputError);
+const isPiInputConflict = Schema.is(OrchestrationPiInputConflictError);
+const isPiInputBusy = Schema.is(Schema.Struct({ issue: Schema.Literal("Native input is busy.") }));
+const canonicalPiInputOrder = (_key: string, value: unknown) =>
+  Predicate.isObject(value)
+    ? Object.fromEntries(
+        Object.entries(value).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+      )
+    : value;
+const encodePiQueuedInput = Schema.encodeEffect(
+  Schema.fromJsonString(ProviderSubmitPiQueuedInputInput, { replacer: canonicalPiInputOrder }),
+);
 
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
@@ -3695,6 +3721,152 @@ const makeWsRpcLayer = (
               yield* result.validateOwnership.pipe(Effect.mapError(unavailable));
               return result.state;
             }),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerSubmitPiQueuedInput]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerSubmitPiQueuedInput,
+            Effect.gen(function* () {
+              const crypto = yield* Crypto.Crypto;
+              const encoded = yield* encodePiQueuedInput(input);
+              const digest = yield* crypto.digest("SHA-256", new TextEncoder().encode(encoded));
+              const fingerprint = Buffer.from(digest).toString("hex");
+              const prior = yield* projectionSnapshotQuery.getPiInputActivity({
+                threadId: input.threadId,
+                requestId: input.requestId,
+              });
+              if (Option.isSome(prior)) {
+                if (prior.value.payload.fingerprint !== fingerprint)
+                  return yield* new ProviderPiQueuedInputError({ reason: "conflict" });
+                const receipt = yield* orchestrationEngine.dispatch({
+                  type: "thread.pi-input.record",
+                  commandId: piInputRecordCommandId(input.threadId, input.requestId),
+                  threadId: input.threadId,
+                  submission: {
+                    ...prior.value.payload,
+                    outcome: "unconfirmed",
+                    updatedAt: prior.value.payload.createdAt,
+                    reason: undefined,
+                  },
+                });
+                return { requestId: input.requestId, sequence: receipt.sequence };
+              }
+              const thread = yield* projectionSnapshotQuery.getThreadShellById(input.threadId);
+              if (Option.isNone(thread) || !providerService.capturePiQueuedInput)
+                return yield* new ProviderPiQueuedInputError({ reason: "owner-unavailable" });
+              const captured = yield* providerService.capturePiQueuedInput(input).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new ProviderPiQueuedInputError({
+                      reason: isPiInputBusy(error) ? "busy" : "owner-unavailable",
+                    }),
+                ),
+              );
+              let prepared:
+                | Effect.Success<ReturnType<typeof normalizeMessageAttachments>>
+                | undefined;
+              let recorded = false;
+              let recordingAttempted = false;
+              return yield* Effect.gen(function* () {
+                prepared = yield* normalizeMessageAttachments({
+                  threadId: input.threadId,
+                  attachments: input.attachments,
+                  ...(input.context ? { context: input.context } : {}),
+                  rejectDuplicateIds: true,
+                });
+                const createdAt = DateTime.formatIso(yield* DateTime.now);
+                const submission: PiInputSubmission = {
+                  requestId: input.requestId,
+                  threadId: input.threadId,
+                  providerInstanceId: input.expectedProviderInstanceId,
+                  generation: input.expectedGeneration,
+                  intent: input.intent,
+                  text: input.text,
+                  attachments: prepared.attachments,
+                  ...(prepared.context ? { context: prepared.context } : {}),
+                  fingerprint,
+                  outcome: "unconfirmed",
+                  createdAt,
+                  updatedAt: createdAt,
+                };
+                const beforeAdmission = Effect.gen(function* () {
+                  const current = yield* projectionSnapshotQuery
+                    .getThreadShellById(input.threadId)
+                    .pipe(
+                      Effect.mapError(
+                        () => new ProviderPiQueuedInputError({ reason: "owner-unavailable" }),
+                      ),
+                    );
+                  if (Option.isNone(current))
+                    return yield* new ProviderPiQueuedInputError({ reason: "owner-unavailable" });
+                });
+                yield* captured.validateOwnership.pipe(
+                  Effect.mapError(
+                    () => new ProviderPiQueuedInputError({ reason: "owner-unavailable" }),
+                  ),
+                );
+                // Transfer the captured operation before emitting its hot execution intent.
+                return yield* Effect.uninterruptible(
+                  Effect.gen(function* () {
+                    yield* captured.stage(submission, beforeAdmission);
+                    recordingAttempted = true;
+                    const receipt = yield* orchestrationEngine.dispatch({
+                      type: "thread.pi-input.record",
+                      commandId: piInputRecordCommandId(input.threadId, input.requestId),
+                      threadId: input.threadId,
+                      submission,
+                    });
+                    recorded = true;
+                    return { requestId: input.requestId, sequence: receipt.sequence };
+                  }),
+                );
+              }).pipe(
+                Effect.onExit(() =>
+                  Effect.gen(function* () {
+                    if (recorded) return;
+                    if (!recordingAttempted) {
+                      if (prepared) yield* cleanupPreparedAttachments(prepared);
+                      yield* captured.release;
+                      return;
+                    }
+                    const durable = yield* projectionSnapshotQuery
+                      .getPiInputActivity({ threadId: input.threadId, requestId: input.requestId })
+                      .pipe(Effect.exit);
+                    if (Exit.isSuccess(durable)) {
+                      if (prepared)
+                        yield* cleanupPreparedAttachments(
+                          prepared,
+                          Option.isSome(durable.value)
+                            ? durable.value.value.payload.attachments
+                            : [],
+                        );
+                      if (
+                        Option.isSome(durable.value) &&
+                        durable.value.value.payload.fingerprint === fingerprint
+                      )
+                        return;
+                    }
+                    // An uncertain commit must not invalidate potentially persisted references.
+                    yield* captured.release;
+                  }),
+                ),
+              );
+            }).pipe(
+              Effect.catchCause((cause) => {
+                const failure = cause.reasons.find(Cause.isFailReason)?.error;
+                return Effect.fail(
+                  isPiQueuedInputError(failure)
+                    ? failure
+                    : new ProviderPiQueuedInputError({
+                        reason: isPiInputConflict(failure)
+                          ? "conflict"
+                          : isPiInputBusy(failure)
+                            ? "busy"
+                            : "preparation-failed",
+                      }),
+                );
+              }),
+            ),
             { "rpc.aggregate": "provider" },
           ),
         [WS_METHODS.providerExtensionStateSubscribe]: (input) =>

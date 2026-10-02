@@ -96,6 +96,7 @@ describe("CheckpointDiffQuery.layer", () => {
             getProjectShellById: () => Effect.succeedNone,
             getFirstActiveThreadIdByProjectId: () => Effect.succeedNone,
             getImportedAgentSessionSources: () => Effect.die("unused"),
+            getPiInputActivity: () => Effect.die("unused Pi input lookup"),
             getThreadCheckpointContext: () =>
               Effect.sync(() => {
                 getThreadCheckpointContextCalls += 1;
@@ -223,6 +224,7 @@ describe("CheckpointDiffQuery.layer", () => {
             getThreadDetailById: () => Effect.succeedNone,
             getThreadDetailSnapshot: () => Effect.succeedNone,
             searchThreads: () => Effect.succeed({ matches: [] }),
+            getPiInputActivity: () => Effect.die("unused Pi input lookup"),
           }),
         ),
       );
@@ -317,6 +319,7 @@ describe("CheckpointDiffQuery.layer", () => {
             getThreadDetailById: () => Effect.succeedNone,
             getThreadDetailSnapshot: () => Effect.succeedNone,
             searchThreads: () => Effect.succeed({ matches: [] }),
+            getPiInputActivity: () => Effect.die("unused Pi input lookup"),
           }),
         ),
       );
@@ -396,6 +399,7 @@ describe("CheckpointDiffQuery.layer", () => {
             getThreadDetailById: () => Effect.succeedNone,
             getThreadDetailSnapshot: () => Effect.succeedNone,
             searchThreads: () => Effect.succeed({ matches: [] }),
+            getPiInputActivity: () => Effect.die("unused Pi input lookup"),
           }),
         ),
       );
@@ -452,6 +456,7 @@ describe("CheckpointDiffQuery.layer", () => {
             getProjectShellById: () => Effect.succeedNone,
             getFirstActiveThreadIdByProjectId: () => Effect.succeedNone,
             getImportedAgentSessionSources: () => Effect.die("unused"),
+            getPiInputActivity: () => Effect.die("unused Pi input lookup"),
             getThreadCheckpointContext: () => Effect.succeedNone,
             getFullThreadDiffContext: () => Effect.succeedNone,
             getThreadRuntimeContext: () => Effect.die("unused"),

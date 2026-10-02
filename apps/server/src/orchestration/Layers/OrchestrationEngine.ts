@@ -5,7 +5,12 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
-import { OrchestrationCommand } from "@t3tools/contracts";
+import {
+  OrchestrationCommand,
+  piInputRecordCommandId,
+  piInputResolveCommandId,
+  piInputSubmissionsHaveSameContent,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -35,6 +40,7 @@ import { OrchestrationCommandReceiptRepository } from "../../persistence/Service
 import {
   isOrchestrationCommandRejection,
   OrchestrationCommandIdConflictError,
+  OrchestrationPiInputConflictError,
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
   type OrchestrationDispatchError,
@@ -141,6 +147,44 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           "orchestration.aggregate_id": aggregateRef.aggregateId,
         });
 
+        const command = envelope.command;
+        if (
+          command.type === "thread.pi-input.record" ||
+          command.type === "thread.pi-input.resolve"
+        ) {
+          const expectedId =
+            command.type === "thread.pi-input.record"
+              ? piInputRecordCommandId(command.threadId, command.submission.requestId)
+              : piInputResolveCommandId(command.threadId, command.requestId);
+          if (command.commandId !== expectedId) {
+            return yield* new OrchestrationPiInputConflictError({ commandId: command.commandId });
+          }
+        }
+        const piInputActivity =
+          command.type === "thread.pi-input.record" || command.type === "thread.pi-input.resolve"
+            ? yield* projectionSnapshotQuery.getPiInputActivity({
+                threadId: command.threadId,
+                requestId:
+                  command.type === "thread.pi-input.record"
+                    ? command.submission.requestId
+                    : command.requestId,
+              })
+            : Option.none();
+        if (Option.isSome(piInputActivity)) {
+          const existing = piInputActivity.value.payload;
+          if (
+            (command.type === "thread.pi-input.record" &&
+              (!piInputSubmissionsHaveSameContent(existing, command.submission) ||
+                command.submission.outcome !== "unconfirmed" ||
+                command.submission.reason !== undefined ||
+                command.submission.createdAt !== command.submission.updatedAt)) ||
+            (command.type === "thread.pi-input.resolve" &&
+              existing.outcome !== "unconfirmed" &&
+              (existing.outcome !== command.outcome || existing.reason !== command.reason))
+          ) {
+            return yield* new OrchestrationPiInputConflictError({ commandId: command.commandId });
+          }
+        }
         const existingReceipt = yield* commandReceiptRepository.getByCommandId({
           commandId: envelope.command.commandId,
         });
@@ -161,6 +205,16 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             });
           }
           if (existingReceipt.value.status === "accepted") {
+            // Another command may have claimed the deterministic ID without recording this input.
+            if (
+              (command.type === "thread.pi-input.record" ||
+                command.type === "thread.pi-input.resolve") &&
+              (Option.isNone(piInputActivity) ||
+                (command.type === "thread.pi-input.resolve" &&
+                  piInputActivity.value.payload.outcome === "unconfirmed"))
+            ) {
+              return yield* new OrchestrationPiInputConflictError({ commandId: command.commandId });
+            }
             return {
               sequence: existingReceipt.value.resultSequence,
             };
@@ -245,6 +299,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel: commandReadModel,
+          ...(Option.isSome(piInputActivity) ? { piInputActivity: piInputActivity.value } : {}),
           ...(Option.isSome(userInputActivity)
             ? { userInputActivity: userInputActivity.value }
             : {}),
@@ -374,7 +429,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           const error = Cause.squash(exit.cause) as OrchestrationDispatchError;
           if (
             !isOrchestrationCommandPreviouslyRejectedError(error) &&
-            !isOrchestrationCommandIdConflictError(error)
+            !isOrchestrationCommandIdConflictError(error) &&
+            !isPiInputConflictError(error)
           ) {
             yield* reconcileReadModelAfterDispatchFailure.pipe(
               Effect.catch(() =>
@@ -466,6 +522,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     latestSequence: Effect.sync(() => commandReadModel.snapshotSequence),
   } satisfies OrchestrationEngineShape;
 });
+
+const isPiInputConflictError = Schema.is(OrchestrationPiInputConflictError);
 
 export const OrchestrationEngineLive = Layer.effect(
   OrchestrationEngineService,

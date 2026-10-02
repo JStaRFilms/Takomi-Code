@@ -9,6 +9,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   isImportedAgentSessionMessageId,
+  piInputSubmissionActivity,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
   OrchestrationSession,
@@ -1062,6 +1063,16 @@ export function projectEvent(
         }),
       );
 
+    case "thread.pi-input-recorded":
+    case "thread.pi-input-resolved":
+      return projectEvent(model, {
+        ...event,
+        type: "thread.activity-appended",
+        payload: {
+          threadId: event.payload.threadId,
+          activity: piInputSubmissionActivity(event.payload.submission, event.payload.sequence),
+        },
+      });
     case "thread.activity-appended":
       return decodeForEvent(
         ThreadActivityAppendedPayload,

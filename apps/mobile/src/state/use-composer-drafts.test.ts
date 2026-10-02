@@ -202,6 +202,8 @@ import {
 } from "@t3tools/client-runtime/editorSuggestion";
 import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS } from "@t3tools/contracts";
 import { createNativeEditorSuggestionActions } from "../features/threads/editorSuggestionActions";
+import { createNativePiInputDraftGuard } from "../features/threads/piInputDraftActions";
+import type { ComposerEditorHandle } from "../components/ComposerEditor";
 import {
   readComposerNativeSnapshot,
   type ComposerNativeEventSnapshot,
@@ -2958,5 +2960,145 @@ describe("mobile composer drafts", () => {
       },
     });
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
+  });
+});
+
+describe("native queued input origin draft consumption", () => {
+  const key = "one:native-input-thread";
+  const otherKey = "two:native-input-thread";
+  const file: DraftComposerAttachment = {
+    type: "file",
+    id: "file",
+    name: "notes.txt",
+    mimeType: "text/plain",
+    sizeBytes: 4,
+    fileUri: "file:///notes.txt",
+  };
+  function fixture() {
+    vi.useFakeTimers();
+    appAtomRegistry.set(composerDraftsAtom, {
+      [key]: { text: "authored", attachments: [file] },
+      [otherKey]: { text: "other draft", attachments: [] },
+    });
+    let source: object | null = {};
+    let eventCount = 1;
+    let snapshots: ComposerNativeEventSnapshot[] = [];
+    const moveCaret = vi.fn();
+    const editor: ComposerEditorHandle = {
+      focus: () => {},
+      blur: () => {},
+      setSelection: () => {},
+      readSnapshot: () =>
+        readComposerNativeSnapshot(snapshots, eventCount, getComposerDraftSnapshot(key).text, {
+          start: 0,
+          end: 0,
+        }),
+    };
+    const binding = createNativePiInputDraftGuard({
+      draftKey: key,
+      readSource: () => source,
+      readEditor: () => editor,
+      moveCaret,
+    });
+    return {
+      ...binding,
+      moveCaret,
+      native(value: string) {
+        eventCount++;
+        snapshots = [{ eventCount, value, selection: { start: 0, end: 0 } }];
+      },
+      source(value: object | null) {
+        source = value;
+        binding.guard.observe();
+      },
+      currentSource: () => source,
+    };
+  }
+  afterEach(() => vi.useRealTimers());
+  it("clears confirmed unchanged text/files/context while preserving other drafts and the native outbox", () => {
+    const f = fixture();
+    try {
+      const queue = appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom);
+      const captured = f.guard.capture();
+      captured?.consume();
+      expect(getComposerDraftSnapshot(key).text).toBe("");
+      expect(getComposerDraftSnapshot(key).attachments).toEqual([]);
+      expect(getComposerDraftSnapshot(otherKey).text).toBe("other draft");
+      expect(f.moveCaret).toHaveBeenCalledWith({ start: 0, end: 0 });
+      expect(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).toBe(queue);
+    } finally {
+      f.dispose();
+    }
+  });
+  it("ignores its own persisted upload reference transition", () => {
+    const f = fixture();
+    try {
+      const captured = f.guard.capture();
+      setComposerDraftAttachmentUpload(key, {
+        ...file,
+        uploadedAttachmentId: "pending-upload",
+        uploadEnvironmentId: EnvironmentId.make("one"),
+      });
+      expect(captured?.isCurrent()).toBe(true);
+      captured?.consume();
+      expect(getComposerDraftSnapshot(key).text).toBe("");
+    } finally {
+      f.dispose();
+    }
+  });
+  it.each([
+    "edit-and-undo",
+    "attachment",
+    "context",
+    "ordinary-send",
+    "native-revision",
+    "pending-native",
+    "away-and-back",
+    "unmount",
+  ] as const)("preserves the current draft after %s", (change) => {
+    const f = fixture();
+    try {
+      const captured = f.guard.capture();
+      if (change === "edit-and-undo") {
+        setComposerDraftText(key, "newer");
+        setComposerDraftText(key, "authored");
+      }
+      if (change === "attachment")
+        appendComposerDraftAttachments(key, [{ ...file, id: "new-file" }]);
+      if (change === "context")
+        setComposerDraftContext(key, {
+          version: 1,
+          records: [
+            {
+              version: 1,
+              contextId: ComposerContextId.make("file-context"),
+              kind: "file",
+              label: file.name,
+              attachmentId: file.id,
+              name: file.name,
+              mimeType: file.mimeType,
+              sizeBytes: file.sizeBytes,
+            },
+          ],
+        });
+      if (change === "ordinary-send") {
+        clearComposerDraftContent(key);
+        setComposerDraftText(key, "authored");
+      }
+      if (change === "native-revision") f.native("authored");
+      if (change === "pending-native") f.native("pending native keystroke");
+      if (change === "away-and-back") {
+        const source = f.currentSource();
+        f.source(null);
+        f.source(source);
+      }
+      if (change === "unmount") f.dispose();
+      const before = getComposerDraftSnapshot(key);
+      captured?.consume();
+      expect(getComposerDraftSnapshot(key)).toEqual(before);
+      expect(f.moveCaret).not.toHaveBeenCalled();
+    } finally {
+      f.dispose();
+    }
   });
 });

@@ -1,5 +1,7 @@
 import {
   AgentSessionImportSource,
+  PiInputSubmission,
+  piInputActivityId,
   ApprovalRequestId,
   ChatAttachment,
   OrchestrationMessageContext,
@@ -83,6 +85,7 @@ import {
 
 const decodeReadModel = Schema.decodeUnknownEffect(OrchestrationReadModel);
 const decodeThread = Schema.decodeUnknownEffect(OrchestrationThread);
+const decodePiInputSubmission = Schema.decodeUnknownEffect(PiInputSubmission);
 const decodeImportedTranscriptsPayload = Schema.decodeUnknownOption(
   Schema.fromJsonString(
     Schema.Struct({
@@ -1505,6 +1508,34 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const getPiInputActivityRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: ThreadId, requestId: Schema.String }),
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId, requestId }) => sql`
+      SELECT activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
+        tone, kind, summary, payload_json AS "payload", sequence, created_at AS "createdAt"
+      FROM projection_thread_activities
+      WHERE thread_id = ${threadId} AND activity_id = ${piInputActivityId(ThreadId.make(threadId), requestId)}
+        AND kind = 'pi.input-submission'
+    `,
+  });
+  const getPiInputActivity: ProjectionSnapshotQueryShape["getPiInputActivity"] = (input) =>
+    getPiInputActivityRow(input).pipe(
+      Effect.flatMap((row) =>
+        Option.isNone(row)
+          ? Effect.succeedNone
+          : decodePiInputSubmission(row.value.payload).pipe(
+              Effect.map((payload) => Option.some({ ...mapThreadActivityRow(row.value), payload })),
+            ),
+      ),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getPiInputActivity:query",
+          "ProjectionSnapshotQuery.getPiInputActivity:decodeRow",
+        ),
+      ),
+    );
+
   const getUserInputActivityRow = SqlSchema.findOneOption({
     Request: Schema.Struct({ threadId: ThreadId, requestId: ApprovalRequestId }),
     Result: ProjectionThreadActivityDbRowSchema,
@@ -1783,6 +1814,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             'thread.message-sent',
             'thread.proposed-plan-upserted',
             'thread.activity-appended',
+            'thread.pi-input-recorded',
+            'thread.pi-input-resolved',
             'thread.turn-diff-completed',
             'thread.reverted',
             'thread.session-set'
@@ -3865,6 +3898,7 @@ pending_approval_requests AS (
 
   return {
     getCommandReadModel,
+    getPiInputActivity,
     getUserInputActivity,
     listPendingPiUserInputs,
     listActivitiesByKind,

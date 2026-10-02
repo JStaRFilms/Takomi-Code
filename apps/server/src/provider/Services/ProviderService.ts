@@ -14,6 +14,8 @@
 import type {
   ProviderGetPiSessionStatsInput,
   ProviderGetPiQueueStateInput,
+  ProviderPiQueuedInputError,
+  PiInputSubmission,
   ProviderPiSessionStats,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
@@ -38,12 +40,25 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderServiceError } from "../Errors.ts";
-import type { ProviderAdapterCapabilities, PiQueueStateRead } from "./ProviderAdapter.ts";
+import type {
+  ProviderAdapterCapabilities,
+  PiQueueStateRead,
+  PiInputResult,
+} from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
+export interface PiInputPreparation {
+  readonly validateOwnership: Effect.Effect<void, ProviderServiceError>;
+  readonly stage: (
+    submission: PiInputSubmission,
+    beforeAdmission: Effect.Effect<void, ProviderPiQueuedInputError>,
+  ) => Effect.Effect<void, ProviderServiceError>;
+  readonly release: Effect.Effect<void>;
+}
+
 export interface ProviderServiceShape {
   /**
    * Start a provider session.
@@ -66,6 +81,12 @@ export interface ProviderServiceShape {
   readonly getPiQueueState?: (
     input: ProviderGetPiQueueStateInput,
   ) => Effect.Effect<PiQueueStateRead<ProviderServiceError>, ProviderServiceError>;
+
+  readonly capturePiQueuedInput?: (
+    input: ProviderGetPiQueueStateInput,
+  ) => Effect.Effect<PiInputPreparation, ProviderServiceError>;
+  readonly deliverPiQueuedInput?: (submission: PiInputSubmission) => Effect.Effect<PiInputResult>;
+  readonly releasePiQueuedInput?: (submission: PiInputSubmission) => Effect.Effect<void>;
 
   readonly compactThread: (
     threadId: ThreadId,

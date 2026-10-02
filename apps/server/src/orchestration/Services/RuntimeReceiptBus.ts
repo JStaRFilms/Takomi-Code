@@ -14,7 +14,15 @@
  *
  * @module RuntimeReceiptBus
  */
-import { CheckpointRef, IsoDateTime, NonNegativeInt, ThreadId, TurnId } from "@t3tools/contracts";
+import {
+  CheckpointRef,
+  IsoDateTime,
+  NonNegativeInt,
+  ThreadId,
+  TurnId,
+  PiInputOutcome,
+  PiInputReason,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -49,7 +57,17 @@ export const TurnProcessingQuiescedReceipt = Schema.Struct({
 });
 export type TurnProcessingQuiescedReceipt = typeof TurnProcessingQuiescedReceipt.Type;
 
+export const PiInputSettledReceipt = Schema.Struct({
+  type: Schema.Literal("pi.input.settled"),
+  threadId: ThreadId,
+  requestId: Schema.String,
+  outcome: PiInputOutcome.check(Schema.makeFilter((outcome) => outcome !== "unconfirmed")),
+  reason: Schema.optional(PiInputReason),
+  createdAt: IsoDateTime,
+});
+
 export const OrchestrationRuntimeReceipt = Schema.Union([
+  PiInputSettledReceipt,
   CheckpointBaselineCapturedReceipt,
   CheckpointDiffFinalizedReceipt,
   TurnProcessingQuiescedReceipt,

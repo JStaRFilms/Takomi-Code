@@ -343,6 +343,7 @@ function isActivityEntry(entry: TimelineEntry): entry is ActivityEntry {
     ? entry.message.role === "reasoning"
     : entry.kind === "work" &&
         entry.entry.vaultNotice === undefined &&
+        entry.entry.piInputSubmission === undefined &&
         entry.entry.agentSpawn === undefined &&
         entry.entry.questionAnswer === undefined &&
         entry.entry.sourceActivityKind !== "context-compaction" &&
@@ -350,6 +351,12 @@ function isActivityEntry(entry: TimelineEntry): entry is ActivityEntry {
 }
 
 export type MessagesTimelineRow =
+  | {
+      kind: "pi-input";
+      id: string;
+      createdAt: string;
+      submission: NonNullable<WorkLogEntry["piInputSubmission"]>;
+    }
   | {
       kind: "activity-group";
       id: string;
@@ -748,7 +755,9 @@ function deriveTurnFolds(input: {
         continue;
       }
       const isCompaction =
-        entry.kind === "work" && entry.entry.sourceActivityKind === "context-compaction";
+        entry.kind === "work" &&
+        (entry.entry.sourceActivityKind === "context-compaction" ||
+          entry.entry.piInputSubmission !== undefined);
       const isSingleTrailingActivity =
         trailingEntryCount === 1 &&
         entry.kind === "work" &&
@@ -1049,6 +1058,7 @@ export function deriveMessagesTimelineRows(input: {
       !entryBelongsToActiveTurn(entry, index) ||
       entry.kind !== "work" ||
       entry.entry.questionAnswer !== undefined ||
+      entry.entry.piInputSubmission !== undefined ||
       entry.entry.sourceActivityKind === "context-compaction" ||
       entry.entry.tone === "error"
     ) {
@@ -1227,6 +1237,15 @@ export function deriveMessagesTimelineRows(input: {
     }
 
     if (timelineEntry.kind === "work") {
+      if (timelineEntry.entry.piInputSubmission) {
+        nextRows.push({
+          kind: "pi-input",
+          id: timelineEntry.id,
+          createdAt: timelineEntry.createdAt,
+          submission: timelineEntry.entry.piInputSubmission,
+        });
+        continue;
+      }
       if (timelineEntry.entry.vaultNotice !== undefined) {
         nextRows.push({
           kind: "vault-notice",
@@ -1268,6 +1287,7 @@ export function deriveMessagesTimelineRows(input: {
           nextEntry.kind !== "work" ||
           nextEntry.entry.agentSpawn !== undefined ||
           nextEntry.entry.vaultNotice !== undefined ||
+          nextEntry.entry.piInputSubmission !== undefined ||
           nextEntry.entry.questionAnswer !== undefined ||
           nextEntry.entry.sourceActivityKind === "context-compaction" ||
           nextEntry.entry.tone === "error" ||
@@ -1656,6 +1676,10 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       const bc = b as typeof a;
       return a.createdAt === bc.createdAt && a.label === bc.label;
     }
+    case "pi-input":
+      return (
+        a.createdAt === (b as typeof a).createdAt && a.submission === (b as typeof a).submission
+      );
     case "vault-notice": {
       const notice = b as typeof a;
       return (

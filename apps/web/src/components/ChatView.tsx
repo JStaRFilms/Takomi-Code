@@ -379,7 +379,7 @@ import {
   useThreadShell,
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
-import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { ChatComposer, type ChatComposerHandle, type ChatComposerProps } from "./chat/ChatComposer";
 import { createPageScrollController, type PageScrollKey } from "./chat/pageScrollController";
 import { isTimelineScrollTarget } from "./chat/timelineScrollTarget";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
@@ -7441,6 +7441,58 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
 
+  const onPreparePiInput: ChatComposerProps["onPreparePiInput"] = async (snapshot) => {
+    const attachments = [...snapshot.images, ...snapshot.files];
+    const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId) ?? null;
+    const uploads = config?.environment.capabilities.attachmentUploads === true;
+    const fileReason = fileAttachmentCapabilityBlockReason({
+      files: snapshot.files,
+      attachmentUploadsCapabilityKnown: config !== null,
+      supportsAttachmentUploads: uploads,
+      maxFileAttachmentBytes:
+        config?.environment.capabilities.fileAttachments?.maxUploadBytes ?? null,
+    });
+    if (fileReason) throw new Error(fileReason);
+    if (uploads) {
+      for (const attachment of attachments)
+        startAttachmentUpload({
+          environmentId,
+          image: attachment,
+          draftTarget: composerDraftTarget,
+        });
+      await awaitAttachmentUploads(attachments.map((attachment) => attachment.id));
+    }
+    const prepared = await Promise.all(
+      attachments.map(async (attachment) => {
+        if (uploads) {
+          const uploaded = getUploadedAttachments({ environmentId, images: [attachment] })?.[0];
+          if (!uploaded) throw new Error("An attachment did not finish uploading.");
+          return uploaded;
+        }
+        if (attachment.type !== "image") throw new Error("File uploads are unavailable.");
+        return {
+          type: "image" as const,
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          dataUrl: await readFileAsDataUrl(attachment.file),
+          ...(attachment.source ? { source: attachment.source } : {}),
+        };
+      }),
+    );
+    const context = buildMessageContext({
+      terminalContexts: snapshot.terminalContexts,
+      reviewComments: snapshot.reviewComments,
+      previewAnnotations: snapshot.previewAnnotations,
+      attachments: attachments.map((attachment, index) => ({
+        attachment,
+        attachmentId: prepared[index]?.id ?? attachment.id,
+      })),
+    });
+    return { text: snapshot.prompt, attachments: prepared, ...(context ? { context } : {}) };
+  };
+
   const onSend = async (
     e?: { preventDefault: () => void },
     submissionIntent: ComposerSubmissionIntent = "foreground",
@@ -10273,6 +10325,7 @@ export default function ChatView(props: ChatViewProps) {
                             onPageScrollRelease={onComposerPageScrollRelease}
                             onCompactContext={onCompactContext}
                             onSend={onSend}
+                            onPreparePiInput={onPreparePiInput}
                             onInterrupt={onInterrupt}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}
                             onRespondToApproval={onRespondToApproval}

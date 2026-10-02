@@ -14,6 +14,7 @@ import {
   type ProviderInteractionMode,
   type RuntimeMode,
   type ThreadId,
+  type ProviderSubmitPiQueuedInputInput,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
@@ -40,6 +41,8 @@ import {
   removePersistedComposerAttachmentFile,
 } from "../lib/composerImages";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
+import { prepareTurnAttachments, validateDraftFileAttachments } from "../lib/attachmentUpload";
+import { setComposerDraftAttachmentUpload } from "./use-composer-drafts";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildThreadFeed } from "../lib/threadActivity";
 import { acknowledgedThreadMessagesAtom } from "./acknowledged-thread-messages";
@@ -322,6 +325,52 @@ export function useThreadComposerState() {
       null,
     );
   }, [selectedThreadDetail, selectedThreadSessionActivity, selectedThreadShell]);
+
+  const onPreparePiInput = useCallback(async (): Promise<
+    Pick<ProviderSubmitPiQueuedInputInput, "text" | "attachments" | "context">
+  > => {
+    if (!selectedThreadShell || selectedThreadCreation) throw new Error("No live thread.");
+    const key = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
+    const draft = getComposerDraftSnapshot(key);
+    if (appAtomRegistry.get(composerContextImportsAtom)[key])
+      throw new Error("Context is still importing.");
+    const reason =
+      composerContextSendBlockReason(draft.context) ??
+      validateDraftFileAttachments({
+        attachments: draft.attachments,
+        serverConfig: selectedEnvironmentRuntime?.serverConfig ?? null,
+      });
+    if (reason) throw new Error(reason);
+    const prepared = await prepareTurnAttachments({
+      environmentId: selectedThreadShell.environmentId,
+      attachments: draft.attachments,
+      supportsImageUploads:
+        selectedEnvironmentRuntime?.serverConfig?.environment.capabilities.attachmentUploads ===
+        true,
+      persistUploadedReferences: async (attachments) => {
+        for (const attachment of attachments) setComposerDraftAttachmentUpload(key, attachment);
+        return "persisted";
+      },
+    });
+    if (prepared.status !== "ready") throw new Error("Attachment preparation was abandoned.");
+    const ids = new Map(
+      draft.attachments.map((attachment, index) => [
+        attachment.id,
+        prepared.attachments[index]?.id ?? attachment.id,
+      ]),
+    );
+    const context = draft.context
+      ? {
+          ...draft.context,
+          records: draft.context.records.map((record) =>
+            "attachmentId" in record
+              ? { ...record, attachmentId: ids.get(record.attachmentId) ?? record.attachmentId }
+              : record,
+          ),
+        }
+      : undefined;
+    return { text: draft.text, attachments: prepared.attachments, ...(context ? { context } : {}) };
+  }, [selectedThreadShell, selectedThreadCreation, selectedEnvironmentRuntime]);
 
   const onSendMessage = useCallback(async () => {
     if (!selectedThreadShell) {
@@ -827,6 +876,7 @@ export function useThreadComposerState() {
     onNativePasteText,
     onRemoveDraftImage,
     onSendMessage,
+    onPreparePiInput,
     onUpdateModelSelection,
     onUpdateRuntimeMode,
     onUpdateInteractionMode,

@@ -8,6 +8,10 @@
  * @module ProviderAdapter
  */
 import type {
+  PiInputIntent,
+  PiInputOutcome,
+  PiInputReason,
+  ChatAttachment,
   ProviderGetPiSessionStatsInput,
   ProviderGetPiQueueStateInput,
   ProviderPiSessionStats,
@@ -74,6 +78,24 @@ export interface PiQueueStateRead<TError> {
   readonly validateOwnership: Effect.Effect<void, TError>;
 }
 
+export interface PiInputResult {
+  readonly outcome: Exclude<PiInputOutcome, "unconfirmed">;
+  readonly reason?: PiInputReason;
+}
+
+export interface PiInputCapture<TError> {
+  readonly validateOwnership: Effect.Effect<void, TError>;
+  readonly release: Effect.Effect<void>;
+  readonly submit: <E>(
+    input: {
+      readonly intent: PiInputIntent;
+      readonly text: string;
+      readonly attachments: ReadonlyArray<ChatAttachment>;
+    },
+    beforeAdmission: Effect.Effect<void, E>,
+  ) => Effect.Effect<PiInputResult>;
+}
+
 export interface ProviderAdapterShape<TError> {
   /**
    * Provider kind implemented by this adapter.
@@ -105,6 +127,10 @@ export interface ProviderAdapterShape<TError> {
   readonly getPiQueueState?: (
     input: ProviderGetPiQueueStateInput,
   ) => Effect.Effect<PiQueueStateRead<TError>, TError>;
+
+  readonly capturePiQueuedInput?: (
+    input: ProviderGetPiQueueStateInput,
+  ) => Effect.Effect<PiInputCapture<TError>, TError>;
 
   /**
    * Interrupt an active turn.

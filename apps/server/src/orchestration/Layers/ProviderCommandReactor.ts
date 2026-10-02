@@ -2,6 +2,8 @@ import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 import {
   type ChatAttachment,
   CommandId,
+  piInputResolveCommandId,
+  type PiInputSubmission,
   EventId,
   type ModelSelection,
   type OrchestrationEvent,
@@ -30,6 +32,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
@@ -44,6 +47,8 @@ import {
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderAuthService } from "../../provider/Services/ProviderAuthService.ts";
+import type { PiInputResult } from "../../provider/Services/ProviderAdapter.ts";
+import { RuntimeReceiptBus } from "../Services/RuntimeReceiptBus.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -79,6 +84,7 @@ type ProviderIntentEvent = Extract<
       | "thread.meta-updated"
       | "thread.runtime-mode-set"
       | "thread.turn-start-requested"
+      | "thread.pi-input-recorded"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
@@ -218,6 +224,9 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerAuthService = yield* ProviderAuthService;
   const providerService = yield* ProviderService;
+  const receipts = yield* RuntimeReceiptBus;
+  const reactorScope = yield* Scope.Scope;
+  const activePiInputs = new Map<ThreadId, { requestId: string; done: Deferred.Deferred<void> }>();
   const providerRegistry = yield* ProviderRegistry;
   const gitWorkflow = yield* GitWorkflowService;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -1824,6 +1833,42 @@ const make = Effect.gen(function* () {
           : resume;
         return;
       }
+      case "thread.pi-input-recorded": {
+        const submission = event.payload.submission;
+        const active = activePiInputs.get(submission.threadId);
+        if (active?.requestId === submission.requestId) return;
+        if (active) {
+          yield* resolvePiInput(submission, { outcome: "not-submitted", reason: "busy" });
+          return;
+        }
+        const done = yield* Deferred.make<void>();
+        activePiInputs.set(submission.threadId, { requestId: submission.requestId, done });
+        // One scoped input operation per live context, not a new native send queue.
+        yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            const result = providerService.deliverPiQueuedInput
+              ? yield* providerService.deliverPiQueuedInput(submission)
+              : ({ outcome: "not-submitted", reason: "owner-unavailable" } satisfies PiInputResult);
+            yield* resolvePiInput(submission, result);
+          }),
+        ).pipe(
+          Effect.catchCause(() =>
+            Effect.logWarning("Pi input resolution could not be persisted.", {
+              reason: "resolution-failed",
+            }),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              activePiInputs.delete(submission.threadId);
+            }).pipe(
+              Effect.andThen(providerService.releasePiQueuedInput?.(submission) ?? Effect.void),
+              Effect.andThen(Deferred.succeed(done, undefined)),
+            ),
+          ),
+          Effect.forkIn(reactorScope),
+        );
+        return;
+      }
       case "thread.turn-start-requested": {
         const thread = yield* resolveThreadShell(event.payload.threadId);
         yield* thread?.worktreePath
@@ -1865,6 +1910,29 @@ const make = Effect.gen(function* () {
         return;
       }
     }
+  });
+
+  const resolvePiInput = Effect.fnUntraced(function* (
+    submission: PiInputSubmission,
+    result: PiInputResult,
+  ) {
+    const createdAt = DateTime.formatIso(yield* DateTime.now);
+    yield* orchestrationEngine.dispatch({
+      type: "thread.pi-input.resolve",
+      commandId: piInputResolveCommandId(submission.threadId, submission.requestId),
+      threadId: submission.threadId,
+      requestId: submission.requestId,
+      outcome: result.outcome,
+      ...(result.reason ? { reason: result.reason } : {}),
+      createdAt,
+    });
+    yield* receipts.publish({
+      type: "pi.input.settled",
+      threadId: submission.threadId,
+      requestId: submission.requestId,
+      ...result,
+      createdAt,
+    });
   });
 
   const processDomainEventSafely = (event: ProviderIntentEvent) =>
@@ -1910,6 +1978,7 @@ const make = Effect.gen(function* () {
         (event.type === "thread.session-set" && event.payload.session.status === "ready") ||
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
+        event.type === "thread.pi-input-recorded" ||
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||
         event.type === "thread.user-input-response-requested" ||
@@ -1959,6 +2028,11 @@ const make = Effect.gen(function* () {
     start,
     drain: Effect.gen(function* () {
       yield* worker.drain;
+      yield* Effect.forEach(
+        [...activePiInputs.values()],
+        (pending) => Deferred.await(pending.done),
+        { discard: true },
+      );
       yield* threadTitleRegenerationWorker.drain;
     }),
   } satisfies ProviderCommandReactorShape;

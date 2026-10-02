@@ -37,6 +37,7 @@ const makeProjectShell = (workspaceRoot: string): OrchestrationProjectShell => (
 const makeProjectionSnapshotQueryLayer = (importedWorkspaceRoots: ReadonlyArray<string>) =>
   Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
     getCommandReadModel: () => Effect.die("unused"),
+    getPiInputActivity: () => Effect.die("unused Pi input lookup"),
     getUserInputActivity: () => Effect.die("unused"),
     listActivitiesByKind: () => Effect.die("unused"),
     listPendingPiUserInputs: () => Effect.die("unused"),

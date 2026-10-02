@@ -321,6 +321,8 @@ import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation
 import { ProviderExtensionText } from "./ProviderExtensionText";
 import { PiSessionStatsDetails } from "./PiSessionStats";
 import { PiQueueDetails } from "./PiQueueDetails";
+import { PiInputActions } from "./PiInputActions";
+import type { ProviderSubmitPiQueuedInputInput } from "@t3tools/contracts";
 import { environmentPiQueueState } from "../../state/piQueueState";
 import { environmentPiSessionStats } from "../../state/piSessionStats";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
@@ -1473,6 +1475,9 @@ export interface ChatComposerProps {
 
   // Callbacks
   onCompactContext: () => void;
+  onPreparePiInput: (
+    snapshot: ReturnType<ChatComposerHandle["getSendContext"]>,
+  ) => Promise<Pick<ProviderSubmitPiQueuedInputInput, "text" | "attachments" | "context">>;
   onSend: (e?: { preventDefault: () => void }, intent?: ComposerSubmissionIntent) => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
@@ -7206,6 +7211,41 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       {routeKind === "server" ? (
         <>
           <ProviderExtensionText threadRef={routeThreadRef} section="belowEditor" />
+          <PiInputActions
+            key={`input:${routeThreadRef.environmentId}:${routeThreadRef.threadId}`}
+            threadRef={routeThreadRef}
+            canSubmit={
+              !isConnecting &&
+              !environmentUnavailable &&
+              !isRevertingCheckpoint &&
+              !activePendingProgress &&
+              composerSendState.hasSendableContent
+            }
+            editorRef={composerEditorRef}
+            prepare={async () => {
+              if (composerRef.current?.hasPendingAttachments())
+                throw new Error("Attachments are still importing.");
+              const snapshot = composerRef.current?.getSendContext();
+              const draft = useComposerDraftStore.getState().getComposerDraft(routeThreadRef);
+              if (!snapshot || !draft) throw new Error("The composer is unavailable.");
+              return props.onPreparePiInput({
+                ...snapshot,
+                prompt: draft.prompt,
+                images: draft.images,
+                files: draft.files,
+                terminalContexts: draft.terminalContexts,
+                previewAnnotations: draft.previewAnnotations,
+                reviewComments: draft.reviewComments,
+              });
+            }}
+            clear={() => {
+              promptRef.current = "";
+              composerImagesRef.current = [];
+              composerFilesRef.current = [];
+              composerTerminalContextsRef.current = [];
+              composerRef.current?.resetCursorState();
+            }}
+          />
           <PiQueueDetails
             key={`queue:${routeThreadRef.environmentId}:${routeThreadRef.threadId}`}
             threadRef={routeThreadRef}

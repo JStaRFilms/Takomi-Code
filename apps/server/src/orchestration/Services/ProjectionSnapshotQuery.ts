@@ -21,6 +21,7 @@ import type {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadActivity,
+  PiInputSubmission,
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadDetailWindow,
   OrchestrationThreadShell,
@@ -83,6 +84,14 @@ export interface ProjectionThreadDetailQuery {
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  readonly getPiInputActivity: (input: {
+    readonly threadId: ThreadId;
+    readonly requestId: string;
+  }) => Effect.Effect<
+    Option.Option<OrchestrationThreadActivity & { readonly payload: PiInputSubmission }>,
+    ProjectionRepositoryError
+  >;
+
   /** Read the latest request or resolution without loading the thread history. */
   readonly getUserInputActivity: (input: {
     readonly threadId: ThreadId;

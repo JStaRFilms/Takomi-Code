@@ -63,6 +63,15 @@ export class OrchestrationCommandIdConflictError extends Schema.TaggedError<Orch
   }
 }
 
+export class OrchestrationPiInputConflictError extends Schema.TaggedError<OrchestrationPiInputConflictError>()(
+  "OrchestrationPiInputConflictError",
+  { commandId: Schema.String },
+) {
+  override get message(): string {
+    return "Native input identity conflicts with recorded content or outcome.";
+  }
+}
+
 export class OrchestrationProjectorDecodeError extends Schema.TaggedError<OrchestrationProjectorDecodeError>()(
   "OrchestrationProjectorDecodeError",
   {
@@ -80,6 +89,7 @@ export type OrchestrationDispatchError =
   | ProjectionRepositoryError
   | OrchestrationCommandRejection
   | OrchestrationCommandIdConflictError
+  | OrchestrationPiInputConflictError
   | OrchestrationCommandPreviouslyRejectedError
   | OrchestrationProjectorDecodeError;
 

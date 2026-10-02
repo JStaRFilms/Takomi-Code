@@ -3,6 +3,8 @@ import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useAtomValue } from "@effect/atom-react";
 import { PiQueueButton } from "./PiQueueDetails";
+import { PiInputActions } from "./PiInputActions";
+import type { ProviderSubmitPiQueuedInputInput } from "@t3tools/contracts";
 import { PiSessionStatsButton } from "./PiSessionStats";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
 import { pastedTextDisposition, replaceTextSelection } from "@t3tools/client-runtime/text-paste";
@@ -154,6 +156,9 @@ export interface ThreadComposerProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
   readonly onSendMessage: () => Promise<MessageId | null>;
+  readonly onPreparePiInput: () => Promise<
+    Pick<ProviderSubmitPiQueuedInputInput, "text" | "attachments" | "context">
+  >;
   /** `/usage-limits` resolves locally; the host decides where the report shows. Null clears it. */
   readonly onShowUsageLimits: (report: UsageLimitsReport | null) => void;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
@@ -720,6 +725,20 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         <ProviderExtensionText
           threadRef={scopeThreadRef(props.environmentId, props.selectedThread.id)}
           section="aboveEditor"
+        />
+        <PiInputActions
+          key={`input:${composerOwnerKey}`}
+          threadRef={scopeThreadRef(props.environmentId, props.selectedThread.id)}
+          draftKey={composerOwnerKey}
+          canSubmit={
+            props.connectionState === "connected" &&
+            !contextImports[composerOwnerKey] &&
+            !voiceInput.freezesEditor &&
+            (props.draftMessage.length > 0 || props.draftAttachments.length > 0)
+          }
+          editorRef={inputRef}
+          prepare={props.onPreparePiInput}
+          moveCaret={composerMenu.onSelectionChange}
         />
         <ProviderEditorSuggestion
           threadRef={scopeThreadRef(props.environmentId, props.selectedThread.id)}

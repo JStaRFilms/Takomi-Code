@@ -1,15 +1,15 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ApprovalRequestId,
+  type PiInputSubmission,
+  type ChatAttachment,
+  type OrchestrationMessageContext,
+  ComposerContextId,
   ProviderInstanceId,
   ProviderDriverKind,
-  ThreadId,
   type ProviderRuntimeEvent,
-  type ProviderInstanceConfigMap,
 } from "@t3tools/contracts";
 import { expect, it, vi } from "@effect/vitest";
-import * as Context from "effect/Context";
-import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -19,334 +19,55 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
-import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
-import { ChildProcessSpawner } from "effect/unstable/process";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
-import { ProviderSessionRuntimeRepository } from "../../persistence/ProviderSessionRuntime.ts";
-import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
+import * as TestClock from "effect/testing/TestClock";
 import { ServerConfig } from "../../config.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
-import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
-import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
-import { PiDriver } from "../Drivers/PiDriver.ts";
-import { ProviderExtensionState, type ExtensionStartAdmission } from "../ProviderExtensionState.ts";
+import { createAttachmentId, resolveAttachmentPath } from "../../attachmentStore.ts";
+import type { ExtensionStartAdmission } from "../ProviderExtensionState.ts";
 import { ProviderValidationError } from "../Errors.ts";
-import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
-import { ProviderInstanceRegistryMutator } from "../Services/ProviderInstanceRegistryMutator.ts";
-import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
-import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
-import { ProviderService } from "../Services/ProviderService.ts";
-import { ProviderAdapterRegistryLive } from "./ProviderAdapterRegistry.ts";
-import { ProviderInstanceRegistryMutableLayer } from "./ProviderInstanceRegistryLive.ts";
-import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
-import { ProviderServiceLive } from "./ProviderService.ts";
-import { ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 
-const PI = ProviderInstanceId.make("controlled-pi");
-const THREAD = ThreadId.make("controlled-thread");
-const decoder = Schema.decodeUnknownSync(
-  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
-);
-const encoder = new TextEncoder();
+import { PI, THREAD, TRANSFER_KEY, TRANSFER_PATH, makeHarness } from "./PiTestHarness.ts";
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-const makePeer = Effect.fnUntraced(function* (index: number) {
-  const output = yield* Queue.unbounded<Uint8Array, Cause.Done>();
-  const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
-  const requestedState = yield* Deferred.make<void>();
-  const releaseState = yield* Deferred.make<void>();
-  const stopped = yield* Deferred.make<void>();
-  const releaseSpawn = yield* Deferred.make<void>();
-  const secretReceived = yield* Deferred.make<unknown>();
-  let queueReads = 0;
-  const requestedQueue = yield* Deferred.make<string>();
-  const releaseQueue = yield* Deferred.make<void>();
-  let queue: unknown = {
-    pendingMessageCount: 4,
-    steeringMode: "all",
-    followUpMode: "one-at-a-time",
-    isStreaming: true,
-    isCompacting: false,
-    sessionFile: "/private/queue.jsonl",
-    sessionId: "private-queue-id",
-    model: { secret: "private-queue-model" },
-    steering: ["PRIVATE_QUEUE_TEXT"],
-  };
-  const requestedStats = yield* Deferred.make<string>();
-  const releaseStats = yield* Deferred.make<void>();
-  let stats: unknown = {
-    sessionFile: "/private/stats.jsonl",
-    sessionId: "private-native-id",
-    userMessages: 2,
-    assistantMessages: 3,
-    toolCalls: 4,
-    toolResults: 4,
-    totalMessages: 9,
-    tokens: { input: 100, output: 20, cacheRead: 30, cacheWrite: 5, total: 155 },
-    cost: 0,
-    contextUsage: { tokens: null, contextWindow: 200000, percent: null },
-    details: { secret: "private-stats-detail" },
-  };
-  let failState = false;
-  const emit = (record: Record<string, unknown>) =>
-    Queue.offer(output, encoder.encode(`${encodeJson(record)}\n`)).pipe(Effect.asVoid);
-  const end = Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0)).pipe(
-    Effect.andThen(Queue.shutdown(output)),
-    Effect.asVoid,
-  );
-  yield* emit({
-    type: "extension_ui_request",
-    method: "setWidget",
-    widgetKey: "startup",
-    widgetLines: [`startup-${index}`],
-    widgetPlacement: "belowEditor",
+const stageNativeInput = Effect.fnUntraced(function* (
+  h: Effect.Success<ReturnType<typeof makeHarness>>,
+  options: {
+    text?: string;
+    intent?: PiInputSubmission["intent"];
+    attachments?: readonly ChatAttachment[];
+    context?: OrchestrationMessageContext;
+    beforeAdmission?: Effect.Effect<void>;
+  } = {},
+) {
+  const capture = h.service.capturePiQueuedInput;
+  const deliver = h.service.deliverPiQueuedInput;
+  const release = h.service.releasePiQueuedInput;
+  if (!capture || !deliver || !release) return yield* Effect.die("Missing actual Pi input service");
+  const generation = (yield* current(h)).generation;
+  if (generation === null) return yield* Effect.die("Missing live Pi generation");
+  const preparation = yield* capture({
+    threadId: THREAD,
+    expectedProviderInstanceId: PI,
+    expectedGeneration: generation,
   });
-  yield* emit({ type: "extension_ui_request", method: "setTitle", title: "Runtime subtitle" });
-  const handle = ChildProcessSpawner.makeHandle({
-    pid: ChildProcessSpawner.ProcessId(index + 1),
-    exitCode: Deferred.await(exited),
-    isRunning: Deferred.isDone(exited).pipe(Effect.map((done) => !done)),
-    kill: () => end,
-    unref: Effect.succeed(Effect.void),
-    stdin: Sink.forEach((bytes: Uint8Array) =>
-      Effect.gen(function* () {
-        const request = decoder(new TextDecoder().decode(bytes));
-        if (typeof request.id === "string" && request.id.startsWith("t3-pi-queue-state-")) {
-          expect(request.type).toBe("get_state");
-          queueReads++;
-          yield* Deferred.succeed(requestedQueue, request.id);
-          yield* Deferred.await(releaseQueue);
-          yield* emit({
-            type: "response",
-            command: "get_state",
-            id: request.id,
-            success: true,
-            data: queue,
-          });
-          return;
-        }
-        if (request.type === "get_state") {
-          yield* Deferred.succeed(requestedState, undefined);
-          yield* Deferred.await(releaseState);
-        }
-        if (request.type === "get_session_stats") {
-          if (typeof request.id !== "string") return yield* Effect.die("Missing stats request ID");
-          yield* Deferred.succeed(requestedStats, request.id);
-          yield* Deferred.await(releaseStats);
-          yield* emit({
-            type: "response",
-            command: "get_session_stats",
-            id: request.id,
-            success: true,
-            data: stats,
-          });
-          return;
-        }
-        if (request.type === "extension_ui_response") {
-          yield* Deferred.succeed(secretReceived, request.value);
-          return;
-        }
-        if (request.type === "prompt" && request.message === "/vault-export") {
-          yield* emit({ type: "takomi_vault_export", key: TRANSFER_KEY, path: TRANSFER_PATH });
-        }
-        yield* emit({
-          type: "response",
-          id: request.id,
-          command: request.type,
-          success: !(request.type === "get_state" && failState),
-          data:
-            request.type === "get_state"
-              ? {
-                  sessionFile: `/synthetic/session-${index}.jsonl`,
-                  sessionName: "Manual native name",
-                }
-              : request.type === "get_commands"
-                ? { commands: [{ name: "vault-export", source: "extension" }] }
-                : request.type === "prompt"
-                  ? { disposition: "handled" }
-                  : {},
-        });
-      }),
-    ),
-    stdout: Stream.fromQueue(output),
-    stderr: Stream.empty,
-    all: Stream.empty,
-    getInputFd: () => Sink.drain,
-    getOutputFd: () => Stream.empty,
-  });
-  yield* Effect.addFinalizer(() =>
-    end.pipe(Effect.andThen(Deferred.succeed(stopped, undefined)), Effect.asVoid),
-  );
-  return {
-    handle,
-    emit,
-    requestedState,
-    releaseState,
-    stopped,
-    releaseSpawn,
-    secretReceived,
-    requestedQueue,
-    releaseQueue,
-    queueReads: () => queueReads,
-    setQueue: (value: unknown) =>
-      Effect.sync(() => {
-        queue = value;
-      }),
-    requestedStats,
-    releaseStats,
-    setStats: (value: unknown) =>
-      Effect.sync(() => {
-        stats = value;
-      }),
-    naturalEnd: Queue.end(output).pipe(
-      Effect.andThen(Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0))),
-      Effect.asVoid,
-    ),
-    fail: Effect.sync(() => {
-      failState = true;
-    }),
+  const submission: PiInputSubmission = {
+    requestId: "native-input-fixture",
+    threadId: THREAD,
+    providerInstanceId: PI,
+    generation,
+    intent: options.intent ?? "steer",
+    text: options.text ?? "Authored input",
+    attachments: options.attachments ?? [],
+    ...(options.context ? { context: options.context } : {}),
+    fingerprint: "a".repeat(64),
+    outcome: "unconfirmed",
+    createdAt: "2026-09-30T00:00:00.000Z",
+    updatedAt: "2026-09-30T00:00:00.000Z",
   };
+  yield* preparation.validateOwnership;
+  yield* preparation.stage(submission, options.beforeAdmission ?? Effect.void);
+  return { submission, run: deliver(submission), release: release(submission) };
 });
 
-const TRANSFER_KEY = "c9".repeat(32);
-const TRANSFER_PATH = "/synthetic-private-vault-archive.enc";
-type Peer = Effect.Success<ReturnType<typeof makePeer>>;
-const makeHarness = Effect.fnUntraced(function* (releaseStartup = false, version = "0.99.1") {
-  const config = yield* ServerConfig;
-  const fs = yield* FileSystem.FileSystem;
-  yield* fs.makeDirectory(config.stateDir, { recursive: true });
-  const peers = yield* Queue.unbounded<Peer>();
-  const nativeRecords: unknown[] = [];
-  const canonical: unknown[] = [];
-  let next = 0;
-  let holdSpawn = false;
-  const spawner = ChildProcessSpawner.make((command) => {
-    if (
-      command._tag !== "StandardCommand" ||
-      !command.args.includes("--mode") ||
-      command.args.includes("--no-session")
-    )
-      return Effect.succeed(
-        ChildProcessSpawner.makeHandle({
-          pid: ChildProcessSpawner.ProcessId(1000),
-          exitCode: Effect.succeed(
-            ChildProcessSpawner.ExitCode(
-              command._tag === "StandardCommand" && command.args.includes("--version") ? 0 : 1,
-            ),
-          ),
-          isRunning: Effect.succeed(false),
-          kill: () => Effect.void,
-          unref: Effect.succeed(Effect.void),
-          stdin: Sink.drain,
-          stdout:
-            command._tag === "StandardCommand" && command.args.includes("--version")
-              ? Stream.succeed(encoder.encode(`${version}\n`))
-              : Stream.empty,
-          stderr: Stream.empty,
-          all: Stream.empty,
-          getInputFd: () => Sink.drain,
-          getOutputFd: () => Stream.empty,
-        }),
-      );
-    const held = holdSpawn;
-    holdSpawn = false;
-    return makePeer(next++).pipe(
-      Effect.tap((peer) =>
-        releaseStartup ? Deferred.succeed(peer.releaseState, undefined) : Effect.void,
-      ),
-      Effect.tap((peer) =>
-        Queue.offer(peers, peer).pipe(
-          Effect.andThen(held ? Deferred.await(peer.releaseSpawn) : Effect.void),
-        ),
-      ),
-      Effect.map((peer) => peer.handle),
-    );
-  });
-  const configMap: ProviderInstanceConfigMap = {
-    [PI]: {
-      driver: ProviderDriverKind.make("pi"),
-      config: {
-        binaryPath: "synthetic-pi",
-        homePath: config.stateDir,
-        launchArgs: "--no-extensions",
-        enabled: true,
-      },
-      environment: [
-        { name: "HOME", value: config.stateDir, sensitive: false },
-        { name: "USERPROFILE", value: config.stateDir, sensitive: false },
-        { name: "APPDATA", value: config.stateDir, sensitive: false },
-      ],
-    },
-  };
-  const graph = ProviderServiceLive.pipe(
-    Layer.provideMerge(
-      ProviderAdapterRegistryLive.pipe(
-        Layer.provideMerge(
-          ProviderInstanceRegistryMutableLayer({ drivers: [PiDriver], configMap }),
-        ),
-      ),
-    ),
-    Layer.provideMerge(
-      ProviderSessionDirectoryLive.pipe(
-        Layer.provideMerge(ProviderSessionRuntime.layer),
-        Layer.provideMerge(SqlitePersistenceMemory),
-      ),
-    ),
-    Layer.provideMerge(ServerSettingsService.layerTest()),
-    Layer.provideMerge(AnalyticsService.layerTest),
-    Layer.provideMerge(
-      Layer.succeed(ProviderEventLoggers, {
-        native: {
-          filePath: "in-memory-native",
-          write: (record) =>
-            Effect.sync(() => {
-              nativeRecords.push(record);
-            }),
-          close: () => Effect.void,
-        },
-        canonical: {
-          filePath: "in-memory-canonical",
-          write: (record) =>
-            Effect.sync(() => {
-              canonical.push(record);
-            }),
-          close: () => Effect.void,
-        },
-      }),
-    ),
-    Layer.provide(
-      Layer.mock(BackgroundPolicy.BackgroundPolicy)({
-        shouldRunOpportunisticWork: Effect.succeed(false),
-      }),
-    ),
-    Layer.provideMerge(ProviderExtensionState.layer),
-    Layer.provideMerge(Layer.succeed(ServerConfig, config)),
-    Layer.provide(
-      Layer.mergeAll(
-        NodeServices.layer,
-        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      ),
-    ),
-  );
-  const services = yield* Layer.build(graph);
-  return {
-    service: Context.get(services, ProviderService),
-    extension: Context.get(services, ProviderExtensionState),
-    registry: Context.get(services, ProviderAdapterRegistry),
-    instances: Context.get(services, ProviderInstanceRegistry),
-    mutator: Context.get(services, ProviderInstanceRegistryMutator),
-    directory: Context.get(services, ProviderSessionDirectory),
-    runtime: Context.get(services, ProviderSessionRuntimeRepository),
-    peers,
-    nativeRecords,
-    canonical,
-    configMap,
-    config,
-    holdNextSpawn: Effect.sync(() => {
-      holdSpawn = true;
-    }),
-  };
-});
 const TEST_LAYER = ServerConfig.layerTest(process.cwd(), { prefix: "t3-pi-extension-" }).pipe(
   Layer.provideMerge(NodeServices.layer),
 );
@@ -1474,3 +1195,498 @@ for (const command of ["get_session_stats", "get_commands", undefined]) {
       ).pipe(Effect.provide(TEST_LAYER)),
   );
 }
+
+for (const [label, reply, expected] of [
+  [
+    "queued",
+    { data: { disposition: "queued", privateEcho: "PRIVATE_NATIVE_REPLY" } },
+    { outcome: "queued" },
+  ],
+  ["handled", { data: { disposition: "handled" } }, { outcome: "handled" }],
+  [
+    "rejected",
+    { success: false, error: "PRIVATE_NATIVE_REPLY", data: undefined },
+    { outcome: "rejected", reason: "native-rejected" },
+  ],
+  [
+    "wrong command",
+    { command: "get_session_stats", data: { secret: "PRIVATE_NATIVE_REPLY" } },
+    { outcome: "unknown", reason: "invalid-response" },
+  ],
+  [
+    "wrong type",
+    { type: "extension_ui_request", method: "setEditorText", text: "PRIVATE_NATIVE_REPLY" },
+    { outcome: "unknown", reason: "invalid-response" },
+  ],
+  [
+    "invalid disposition",
+    { data: { disposition: "executed", secret: "PRIVATE_NATIVE_REPLY" } },
+    { outcome: "unknown", reason: "invalid-response" },
+  ],
+] as const) {
+  it.effect(
+    `native authored input ${label} is correlated and private through actual driver/registry/service`,
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const h = yield* makeHarness(true);
+          yield* start(h);
+          const peer = yield* Queue.take(h.peers);
+          const staged = yield* stageNativeInput(h, { intent: "follow-up" });
+          yield* peer.setInputReply(reply);
+          const submitting = yield* staged.run.pipe(Effect.forkScoped);
+          const request = yield* Deferred.await(peer.requestedInput);
+          expect(request).toMatchObject({
+            type: "follow_up",
+            message: "Authored input",
+            id: expect.stringMatching(/^t3-pi-input-/),
+          });
+          yield* Deferred.succeed(peer.releaseInput, undefined);
+          const result = yield* Fiber.join(submitting);
+          expect(result).toEqual(expected);
+          expect(
+            encodeJson([result, yield* current(h), h.nativeRecords, h.canonical]),
+          ).not.toContain("PRIVATE_NATIVE_REPLY");
+          expect(encodeJson(h.canonical)).not.toContain('"type":"turn.started"');
+          expect(peer.inputWrites()).toBe(1);
+          yield* staged.release;
+        }),
+      ).pipe(Effect.provide(TEST_LAYER)),
+  );
+}
+
+it.effect("native input sends every image/file/context without changing authored content", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const h = yield* makeHarness(true);
+      yield* start(h);
+      const peer = yield* Queue.take(h.peers);
+      const fs = yield* FileSystem.FileSystem;
+      const imageId = createAttachmentId(THREAD);
+      const fileId = createAttachmentId(THREAD, ".txt");
+      if (!imageId || !fileId) return yield* Effect.die("Invalid fixture attachment IDs");
+      const attachments: readonly ChatAttachment[] = [
+        { type: "image", id: imageId, name: "capture.png", mimeType: "image/png", sizeBytes: 6 },
+        { type: "file", id: fileId, name: "notes.txt", mimeType: "text/plain", sizeBytes: 5 },
+      ];
+      yield* fs.makeDirectory(h.config.attachmentsDir, { recursive: true });
+      for (const attachment of attachments) {
+        const path = resolveAttachmentPath({ attachmentsDir: h.config.attachmentsDir, attachment });
+        if (!path) return yield* Effect.die("Invalid fixture attachment path");
+        yield* fs.writeFileString(path, attachment.type === "image" ? "pixels" : "notes");
+      }
+      const context: OrchestrationMessageContext = {
+        version: 1,
+        records: [
+          {
+            version: 1,
+            kind: "terminal",
+            contextId: ComposerContextId.make("terminal-native"),
+            label: "Terminal",
+            terminalId: "shell",
+            terminalLabel: "Shell",
+            lineStart: 1,
+            lineEnd: 1,
+            text: "Terminal selection",
+          },
+        ],
+      };
+      const text = "Authored input\n[Terminal](t3-context://v1/terminal/terminal-native)";
+      const staged = yield* stageNativeInput(h, { text, attachments, context });
+      const submitting = yield* staged.run.pipe(Effect.forkScoped);
+      const request = yield* Deferred.await(peer.requestedInput);
+      expect(request).toMatchObject({
+        type: "steer",
+        images: [{ type: "image", mimeType: "image/png", data: "cGl4ZWxz" }],
+      });
+      expect(request.message).toContain("Terminal selection");
+      expect(request.message).toContain(h.config.attachmentsDir);
+      expect(request.message).toContain(`${fileId}.txt`);
+      expect(staged.submission).toMatchObject({ text, attachments, context });
+      yield* Deferred.succeed(peer.releaseInput, undefined);
+      expect(yield* Fiber.join(submitting)).toEqual({ outcome: "queued" });
+      expect(encodeJson(h.nativeRecords)).not.toContain("cGl4ZWxz");
+      yield* staged.release;
+    }),
+  ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+for (const lookupNumber of [1, 2])
+  it.effect(`original native owner is rechecked at routing await ${lookupNumber}`, () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        const staged = yield* stageNativeInput(h);
+        const barrier = yield* holdBeforeReserve(h, lookupNumber);
+        const submitting = yield* staged.run.pipe(Effect.forkScoped);
+        yield* Deferred.await(barrier.held);
+        yield* h.mutator.reconcile({});
+        yield* Deferred.succeed(barrier.release, undefined);
+        expect(yield* Fiber.join(submitting)).toEqual({
+          outcome: "not-submitted",
+          reason: "owner-unavailable",
+        });
+        expect(peer.inputWrites()).toBe(0);
+        expect(yield* Queue.size(h.peers)).toBe(0);
+        yield* staged.release;
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+  );
+
+it.effect(
+  "native pre-admission thread barrier cannot redirect prepared content to another process",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        const held = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const staged = yield* stageNativeInput(h, {
+          beforeAdmission: Deferred.succeed(held, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+          ),
+        });
+        const submitting = yield* staged.run.pipe(Effect.forkScoped);
+        yield* Deferred.await(held);
+        yield* h.service.stopSession({ threadId: THREAD });
+        yield* start(h);
+        const replacement = yield* Queue.take(h.peers);
+        yield* Deferred.succeed(release, undefined);
+        expect(yield* Fiber.join(submitting)).toEqual({
+          outcome: "not-submitted",
+          reason: "owner-unavailable",
+        });
+        expect(peer.inputWrites()).toBe(0);
+        expect(replacement.inputWrites()).toBe(0);
+        yield* staged.release;
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+it.effect(
+  "native input is bounded through persistence and does not route ordinary Send into its slot",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        const staged = yield* stageNativeInput(h);
+        const submitting = yield* staged.run.pipe(Effect.forkScoped);
+        yield* Deferred.await(peer.requestedInput);
+        const capture = h.service.capturePiQueuedInput;
+        if (!capture) return yield* Effect.die("Missing input capture");
+        const input = {
+          threadId: THREAD,
+          expectedProviderInstanceId: PI,
+          expectedGeneration: staged.submission.generation,
+        };
+        expect(yield* capture(input).pipe(Effect.flip)).toMatchObject({
+          issue: "Native input is busy.",
+        });
+        yield* h.service.sendTurn({ threadId: THREAD, input: "Ordinary send" });
+        yield* Deferred.await(peer.requestedPrompt);
+        expect(peer.inputWrites()).toBe(1);
+        yield* Deferred.succeed(peer.releaseInput, undefined);
+        expect(yield* Fiber.join(submitting)).toEqual({ outcome: "queued" });
+        expect(yield* capture(input).pipe(Effect.flip)).toMatchObject({
+          issue: "Native input is busy.",
+        });
+        yield* staged.release;
+        const next = yield* capture(input);
+        yield* next.release;
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+for (const ending of ["timeout", "transport loss", "replacement"] as const)
+  it.effect(`native admission followed by ${ending} is unknown and never retried`, () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        const staged = yield* stageNativeInput(h);
+        const submitting = yield* staged.run.pipe(Effect.forkScoped);
+        yield* Deferred.await(peer.requestedInput);
+        if (ending === "timeout") yield* TestClock.adjust("30 seconds");
+        else if (ending === "replacement") yield* h.mutator.reconcile({});
+        else yield* peer.naturalEnd;
+        expect(yield* Fiber.join(submitting)).toEqual({
+          outcome: "unknown",
+          reason: ending === "timeout" ? "acknowledgment-timeout" : "transport-lost",
+        });
+        expect(peer.inputWrites()).toBe(1);
+        expect(yield* Queue.size(h.peers)).toBe(0);
+        yield* staged.release;
+        if (ending === "timeout") {
+          yield* peer.setInputReply({
+            error: "PRIVATE_LATE_NATIVE",
+            data: { disposition: "handled", echo: "PRIVATE_LATE_NATIVE" },
+          });
+          yield* Deferred.succeed(peer.releaseInput, undefined);
+          yield* peer.emit({
+            type: "extension_error",
+            event: "input",
+            error: "PRIVATE_LATE_NATIVE",
+            extensionPath: "PRIVATE_LATE_NATIVE",
+          });
+          yield* peer.emit({
+            type: "extension_ui_request",
+            method: "setStatus",
+            statusKey: "late-drain",
+            statusText: "Drained",
+          });
+          yield* h.extension.observe(THREAD, Effect.void).pipe(
+            Stream.filter((state) => state.statuses.some((status) => status.key === "late-drain")),
+            Stream.runHead,
+          );
+          expect(encodeJson([h.nativeRecords, h.canonical, yield* current(h)])).not.toContain(
+            "PRIVATE_LATE_NATIVE",
+          );
+        }
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+  );
+
+it.effect(
+  "input-hook/skill errors cannot leak or settle independent work before handled acceptance",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        const staged = yield* stageNativeInput(h);
+        yield* peer.setInputReply({ data: { disposition: "handled", echo: "PRIVATE_HOOK_TEXT" } });
+        const submitting = yield* staged.run.pipe(Effect.forkScoped);
+        yield* Deferred.await(peer.requestedInput);
+        for (const event of ["input", "skill_expansion"])
+          yield* peer.emit({
+            type: "extension_error",
+            event,
+            error: "PRIVATE_HOOK_TEXT /private/hooks cGl4ZWxz",
+            extensionPath: "/private/hooks",
+            stack: "PRIVATE_HOOK_TEXT",
+          });
+        yield* peer.emit({
+          id: "t3-pi-input-unowned",
+          type: "extension_ui_request",
+          method: "setEditorText",
+          text: "PRIVATE_HOOK_TEXT",
+        });
+        yield* peer.emit({ type: "queue_update", steering: ["PRIVATE_HOOK_TEXT"] });
+        const started = yield* h.service.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.started"),
+          Stream.runHead,
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        yield* peer.emit({ type: "agent_start" });
+        const startEvent = Option.getOrThrow(yield* Fiber.join(started));
+        yield* Deferred.succeed(peer.releaseInput, undefined);
+        expect(yield* Fiber.join(submitting)).toEqual({ outcome: "handled" });
+        expect(
+          (yield* h.service.listSessions()).find((session) => session.threadId === THREAD),
+        ).toMatchObject({ status: "running", activeTurnId: startEvent.turnId });
+        expect(encodeJson([h.nativeRecords, h.canonical, yield* current(h)])).not.toContain(
+          "PRIVATE_HOOK_TEXT",
+        );
+        expect(encodeJson([h.nativeRecords, h.canonical])).not.toContain("/private/hooks");
+        const completed = yield* h.service.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.completed"),
+          Stream.runHead,
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        yield* peer.emit({ type: "agent_settled" });
+        expect(Option.getOrThrow(yield* Fiber.join(completed))).toMatchObject({
+          turnId: startEvent.turnId,
+          payload: { state: "completed" },
+        });
+        yield* staged.release;
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+it.effect(
+  "native cancellation after admission is unknown, even when the caller is interrupted",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        const staged = yield* stageNativeInput(h);
+        const result =
+          yield* Deferred.make<import("../Services/ProviderAdapter.ts").PiInputResult>();
+        const submitting = yield* Effect.uninterruptible(
+          staged.run.pipe(Effect.tap((value) => Deferred.succeed(result, value))),
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.await(peer.requestedInput);
+        yield* Fiber.interrupt(submitting);
+        expect(yield* Deferred.await(result)).toEqual({ outcome: "unknown", reason: "cancelled" });
+        expect(peer.inputWrites()).toBe(1);
+        yield* staged.release;
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+it.effect("native stdin write failure is unknown and hides its raw error", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const h = yield* makeHarness(true);
+      yield* start(h);
+      const peer = yield* Queue.take(h.peers);
+      yield* peer.failInput;
+      const staged = yield* stageNativeInput(h);
+      const result = yield* staged.run;
+      expect(result).toEqual({ outcome: "unknown", reason: "transport-lost" });
+      expect(peer.inputWrites()).toBe(1);
+      expect(encodeJson([result, h.nativeRecords, h.canonical])).not.toContain(
+        "PRIVATE_NATIVE_WRITER",
+      );
+      yield* staged.release;
+    }),
+  ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+it.effect("known native acceptance survives removal of its owner before persistence", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const h = yield* makeHarness(true);
+      yield* start(h);
+      const peer = yield* Queue.take(h.peers);
+      const staged = yield* stageNativeInput(h);
+      const submitting = yield* staged.run.pipe(Effect.forkScoped);
+      yield* Deferred.await(peer.requestedInput);
+      yield* Deferred.succeed(peer.releaseInput, undefined);
+      const result = yield* Fiber.join(submitting);
+      yield* h.mutator.reconcile({});
+      expect(result).toEqual({ outcome: "queued" });
+      yield* staged.release;
+    }),
+  ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+it.effect("unsupported captured native versions cannot reserve or start a replacement", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const h = yield* makeHarness(true, "0.99.0");
+      yield* start(h);
+      const peer = yield* Queue.take(h.peers);
+      const capture = h.service.capturePiQueuedInput;
+      const generation = (yield* current(h)).generation;
+      if (!capture || generation === null) return yield* Effect.die("Missing live input route");
+      expect(
+        yield* capture({
+          threadId: THREAD,
+          expectedProviderInstanceId: PI,
+          expectedGeneration: generation,
+        }).pipe(Effect.flip),
+      ).toMatchObject({ issue: "Native input is unavailable for this owner." });
+      expect(peer.inputWrites()).toBe(0);
+      expect(yield* Queue.size(h.peers)).toBe(0);
+    }),
+  ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+for (const method of ["stat", "readFile"] as const)
+  it.effect(`native owner retirement during image ${method} cannot write prepared content`, () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        const id = createAttachmentId(THREAD);
+        if (!id) return yield* Effect.die("Invalid image ID");
+        const attachment: ChatAttachment = {
+          type: "image",
+          id,
+          name: "capture.png",
+          mimeType: "image/png",
+          sizeBytes: 6,
+        };
+        const path = resolveAttachmentPath({ attachmentsDir: h.config.attachmentsDir, attachment });
+        if (!path) return yield* Effect.die("Invalid image path");
+        yield* h.fileSystem.makeDirectory(h.config.attachmentsDir, { recursive: true });
+        yield* h.fileSystem.writeFileString(path, "pixels");
+        const staged = yield* stageNativeInput(h, { attachments: [attachment] });
+        const held = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const gate = Deferred.succeed(held, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const stat = h.fileSystem.stat;
+        const read = h.fileSystem.readFile;
+        const spy =
+          method === "stat"
+            ? vi
+                .spyOn(h.fileSystem, "stat")
+                .mockImplementation((target) =>
+                  target === path ? gate.pipe(Effect.andThen(stat(target))) : stat(target),
+                )
+            : vi
+                .spyOn(h.fileSystem, "readFile")
+                .mockImplementation((target) =>
+                  target === path ? gate.pipe(Effect.andThen(read(target))) : read(target),
+                );
+        yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+        const submitting = yield* staged.run.pipe(Effect.forkScoped);
+        yield* Deferred.await(held);
+        yield* h.mutator.reconcile({});
+        yield* Deferred.succeed(release, undefined);
+        expect(yield* Fiber.join(submitting)).toEqual({
+          outcome: "not-submitted",
+          reason: "owner-unavailable",
+        });
+        expect(peer.inputWrites()).toBe(0);
+        yield* staged.release;
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+  );
+
+for (const point of ["binding", "hasSession", "liveness"] as const)
+  it.effect(`native original owner survives no ${point} pre-admission gap`, () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        const staged = yield* stageNativeInput(h);
+        const held = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const gate = Deferred.succeed(held, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        if (point === "binding") {
+          const lookup = h.directory.getBinding;
+          const spy = vi
+            .spyOn(h.directory, "getBinding")
+            .mockImplementation((threadId) => gate.pipe(Effect.andThen(lookup(threadId))));
+          yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+        } else if (point === "hasSession") {
+          const adapter = yield* h.registry.getByInstance(PI);
+          const hasSession = adapter.hasSession;
+          const spy = vi
+            .spyOn(adapter, "hasSession")
+            .mockImplementation((threadId) => gate.pipe(Effect.andThen(hasSession(threadId))));
+          yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+        } else yield* peer.holdNextLiveness;
+        const submitting = yield* staged.run.pipe(Effect.forkScoped);
+        yield* point === "liveness" ? Deferred.await(peer.requestedLiveness) : Deferred.await(held);
+        yield* h.mutator.reconcile({});
+        yield* point === "liveness"
+          ? Deferred.succeed(peer.releaseLiveness, undefined)
+          : Deferred.succeed(release, undefined);
+        expect(yield* Fiber.join(submitting)).toEqual({
+          outcome: "not-submitted",
+          reason: "owner-unavailable",
+        });
+        expect(peer.inputWrites()).toBe(0);
+        yield* staged.release;
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+  );

@@ -191,6 +191,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
           }),
         getProjectShells: () => Effect.die("unused"),
         getProjectShellById: () => Effect.die("unused"),
+        getPiInputActivity: () => Effect.die("unused Pi input lookup"),
         getFirstActiveThreadIdByProjectId: () => Effect.succeedSome(bootstrapThreadId),
         getImportedAgentSessionSources: () => Effect.die("unused"),
         getThreadCheckpointContext: () => Effect.succeedNone,
@@ -306,6 +307,7 @@ it.effect.each([
         getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getEventReplayStats: () => Effect.die("unused"),
+        getPiInputActivity: () => Effect.die("unused Pi input lookup"),
         getActiveProjectByWorkspaceRoot: () =>
           Effect.succeed(
             existing
@@ -398,6 +400,7 @@ it.effect(
           getActiveProjectByWorkspaceRoot: () => Effect.succeedNone,
           getProjectShells: () => Effect.die("unused"),
           getProjectShellById: () => Effect.die("unused"),
+          getPiInputActivity: () => Effect.die("unused Pi input lookup"),
           getFirstActiveThreadIdByProjectId: () => Effect.die("thread lookup failed"),
           getImportedAgentSessionSources: () => Effect.die("unused"),
           getThreadCheckpointContext: () => Effect.succeedNone,
@@ -462,6 +465,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets preserves typed UUID generation fa
         getSnapshotSequence: () => Effect.die("unused"),
         getCounts: () => Effect.die("unused"),
         getEventReplayStats: () => Effect.die("unused"),
+        getPiInputActivity: () => Effect.die("unused Pi input lookup"),
         getActiveProjectByWorkspaceRoot: () => Effect.succeedNone,
         getProjectShells: () => Effect.die("unused"),
         getProjectShellById: () => Effect.die("unused"),

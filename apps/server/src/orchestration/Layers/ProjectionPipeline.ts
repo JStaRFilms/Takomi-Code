@@ -1,5 +1,7 @@
 import {
   ApprovalRequestId,
+  PiInputSubmission,
+  piInputSubmissionActivity,
   isImportedAgentSessionMessageId,
   UserInputAttachmentAnswerPayload,
   type ChatAttachment,
@@ -335,6 +337,7 @@ function retainProjectionProposedPlansAfterRevert(
 }
 
 const decodeQuestionAttachmentAnswer = Schema.decodeUnknownOption(UserInputAttachmentAnswerPayload);
+const decodePiInputSubmission = Schema.decodeUnknownOption(PiInputSubmission);
 
 function collectThreadAttachmentRelativePaths(
   threadId: string,
@@ -1295,6 +1298,24 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const applyThreadActivitiesProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyThreadActivitiesProjection",
     )(function* (event, attachmentSideEffects) {
+      if (event.type === "thread.pi-input-recorded" || event.type === "thread.pi-input-resolved") {
+        const activity = piInputSubmissionActivity(
+          event.payload.submission,
+          event.payload.sequence,
+        );
+        yield* projectionThreadActivityRepository.upsert({
+          activityId: activity.id,
+          threadId: event.payload.threadId,
+          turnId: null,
+          tone: activity.tone,
+          kind: activity.kind,
+          summary: activity.summary,
+          payload: activity.payload,
+          sequence: event.payload.sequence,
+          createdAt: activity.createdAt,
+        });
+        return;
+      }
       switch (event.type) {
         case "thread.created":
           yield* projectionThreadActivityRepository.deleteByThreadId({
@@ -2015,6 +2036,16 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: ThreadId.make(threadId),
           });
           for (const activity of activities) {
+            if (activity.kind === "pi.input-submission") {
+              const submission = decodePiInputSubmission(activity.payload);
+              if (Option.isSome(submission)) {
+                for (const attachment of submission.value.attachments) {
+                  const relativePath = attachmentRelativePath(attachment);
+                  if (relativePath) retainedPaths.add(relativePath);
+                }
+              }
+              continue;
+            }
             if (activity.kind !== "user-input.answer-submitted") continue;
             const payload = decodeQuestionAttachmentAnswer(activity.payload);
             if (Option.isNone(payload)) continue;

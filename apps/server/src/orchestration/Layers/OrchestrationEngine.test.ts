@@ -14,12 +14,20 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationCommand,
+  type PiInputSubmission,
+  PiInputSubmission as PiInputSubmissionSchema,
+  OrchestrationEvent as OrchestrationEventSchema,
+  piInputActivityId,
+  piInputRecordCommandId,
+  piInputResolveCommandId,
   type OrchestrationEvent,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Metric from "effect/Metric";
@@ -54,6 +62,8 @@ import {
 } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { createEmptyReadModel, projectEvent } from "../projector.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
@@ -63,13 +73,17 @@ const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(val
 function makeOrchestrationLayer(
   databasePath?: string,
   repositoryIdentityResolver?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"],
+  baseDir?: string,
 ) {
   const persistence = databasePath
     ? makeSqlitePersistenceLive(databasePath)
     : SqlitePersistenceMemory;
-  const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
-    prefix: "t3-orchestration-engine-test-",
-  });
+  const ServerConfigLayer = ServerConfig.layerTest(
+    process.cwd(),
+    baseDir ?? {
+      prefix: "t3-orchestration-engine-test-",
+    },
+  );
   return Layer.mergeAll(
     OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -98,14 +112,20 @@ function makeOrchestrationLayer(
 async function createOrchestrationSystem(
   databasePath?: string,
   repositoryIdentityResolver?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"],
+  baseDir?: string,
 ) {
   const runtime = ManagedRuntime.make(
-    makeOrchestrationLayer(databasePath, repositoryIdentityResolver),
+    makeOrchestrationLayer(databasePath, repositoryIdentityResolver, baseDir),
   );
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
   const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
   return {
     engine,
+    query: snapshotQuery,
+    config: await runtime.runPromise(Effect.service(ServerConfig)),
+    receipts: await runtime.runPromise(
+      Effect.service(OrchestrationCommandReceipts.OrchestrationCommandReceiptRepository),
+    ),
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     readThread: (threadId: ThreadId) =>
       runtime.runPromise(snapshotQuery.getThreadDetailById(threadId)),
@@ -419,6 +439,7 @@ describe("OrchestrationEngine", () => {
     const layer = OrchestrationEngineLive.pipe(
       Layer.provide(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getPiInputActivity: () => Effect.die("unused Pi input lookup"),
           getUserInputActivity: () => Effect.die("unused"),
           listActivitiesByKind: () => Effect.die("unused"),
           listPendingPiUserInputs: () => Effect.die("unused"),
@@ -2127,5 +2148,535 @@ describe("OrchestrationEngine", () => {
     expect(withoutOrigin?.metadata.origin).toBeUndefined();
 
     await system.dispose();
+  });
+});
+
+const decodePiInputSubmission = Schema.decodeUnknownSync(PiInputSubmissionSchema);
+const eventJsonSchema = Schema.fromJsonString(OrchestrationEventSchema);
+const encodeEventJson = Schema.encodeSync(eventJsonSchema);
+const decodeEventJson = Schema.decodeSync(eventJsonSchema);
+const piInputThreadId = ThreadId.make("pi-input-thread");
+const piInputSubmission: PiInputSubmission = {
+  requestId: "native-input-1",
+  threadId: piInputThreadId,
+  providerInstanceId: ProviderInstanceId.make("pi"),
+  generation: "original-process",
+  intent: "follow-up",
+  text: "Original authored input\nwith a second line",
+  attachments: [],
+  fingerprint: "a".repeat(64),
+  createdAt: now(),
+  updatedAt: now(),
+  outcome: "unconfirmed",
+};
+const piInputRecord: Extract<OrchestrationCommand, { type: "thread.pi-input.record" }> = {
+  type: "thread.pi-input.record",
+  commandId: piInputRecordCommandId(piInputThreadId, piInputSubmission.requestId),
+  threadId: piInputThreadId,
+  submission: piInputSubmission,
+};
+const piInputResolve: Extract<OrchestrationCommand, { type: "thread.pi-input.resolve" }> = {
+  type: "thread.pi-input.resolve",
+  commandId: piInputResolveCommandId(piInputThreadId, piInputSubmission.requestId),
+  threadId: piInputThreadId,
+  requestId: piInputSubmission.requestId,
+  outcome: "queued",
+  createdAt: "2026-01-04T00:00:00.000Z",
+};
+async function seedPiInputThread(system: Awaited<ReturnType<typeof createOrchestrationSystem>>) {
+  const projectId = ProjectId.make("pi-input-project");
+  await system.run(
+    system.engine.dispatch({
+      type: "project.create",
+      commandId: CommandId.make("pi-project"),
+      projectId,
+      title: "Pi input",
+      workspaceRoot: "/tmp/pi-input",
+      createdAt: now(),
+    }),
+  );
+  await system.run(
+    system.engine.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("pi-thread"),
+      threadId: piInputThreadId,
+      projectId,
+      title: "Pi input",
+      modelSelection: { instanceId: ProviderInstanceId.make("pi"), model: "test-model" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: now(),
+    }),
+  );
+}
+
+describe("durable authored Pi input", () => {
+  it("deduplicates receipts, rejects changed content and terminal outcomes without overwriting accepted receipts", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      await seedPiInputThread(system);
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.settle",
+          commandId: CommandId.make("pi-settle"),
+          threadId: piInputThreadId,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.snooze",
+          commandId: CommandId.make("pi-snooze"),
+          threadId: piInputThreadId,
+          snoozedUntil: "2099-01-01T00:00:00.000Z",
+        }),
+      );
+      const shellBefore = Option.getOrThrow(
+        await system.run(system.query.getThreadShellById(piInputThreadId)),
+      );
+      const recorded = await system.run(system.engine.dispatch(piInputRecord));
+      expect(await system.run(system.engine.dispatch(piInputRecord))).toEqual(recorded);
+      for (const submission of [
+        { ...piInputSubmission, text: "Different text" },
+        { ...piInputSubmission, fingerprint: "b".repeat(64) },
+        { ...piInputSubmission, generation: "replacement" },
+        { ...piInputSubmission, intent: "steer" as const },
+        { ...piInputSubmission, outcome: "handled" as const },
+      ]) {
+        await expect(
+          system.run(system.engine.dispatch({ ...piInputRecord, submission })),
+        ).rejects.toThrow("conflicts");
+      }
+      expect(await system.run(system.engine.dispatch(piInputRecord))).toEqual(recorded);
+      const resolved = await system.run(system.engine.dispatch(piInputResolve));
+      expect(await system.run(system.engine.dispatch(piInputResolve))).toEqual(resolved);
+      for (const command of [
+        { ...piInputResolve, outcome: "handled" as const },
+        { ...piInputResolve, reason: "transport-lost" as const },
+      ])
+        await expect(system.run(system.engine.dispatch(command))).rejects.toThrow("conflicts");
+      expect(await system.run(system.engine.dispatch(piInputResolve))).toEqual(resolved);
+      const receipt = Option.getOrThrow(
+        await system.run(system.receipts.getByCommandId({ commandId: piInputResolve.commandId })),
+      );
+      expect(receipt).toMatchObject({ status: "accepted", resultSequence: resolved.sequence });
+      const activity = Option.getOrThrow(
+        await system.run(
+          system.query.getPiInputActivity({
+            threadId: piInputThreadId,
+            requestId: piInputSubmission.requestId,
+          }),
+        ),
+      );
+      expect(activity).toMatchObject({
+        id: piInputActivityId(piInputThreadId, piInputSubmission.requestId),
+        sequence: recorded.sequence,
+        turnId: null,
+        createdAt: now(),
+      });
+      expect(decodePiInputSubmission(activity.payload)).toEqual({
+        ...piInputSubmission,
+        outcome: "queued",
+        updatedAt: piInputResolve.createdAt,
+      });
+      const shellAfter = Option.getOrThrow(
+        await system.run(system.query.getThreadShellById(piInputThreadId)),
+      );
+      expect(shellAfter).toMatchObject({
+        latestUserMessageAt: shellBefore.latestUserMessageAt,
+        latestTurn: shellBefore.latestTurn,
+        settledAt: shellBefore.settledAt,
+        settledOverride: shellBefore.settledOverride,
+        snoozedAt: shellBefore.snoozedAt,
+        snoozedUntil: shellBefore.snoozedUntil,
+      });
+      const thread = Option.getOrThrow(await system.readThread(piInputThreadId));
+      expect(thread.messages).toEqual([]);
+      expect(thread.checkpoints).toEqual([]);
+      expect(thread.session).toBeNull();
+      expect(thread.title).toBe("Pi input");
+      const events = await system.run(Stream.runCollect(system.engine.readEvents(0)));
+      expect(events.filter((event) => event.type === "thread.pi-input-recorded")).toHaveLength(1);
+      expect(events.filter((event) => event.type === "thread.pi-input-resolved")).toHaveLength(1);
+      let replayed = createEmptyReadModel(now());
+      for (const event of events) {
+        const decoded = decodeEventJson(encodeEventJson(event));
+        expect(decoded).toEqual(event);
+        replayed = await system.run(projectEvent(replayed, decoded));
+      }
+      expect(replayed.threads.find((entry) => entry.id === piInputThreadId)).toMatchObject({
+        activities: thread.activities,
+        messages: [],
+        checkpoints: [],
+        session: null,
+        latestTurn: null,
+        settledOverride: thread.settledOverride,
+        settledAt: thread.settledAt,
+        snoozedAt: thread.snoozedAt,
+        snoozedUntil: thread.snoozedUntil,
+      });
+    } finally {
+      await system.dispose();
+    }
+  });
+
+  it("does not mistake unrelated accepted command receipts for native input or overwrite them", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      await seedPiInputThread(system);
+      const originalCommandId = CommandId.make("pi-thread");
+      const initialReceipt = await system.run(
+        system.receipts.getByCommandId({ commandId: originalCommandId }),
+      );
+      await expect(
+        system.run(system.engine.dispatch({ ...piInputRecord, commandId: originalCommandId })),
+      ).rejects.toThrow("conflicts");
+      expect(
+        await system.run(system.receipts.getByCommandId({ commandId: originalCommandId })),
+      ).toEqual(initialReceipt);
+      const collisionSubmission = { ...piInputSubmission, requestId: "record-collision" };
+      const collisionRecord = {
+        ...piInputRecord,
+        commandId: piInputRecordCommandId(piInputThreadId, collisionSubmission.requestId),
+        submission: collisionSubmission,
+      };
+      await system.run(system.engine.dispatch(piInputRecord));
+      for (const command of [collisionRecord, piInputResolve]) {
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.activity.append",
+            threadId: piInputThreadId,
+            commandId: command.commandId,
+            createdAt: piInputSubmission.createdAt,
+            activity: {
+              id: EventId.make(`unrelated-${command.commandId}`),
+              tone: "info",
+              kind: "test.notice",
+              summary: "Unrelated command",
+              turnId: null,
+              payload: {},
+              createdAt: piInputSubmission.createdAt,
+            },
+          }),
+        );
+        const receipt = await system.run(
+          system.receipts.getByCommandId({ commandId: command.commandId }),
+        );
+        await expect(system.run(system.engine.dispatch(command))).rejects.toThrow("conflicts");
+        expect(
+          await system.run(system.receipts.getByCommandId({ commandId: command.commandId })),
+        ).toEqual(receipt);
+      }
+      expect(
+        await system.run(
+          system.query.getPiInputActivity({
+            threadId: piInputThreadId,
+            requestId: collisionSubmission.requestId,
+          }),
+        ),
+      ).toEqual(Option.none());
+      expect(
+        Option.getOrThrow(
+          await system.run(
+            system.query.getPiInputActivity({
+              threadId: piInputThreadId,
+              requestId: piInputSubmission.requestId,
+            }),
+          ),
+        ).payload.outcome,
+      ).toBe("unconfirmed");
+    } finally {
+      await system.dispose();
+    }
+  });
+
+  it("resolves and deduplicates beyond 500 activities and after restart without hot-stream replay", async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-pi-input-history-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    let system = await createOrchestrationSystem(databasePath);
+    try {
+      await seedPiInputThread(system);
+      const recorded = await system.run(system.engine.dispatch(piInputRecord));
+      await system.run(
+        Effect.forEach(
+          Array.from({ length: 501 }, (_, index) => index),
+          (index) =>
+            system.engine.dispatch({
+              type: "thread.activity.append",
+              commandId: CommandId.make(`noise-${index}`),
+              threadId: piInputThreadId,
+              createdAt: now(),
+              activity: {
+                id: EventId.make(`noise-${index}`),
+                kind: "test.notice",
+                tone: "info",
+                turnId: null,
+                createdAt: now(),
+                sequence: recorded.sequence + index + 1,
+                summary: "Fixture notice",
+                payload: {},
+              },
+            }),
+          { discard: true },
+        ),
+      );
+      const retained = Option.getOrThrow(await system.readThread(piInputThreadId));
+      expect(retained.activities).toHaveLength(500);
+      expect(retained.activities.some((activity) => activity.kind === "pi.input-submission")).toBe(
+        false,
+      );
+      const resolved = await system.run(system.engine.dispatch(piInputResolve));
+      const activity = Option.getOrThrow(
+        await system.run(
+          system.query.getPiInputActivity({
+            threadId: piInputThreadId,
+            requestId: piInputSubmission.requestId,
+          }),
+        ),
+      );
+      expect(activity.sequence).toBe(recorded.sequence);
+      expect(decodePiInputSubmission(activity.payload).outcome).toBe("queued");
+      await system.dispose();
+      system = await createOrchestrationSystem(databasePath);
+      const firstLiveEvent = await system.run(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const live = yield* system.engine.subscribeDomainEvents;
+            const first = yield* Stream.runHead(live).pipe(Effect.forkScoped);
+            expect(yield* system.engine.dispatch(piInputRecord)).toEqual(recorded);
+            yield* system.engine.dispatch({
+              type: "thread.activity.append",
+              commandId: CommandId.make("live-marker"),
+              threadId: piInputThreadId,
+              createdAt: now(),
+              activity: {
+                id: EventId.make("live-marker"),
+                kind: "test.marker",
+                tone: "info",
+                turnId: null,
+                createdAt: now(),
+                summary: "Live marker",
+                payload: {},
+              },
+            });
+            return yield* Fiber.join(first);
+          }),
+        ),
+      );
+      expect(Option.getOrThrow(firstLiveEvent).type).toBe("thread.activity-appended");
+      expect(Option.getOrThrow(firstLiveEvent).commandId).toBe("live-marker");
+      await expect(
+        system.run(system.engine.dispatch({ ...piInputResolve, outcome: "handled" })),
+      ).rejects.toThrow("conflicts");
+      expect(await system.run(system.engine.dispatch(piInputResolve))).toEqual(resolved);
+      expect(
+        decodePiInputSubmission(
+          Option.getOrThrow(
+            await system.run(
+              system.query.getPiInputActivity({
+                threadId: piInputThreadId,
+                requestId: piInputSubmission.requestId,
+              }),
+            ),
+          ).payload,
+        ).outcome,
+      ).toBe("queued");
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps resolved submissions in their original pagination window", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      await seedPiInputThread(system);
+      for (const day of [1, 2, 3]) {
+        const createdAt = `2026-01-0${day}T00:00:00.000Z`;
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`page-turn-${day}`),
+            threadId: piInputThreadId,
+            message: {
+              messageId: MessageId.make(`page-message-${day}`),
+              role: "user",
+              text: `Ordinary message ${day}`,
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt,
+          }),
+        );
+        for (const status of ["running", "ready"] as const) {
+          await system.run(
+            system.engine.dispatch({
+              type: "thread.session.set",
+              commandId: CommandId.make(`page-session-${day}-${status}`),
+              threadId: piInputThreadId,
+              createdAt,
+              session: {
+                threadId: piInputThreadId,
+                status,
+                providerName: "pi",
+                runtimeMode: "full-access",
+                activeTurnId: status === "running" ? TurnId.make(`ordinary-turn-${day}`) : null,
+                lastError: null,
+                updatedAt: createdAt,
+              },
+            }),
+          );
+        }
+      }
+      const submission = {
+        ...piInputSubmission,
+        createdAt: "2026-01-02T12:00:00.000Z",
+        updatedAt: "2026-01-02T12:00:00.000Z",
+      };
+      const recorded = await system.run(system.engine.dispatch({ ...piInputRecord, submission }));
+      const latest = Option.getOrThrow(
+        await system.run(system.query.getThreadDetailSnapshot(piInputThreadId, { turnLimit: 1 })),
+      );
+      expect(
+        latest.thread.activities.some((activity) => activity.kind === "pi.input-submission"),
+      ).toBe(false);
+      const cursor = latest.page?.beforeCursor;
+      if (!cursor) throw new Error("Missing older page");
+      const before = Option.getOrThrow(
+        await system.run(
+          system.query.getThreadDetailSnapshot(piInputThreadId, {
+            turnLimit: 1,
+            beforeCursor: cursor,
+          }),
+        ),
+      );
+      expect(
+        before.thread.activities.find((activity) => activity.kind === "pi.input-submission")
+          ?.sequence,
+      ).toBe(recorded.sequence);
+      const shellBefore = Option.getOrThrow(
+        await system.run(system.query.getThreadShellById(piInputThreadId)),
+      );
+      await system.run(system.engine.dispatch(piInputResolve));
+      const after = Option.getOrThrow(
+        await system.run(
+          system.query.getThreadDetailSnapshot(piInputThreadId, {
+            turnLimit: 1,
+            beforeCursor: cursor,
+          }),
+        ),
+      );
+      expect(
+        after.thread.activities.map((activity) => [
+          activity.id,
+          activity.createdAt,
+          activity.sequence,
+        ]),
+      ).toEqual(
+        before.thread.activities.map((activity) => [
+          activity.id,
+          activity.createdAt,
+          activity.sequence,
+        ]),
+      );
+      const row = after.thread.activities.find(
+        (activity) => activity.kind === "pi.input-submission",
+      );
+      expect(decodePiInputSubmission(row?.payload).outcome).toBe("queued");
+      expect(
+        Option.getOrThrow(await system.run(system.query.getThreadShellById(piInputThreadId)))
+          .latestUserMessageAt,
+      ).toBe(shellBefore.latestUserMessageAt);
+      expect(after.thread.latestTurn).toEqual(before.thread.latestTurn);
+      expect(after.thread.checkpoints).toEqual(before.thread.checkpoints);
+    } finally {
+      await system.dispose();
+    }
+  });
+
+  it("retains image/file references through revert and bootstrap cleanup, then removes them on thread deletion", async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-pi-input-files-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    let system = await createOrchestrationSystem(databasePath, undefined, directory);
+    const image = {
+      type: "image" as const,
+      id: "pi-input-thread-00000000-0000-4000-8000-000000000001",
+      name: "image.png",
+      mimeType: "image/png",
+      sizeBytes: 6,
+    };
+    const file = {
+      type: "file" as const,
+      id: "pi-input-thread-00000000-0000-4000-8000-000000000002-txt",
+      name: "notes.txt",
+      mimeType: "text/plain",
+      sizeBytes: 5,
+    };
+    const orphan = { ...file, id: "pi-input-thread-00000000-0000-4000-8000-000000000003-txt" };
+    const imagePath = resolveAttachmentPath({
+      attachmentsDir: system.config.attachmentsDir,
+      attachment: image,
+    });
+    const filePath = resolveAttachmentPath({
+      attachmentsDir: system.config.attachmentsDir,
+      attachment: file,
+    });
+    const orphanPath = resolveAttachmentPath({
+      attachmentsDir: system.config.attachmentsDir,
+      attachment: orphan,
+    });
+    if (!imagePath || !filePath || !orphanPath) throw new Error("Invalid fixture attachment path");
+    try {
+      await seedPiInputThread(system);
+      await NodeFSP.writeFile(imagePath, "pixels");
+      await NodeFSP.writeFile(filePath, "notes");
+      await system.run(
+        system.engine.dispatch({
+          ...piInputRecord,
+          submission: { ...piInputSubmission, attachments: [image, file] },
+        }),
+      );
+      await system.run(system.engine.dispatch(piInputResolve));
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.revert.complete",
+          commandId: CommandId.make("pi-revert"),
+          threadId: piInputThreadId,
+          turnCount: 0,
+          createdAt: now(),
+        }),
+      );
+      expect(await NodeFSP.readFile(imagePath, "utf8")).toBe("pixels");
+      expect(await NodeFSP.readFile(filePath, "utf8")).toBe("notes");
+      await system.dispose();
+      await NodeFSP.writeFile(orphanPath, "orphan");
+      system = await createOrchestrationSystem(databasePath, undefined, directory);
+      expect(await NodeFSP.readFile(imagePath, "utf8")).toBe("pixels");
+      expect(await NodeFSP.readFile(filePath, "utf8")).toBe("notes");
+      await expect(NodeFSP.stat(orphanPath)).rejects.toMatchObject({ code: "ENOENT" });
+      const activity = Option.getOrThrow(
+        await system.run(
+          system.query.getPiInputActivity({
+            threadId: piInputThreadId,
+            requestId: piInputSubmission.requestId,
+          }),
+        ),
+      );
+      expect(decodePiInputSubmission(activity.payload).attachments).toEqual([image, file]);
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("pi-delete"),
+          threadId: piInputThreadId,
+        }),
+      );
+      await expect(NodeFSP.stat(imagePath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(NodeFSP.stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
   });
 });

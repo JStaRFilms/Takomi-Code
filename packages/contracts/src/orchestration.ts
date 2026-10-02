@@ -406,7 +406,7 @@ export const UserInputAttachmentAnswerPayload = Schema.Struct({
   attachmentsByQuestionId: UserInputAttachments,
 });
 export type UserInputAttachmentAnswerPayload = typeof UserInputAttachmentAnswerPayload.Type;
-const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
+export const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
 export const ProjectScriptIcon = Schema.Literals([
@@ -1610,6 +1610,130 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const PiInputIntent = Schema.Literals(["steer", "follow-up"]);
+export type PiInputIntent = typeof PiInputIntent.Type;
+export const PiInputOutcome = Schema.Literals([
+  "unconfirmed",
+  "queued",
+  "handled",
+  "not-submitted",
+  "rejected",
+  "unknown",
+]);
+export type PiInputOutcome = typeof PiInputOutcome.Type;
+export const PiInputReason = Schema.Literals([
+  "owner-unavailable",
+  "busy",
+  "preparation-failed",
+  "native-rejected",
+  "invalid-response",
+  "acknowledgment-timeout",
+  "transport-lost",
+  "cancelled",
+]);
+export type PiInputReason = typeof PiInputReason.Type;
+export const PiInputSubmissionContent = Schema.Struct({
+  requestId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  threadId: ThreadId,
+  providerInstanceId: ProviderInstanceId,
+  generation: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  intent: PiInputIntent,
+  text: Schema.String.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
+  attachments: Schema.Array(ChatAttachment).check(
+    Schema.makeFilter((attachments) => getProviderAttachmentLimitError(attachments) ?? true),
+  ),
+  context: Schema.optional(OrchestrationMessageContext),
+  fingerprint: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+});
+export const PiInputSubmission = Schema.Struct({
+  ...PiInputSubmissionContent.fields,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  outcome: PiInputOutcome,
+  reason: Schema.optional(PiInputReason),
+});
+export type PiInputSubmission = typeof PiInputSubmission.Type;
+export const piInputActivityId = (threadId: ThreadId, requestId: string) =>
+  EventId.make(`pi-input:${encodeURIComponent(threadId)}:${encodeURIComponent(requestId)}`);
+export const piInputRecordCommandId = (threadId: ThreadId, requestId: string) =>
+  CommandId.make(
+    `server:pi-input-record:${encodeURIComponent(threadId)}:${encodeURIComponent(requestId)}`,
+  );
+export const piInputResolveCommandId = (threadId: ThreadId, requestId: string) =>
+  CommandId.make(
+    `server:pi-input-resolve:${encodeURIComponent(threadId)}:${encodeURIComponent(requestId)}`,
+  );
+
+const piInputContentEqual = Schema.toEquivalence(PiInputSubmissionContent);
+
+/** Duplicate preparation can claim different copies of the same original uploads. */
+export function piInputSubmissionsHaveSameContent(
+  existing: PiInputSubmission,
+  submitted: PiInputSubmission,
+): boolean {
+  if (existing.attachments.length !== submitted.attachments.length) return false;
+  const originalIds = new Map(
+    submitted.attachments.map((attachment, index) => [
+      attachment.id,
+      existing.attachments[index]?.id ?? attachment.id,
+    ]),
+  );
+  return piInputContentEqual(existing, {
+    ...submitted,
+    attachments: submitted.attachments.map((attachment) => ({
+      ...attachment,
+      id: originalIds.get(attachment.id) ?? attachment.id,
+    })),
+    ...(submitted.context
+      ? {
+          context: {
+            ...submitted.context,
+            records: submitted.context.records.map((record) =>
+              (record.kind === "image" || record.kind === "file") && "attachmentId" in record
+                ? {
+                    ...record,
+                    attachmentId: originalIds.get(record.attachmentId) ?? record.attachmentId,
+                  }
+                : record,
+            ),
+          },
+        }
+      : {}),
+  });
+}
+
+export function piInputSubmissionActivity(
+  submission: PiInputSubmission,
+  sequence: number,
+): OrchestrationThreadActivity {
+  return {
+    id: piInputActivityId(submission.threadId, submission.requestId),
+    kind: "pi.input-submission",
+    tone: submission.outcome === "rejected" || submission.outcome === "unknown" ? "error" : "info",
+    summary: submission.intent === "steer" ? "Native steering input" : "Native follow-up input",
+    turnId: null,
+    createdAt: submission.createdAt,
+    sequence,
+    payload: submission,
+  };
+}
+
+const ThreadPiInputRecordCommand = Schema.Struct({
+  type: Schema.Literal("thread.pi-input.record"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  submission: PiInputSubmission,
+});
+const ThreadPiInputResolveCommand = Schema.Struct({
+  type: Schema.Literal("thread.pi-input.resolve"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: PiInputSubmission.fields.requestId,
+  outcome: PiInputOutcome.check(Schema.makeFilter((value) => value !== "unconfirmed")),
+  reason: Schema.optional(PiInputReason),
+  createdAt: IsoDateTime,
+});
+
 const ThreadActivityAppendCommand = Schema.Struct({
   type: Schema.Literal("thread.activity.append"),
   commandId: CommandId,
@@ -1692,6 +1816,8 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
+  ThreadPiInputRecordCommand,
+  ThreadPiInputResolveCommand,
   ThreadRevertCompleteCommand,
   ThreadTitleRegenerationCompleteCommand,
   ThreadTitleGenerateCompleteCommand,
@@ -1741,6 +1867,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.pi-input-recorded",
+  "thread.pi-input-resolved",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -2226,6 +2354,24 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.pi-input-recorded"),
+    payload: Schema.Struct({
+      threadId: ThreadId,
+      submission: PiInputSubmission,
+      sequence: NonNegativeInt,
+    }),
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.pi-input-resolved"),
+    payload: Schema.Struct({
+      threadId: ThreadId,
+      submission: PiInputSubmission,
+      sequence: NonNegativeInt,
+    }),
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

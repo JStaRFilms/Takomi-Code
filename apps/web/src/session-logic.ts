@@ -2,7 +2,8 @@ import {
   requestKindFromRequestType,
   type PendingApproval,
 } from "@t3tools/client-runtime/pending-requests";
-import { UserInputAttachmentAnswerPayload } from "@t3tools/contracts";
+import { PiInputSubmission, UserInputAttachmentAnswerPayload } from "@t3tools/contracts";
+const decodePiInputSubmission = Schema.decodeUnknownOption(PiInputSubmission);
 import { foldUserInputActivities } from "@t3tools/client-runtime/work-log/user-input";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -85,6 +86,7 @@ export interface WorkLogEntry {
   noticeSeverity?: import("@t3tools/contracts").RuntimeNoticeSeverity;
   inputOutcome?: import("@t3tools/contracts").RuntimeInputOutcome;
   vaultNotice?: string;
+  piInputSubmission?: PiInputSubmission;
   vaultExportId?: string;
   /** Grouping key for subagent lifecycle rows (one row per agent). */
   taskId?: string;
@@ -586,7 +588,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       : null
     : extractToolDetail(payload, title ?? activity.summary);
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
+  const piInputSubmission =
+    activity.kind === "pi.input-submission" ? decodePiInputSubmission(payload) : Option.none();
   const entry: DerivedWorkLogEntry = {
+    ...(Option.isSome(piInputSubmission) ? { piInputSubmission: piInputSubmission.value } : {}),
     ...(activity.kind === "runtime.warning" &&
     (payload?.category === "vault-command" || payload?.category === "vault-export-ready") &&
     typeof payload.message === "string"

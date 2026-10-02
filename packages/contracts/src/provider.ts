@@ -10,6 +10,9 @@ import {
 } from "./baseSchemas.ts";
 import {
   ChatAttachment,
+  UploadChatAttachment,
+  PiInputIntent,
+  PiInputReason,
   ModelSelection,
   getProviderAttachmentLimitError,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
@@ -23,6 +26,7 @@ import {
   RuntimeMode,
 } from "./orchestration.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
+import { OrchestrationMessageContext } from "./composerContext.ts";
 
 const ProviderSessionStatus = Schema.Literals([
   "connecting",
@@ -210,6 +214,31 @@ export const ProviderGetPiQueueStateInput = Schema.Struct({
   expectedGeneration: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
 });
 export type ProviderGetPiQueueStateInput = typeof ProviderGetPiQueueStateInput.Type;
+
+export const ProviderSubmitPiQueuedInputInput = Schema.Struct({
+  ...ProviderGetPiQueueStateInput.fields,
+  requestId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  intent: PiInputIntent,
+  text: Schema.String.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
+  attachments: Schema.Array(Schema.Union([UploadChatAttachment, ChatAttachment])),
+  context: Schema.optional(OrchestrationMessageContext),
+});
+export type ProviderSubmitPiQueuedInputInput = typeof ProviderSubmitPiQueuedInputInput.Type;
+export const ProviderSubmitPiQueuedInputResult = Schema.Struct({
+  requestId: TrimmedNonEmptyString,
+  sequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+export type ProviderSubmitPiQueuedInputResult = typeof ProviderSubmitPiQueuedInputResult.Type;
+export class ProviderPiQueuedInputError extends Schema.TaggedError<ProviderPiQueuedInputError>()(
+  "ProviderPiQueuedInputError",
+  { reason: Schema.Union([PiInputReason, Schema.Literal("conflict")]) },
+) {
+  override get message(): string {
+    return this.reason === "conflict"
+      ? "Native input identity conflicts with recorded content."
+      : "Native input was not recorded.";
+  }
+}
 
 export const ProviderPiQueueState = Schema.Struct({
   threadId: ThreadId,

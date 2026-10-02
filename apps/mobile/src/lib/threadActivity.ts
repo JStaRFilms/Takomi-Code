@@ -5,7 +5,12 @@ import {
   requestKindFromRequestType,
   type PendingApproval,
 } from "@t3tools/client-runtime/pending-requests";
-import { UserInputAttachmentAnswerPayload, isToolLifecycleItemType } from "@t3tools/contracts";
+import {
+  PiInputSubmission,
+  UserInputAttachmentAnswerPayload,
+  isToolLifecycleItemType,
+} from "@t3tools/contracts";
+const decodePiInputSubmission = Schema.decodeUnknownOption(PiInputSubmission);
 import type {
   OrchestrationLatestTurn,
   OrchestrationThread,
@@ -105,6 +110,7 @@ export interface WorkLogEntry {
   noticeSeverity?: import("@t3tools/contracts").RuntimeNoticeSeverity;
   inputOutcome?: import("@t3tools/contracts").RuntimeInputOutcome;
   vaultNotice?: string;
+  piInputSubmission?: PiInputSubmission;
   vaultExportId?: string;
   toolCallId?: string;
   /**
@@ -512,7 +518,10 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     isTaskActivity && typeof payload?.taskId === "string" && payload.taskId.length > 0
       ? payload.taskId
       : undefined;
+  const piInputSubmission =
+    activity.kind === "pi.input-submission" ? decodePiInputSubmission(payload) : Option.none();
   const entry: DerivedWorkLogEntry = {
+    ...(Option.isSome(piInputSubmission) ? { piInputSubmission: piInputSubmission.value } : {}),
     ...(activity.kind === "runtime.warning" &&
     (payload?.category === "vault-command" || payload?.category === "vault-export-ready") &&
     typeof payload.message === "string"
@@ -1605,7 +1614,8 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
     const isStandalone =
       entry.activity.workEntry.sourceActivityKind === "context-compaction" ||
       entry.activity.workEntry.questionAnswer !== undefined ||
-      entry.activity.workEntry.vaultNotice !== undefined;
+      entry.activity.workEntry.vaultNotice !== undefined ||
+      entry.activity.workEntry.piInputSubmission !== undefined;
     if (isStandalone || firstActivityEntry?.turnId !== entry.turnId) {
       flushGroup();
     }
@@ -2151,7 +2161,10 @@ function appendActivityGroupRows(
     groupableRun = [];
   };
   for (const activity of activities) {
-    if (activity.workEntry.vaultNotice !== undefined) {
+    if (
+      activity.workEntry.vaultNotice !== undefined ||
+      activity.workEntry.piInputSubmission !== undefined
+    ) {
       flushGroupableRun(false);
       result.push({
         type: "activity-group",

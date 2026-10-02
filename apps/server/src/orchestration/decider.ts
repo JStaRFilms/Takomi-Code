@@ -1,5 +1,6 @@
 import {
   EventId,
+  PiInputSubmission,
   MAX_SCRIPT_ID_LENGTH,
   SCRIPT_RUN_COMMAND_PATTERN,
   MessageId,
@@ -53,6 +54,7 @@ const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const decodeUserInputRequestedPayload = Schema.decodeUnknownOption(UserInputRequestedPayload);
+const decodePiInputSubmission = Schema.decodeUnknownOption(PiInputSubmission);
 const threadPullRequestLinksEqual = Schema.toEquivalence(Schema.NullOr(ThreadLinkedPullRequest));
 
 /**
@@ -212,10 +214,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   command,
   readModel,
   userInputActivity,
+  piInputActivity,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
   readonly userInputActivity?: OrchestrationThreadActivity;
+  readonly piInputActivity?: OrchestrationThreadActivity;
 }): Effect.fn.Return<
   DecideOrchestrationCommandResult,
   OrchestrationCommandRejection | PlatformError.PlatformError,
@@ -2241,6 +2245,71 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.pi-input.record": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (
+        piInputActivity ||
+        command.submission.threadId !== command.threadId ||
+        command.submission.outcome !== "unconfirmed" ||
+        command.submission.reason !== undefined ||
+        command.submission.updatedAt !== command.submission.createdAt
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Invalid or duplicate native input record.",
+        });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.submission.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.pi-input-recorded",
+        payload: {
+          threadId: command.threadId,
+          submission: command.submission,
+          sequence: readModel.snapshotSequence + 1,
+        },
+      };
+    }
+    case "thread.pi-input.resolve": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      const existing =
+        piInputActivity?.kind === "pi.input-submission"
+          ? decodePiInputSubmission(piInputActivity.payload)
+          : Option.none();
+      if (
+        Option.isNone(existing) ||
+        piInputActivity?.sequence === undefined ||
+        existing.value.outcome !== "unconfirmed"
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Native input is missing or already resolved.",
+        });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.pi-input-resolved",
+        payload: {
+          threadId: command.threadId,
+          sequence: piInputActivity.sequence,
+          submission: {
+            ...existing.value,
+            outcome: command.outcome,
+            updatedAt: command.createdAt,
+            ...(command.reason ? { reason: command.reason } : {}),
+          },
+        },
+      };
+    }
     case "thread.activity.append": {
       const thread = yield* requireThread({
         readModel,

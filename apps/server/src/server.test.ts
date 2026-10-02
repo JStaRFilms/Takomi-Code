@@ -8,6 +8,8 @@ import {
   type DeviceServiceState,
   AuthAccessTokenType,
   ApprovalRequestId,
+  ComposerContextId,
+  type ProviderSubmitPiQueuedInputInput,
   AuthStandardClientScopes,
   AuthEnvironmentBootstrapTokenType,
   AuthTokenExchangeGrantType,
@@ -59,6 +61,7 @@ import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -133,6 +136,22 @@ import {
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
+import {
+  makeHarness as makeNativePiHarness,
+  PI as NATIVE_PI,
+  THREAD as NATIVE_THREAD,
+} from "./provider/Layers/PiTestHarness.ts";
+import { OrchestrationEngineLive } from "./orchestration/Layers/OrchestrationEngine.ts";
+import { OrchestrationProjectionSnapshotQueryLive } from "./orchestration/Layers/ProjectionSnapshotQuery.ts";
+import { OrchestrationProjectionPipelineLive } from "./orchestration/Layers/ProjectionPipeline.ts";
+import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
+import { ProviderCommandReactor } from "./orchestration/Services/ProviderCommandReactor.ts";
+import { RuntimeReceiptBusTest } from "./orchestration/Layers/RuntimeReceiptBus.ts";
+import { RuntimeReceiptBus } from "./orchestration/Services/RuntimeReceiptBus.ts";
+import * as ThreadBackgroundLiveness from "./orchestration/ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "./orchestration/ThreadPlanProgress.ts";
+import { OrchestrationCommandReceiptRepositoryLive } from "./persistence/Layers/OrchestrationCommandReceipts.ts";
+import { TextGeneration } from "./textGeneration/TextGeneration.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStoreLive } from "./persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationEventStore } from "./persistence/Services/OrchestrationEventStore.ts";
@@ -150,6 +169,7 @@ import { CodexInstallation } from "./provider/CodexInstallation.ts";
 import type { ProviderInstance } from "./provider/ProviderDriver.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import { ProviderAdapterRequestError } from "./provider/Errors.ts";
+import { createPendingAttachmentId, resolveAttachmentPath } from "./attachmentStore.ts";
 import {
   makeManualOnlyProviderMaintenanceCapabilities,
   ProviderVersionCache,
@@ -1348,6 +1368,129 @@ const appendSessionCookieToWsUrl = (url: string, sessionCookieHeader: string) =>
   next.hash = `cookie=${encodeURIComponent(sessionCookieHeader)}`;
   return isAbsoluteUrl ? next.toString() : `${next.pathname}${next.search}${next.hash}`;
 };
+
+const buildNativeQueuedInputApp = Effect.fnUntraced(function* (
+  version = "0.99.1",
+  startReactor = true,
+  failResolution = false,
+) {
+  const nativeConfig = yield* Layer.build(
+    ServerConfig.layerTest(process.cwd(), { prefix: "t3-native-input-rpc-" }),
+  );
+  const native = yield* makeNativePiHarness(true, version).pipe(
+    Effect.provideContext(nativeConfig),
+  );
+  const engineLayer = Layer.mergeAll(
+    OrchestrationEngineLive.pipe(
+      Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+      Layer.provide(OrchestrationProjectionPipelineLive),
+    ),
+    OrchestrationProjectionSnapshotQueryLive,
+  ).pipe(
+    Layer.provideMerge(ThreadBackgroundLiveness.layer),
+    Layer.provide(ThreadPlanProgress.layer),
+    Layer.provide(OrchestrationEventStoreLive),
+    Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+    Layer.provide(RepositoryIdentityResolver.layer),
+    Layer.provide(SqlitePersistenceMemory),
+    Layer.provideMerge(Layer.succeed(ServerConfig.ServerConfig, native.config)),
+    Layer.provide(NodeServices.layer),
+  );
+  const resolveAttempted = yield* Deferred.make<void>();
+  const reactorEngineLayer = Layer.effect(
+    OrchestrationEngine.OrchestrationEngineService,
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+      return {
+        ...engine,
+        dispatch: (command: OrchestrationCommand) =>
+          command.type === "thread.pi-input.resolve" && failResolution
+            ? Deferred.succeed(resolveAttempted, undefined).pipe(
+                Effect.andThen(
+                  new OrchestrationCommandInvariantError({
+                    commandType: command.type,
+                    detail: "Injected resolution persistence failure",
+                  }),
+                ),
+              )
+            : engine.dispatch(command),
+      };
+    }),
+  ).pipe(Layer.provideMerge(engineLayer));
+  const context = yield* Layer.build(
+    ProviderCommandReactorLive.pipe(
+      Layer.provideMerge(reactorEngineLayer),
+      Layer.provideMerge(RuntimeReceiptBusTest),
+      Layer.provide(Layer.succeed(ProviderService.ProviderService, native.service)),
+      Layer.provide(Layer.mock(ProviderAuthService)({})),
+      Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
+      Layer.provide(Layer.mock(GitWorkflowService.GitWorkflowService)({})),
+      Layer.provide(Layer.mock(TextGeneration)({})),
+      Layer.provide(Layer.mock(TerminalManager.TerminalManager)({})),
+      Layer.provide(Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({})),
+      Layer.provide(ServerSettings.ServerSettingsService.layerTest()),
+      Layer.provide(NodeServices.layer),
+    ),
+  );
+  const engine = Context.get(context, OrchestrationEngine.OrchestrationEngineService);
+  const query = Context.get(context, ProjectionSnapshotQuery.ProjectionSnapshotQuery);
+  const reactor = Context.get(context, ProviderCommandReactor);
+  const receipts = Context.get(context, RuntimeReceiptBus);
+  const projectId = ProjectId.make("native-rpc-project");
+  const createdAt = "2026-09-30T00:00:00.000Z";
+  yield* engine.dispatch({
+    type: "project.create",
+    commandId: CommandId.make("native-rpc-project"),
+    projectId,
+    title: "Native input",
+    workspaceRoot: native.config.stateDir,
+    createdAt,
+  });
+  yield* engine.dispatch({
+    type: "thread.create",
+    commandId: CommandId.make("native-rpc-thread"),
+    threadId: NATIVE_THREAD,
+    projectId,
+    title: "Native input",
+    modelSelection: { instanceId: NATIVE_PI, model: "test-model" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdAt,
+  });
+  yield* native.service.startSession(NATIVE_THREAD, {
+    threadId: NATIVE_THREAD,
+    providerInstanceId: NATIVE_PI,
+    runtimeMode: "full-access",
+    cwd: native.config.stateDir,
+  });
+  const peer = yield* Queue.take(native.peers);
+  const state = Option.getOrThrow(
+    yield* native.extension.observe(NATIVE_THREAD, Effect.void).pipe(Stream.runHead),
+  );
+  if (state.generation === null) return yield* Effect.die("Missing live native RPC owner");
+  if (startReactor) yield* reactor.start();
+  yield* buildAppUnderTest({
+    config: { baseDir: native.config.baseDir },
+    layers: {
+      providerService: native.service,
+      extensionState: native.extension,
+      orchestrationEngine: engine,
+      projectionSnapshotQuery: query,
+    },
+  });
+  return {
+    native,
+    peer,
+    engine,
+    query,
+    reactor,
+    receipts,
+    resolveAttempted,
+    generation: state.generation,
+  };
+});
 
 const getHttpServerUrl = (pathname = "") =>
   Effect.gen(function* () {
@@ -6933,6 +7076,605 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             assert.equal(failed.message, "Native queue state is unavailable.");
           }),
         );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "native queued-input RPC records once and resolves only after actual native acknowledgment persistence",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* buildNativeQueuedInputApp();
+        const before = Option.getOrThrow(yield* h.query.getThreadDetailById(NATIVE_THREAD));
+        const settled = yield* h.receipts.streamEventsForTest.pipe(
+          Stream.filter((receipt) => receipt.type === "pi.input.settled"),
+          Stream.runHead,
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        const wsUrl = yield* getWsServerUrl("/ws");
+        yield* withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const input = {
+              threadId: NATIVE_THREAD,
+              expectedProviderInstanceId: NATIVE_PI,
+              expectedGeneration: h.generation,
+              requestId: "native-rpc-input",
+              intent: "steer" as const,
+              text: "GUI authored input",
+              attachments: [],
+            };
+            const receipt = yield* client[WS_METHODS.providerSubmitPiQueuedInput](input);
+            assert.equal(receipt.requestId, input.requestId);
+            const nativeOrSettled = yield* Effect.raceFirst(
+              Deferred.await(h.peer.requestedInput).pipe(Effect.as("native")),
+              Fiber.join(settled).pipe(Effect.map((value) => value)),
+            );
+            assert.equal(nativeOrSettled, "native");
+            assert.equal(
+              Option.getOrThrow(
+                yield* h.query.getPiInputActivity({
+                  threadId: NATIVE_THREAD,
+                  requestId: input.requestId,
+                }),
+              ).payload.outcome,
+              "unconfirmed",
+            );
+            assert.deepEqual(yield* client[WS_METHODS.providerSubmitPiQueuedInput](input), receipt);
+            const busy = yield* client[WS_METHODS.providerSubmitPiQueuedInput]({
+              ...input,
+              requestId: "competing-input",
+            }).pipe(Effect.flip);
+            assert.equal(busy._tag, "ProviderPiQueuedInputError");
+            if (busy._tag !== "ProviderPiQueuedInputError")
+              return yield* Effect.die("Wrong native busy error");
+            assert.equal(busy.reason, "busy");
+            const conflict = yield* client[WS_METHODS.providerSubmitPiQueuedInput]({
+              ...input,
+              text: "Changed authored input",
+            }).pipe(Effect.flip);
+            assert.equal(conflict._tag, "ProviderPiQueuedInputError");
+            if (conflict._tag !== "ProviderPiQueuedInputError")
+              return yield* Effect.die("Wrong native conflict error");
+            assert.equal(conflict.reason, "conflict");
+            yield* h.peer.emit({
+              type: "extension_error",
+              event: "input",
+              error: "PRIVATE_RPC_INPUT_ERROR",
+              extensionPath: "/private/native-input",
+            });
+            yield* h.peer.setInputReply({
+              data: { disposition: "queued", echo: "PRIVATE_RPC_INPUT_ERROR" },
+            });
+            yield* Deferred.succeed(h.peer.releaseInput, undefined);
+            assert.deepEqual(
+              Option.getOrThrow(yield* Fiber.join(settled)).type,
+              "pi.input.settled",
+            );
+            yield* h.reactor.drain;
+            const activity = Option.getOrThrow(
+              yield* h.query.getPiInputActivity({
+                threadId: NATIVE_THREAD,
+                requestId: input.requestId,
+              }),
+            );
+            assert.equal(activity.payload.outcome, "queued");
+            assert.equal(activity.payload.text, input.text);
+            assert.match(activity.payload.fingerprint, /^[a-f0-9]{64}$/);
+            assert.deepEqual(yield* client[WS_METHODS.providerSubmitPiQueuedInput](input), receipt);
+            const after = Option.getOrThrow(yield* h.query.getThreadDetailById(NATIVE_THREAD));
+            assert.deepEqual(after.messages, before.messages);
+            assert.deepEqual(after.checkpoints, before.checkpoints);
+            assert.deepEqual(after.latestTurn, before.latestTurn);
+            assert.equal(after.title, before.title);
+            const events = yield* h.engine.readEvents(0).pipe(Stream.runCollect);
+            assert.equal(
+              events.filter((event) => event.type === "thread.pi-input-recorded").length,
+              1,
+            );
+            assert.equal(
+              events.filter((event) => event.type === "thread.pi-input-resolved").length,
+              1,
+            );
+            assert.equal(h.peer.inputWrites(), 1);
+            assert.notInclude(
+              encodeTestJson([events, h.native.nativeRecords, h.native.canonical]),
+              "PRIVATE_RPC_INPUT_ERROR",
+            );
+            assert.notInclude(
+              encodeTestJson([events, h.native.nativeRecords, h.native.canonical]),
+              "/private/native-input",
+            );
+          }),
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "native queued-input RPC claims images/files, remaps context and deduplicates without extra copies",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* buildNativeQueuedInputApp();
+        const fs = h.native.fileSystem;
+        const file = {
+          type: "file" as const,
+          id: createPendingAttachmentId(".txt"),
+          name: "notes.txt",
+          mimeType: "text/plain",
+          sizeBytes: 5,
+        };
+        const filePath = resolveAttachmentPath({
+          attachmentsDir: h.native.config.attachmentsDir,
+          attachment: file,
+        });
+        if (!filePath) return yield* Effect.die("Invalid pending attachment path");
+        yield* fs.makeDirectory(h.native.config.attachmentsDir, { recursive: true });
+        yield* fs.writeFileString(filePath, "notes");
+        const input: ProviderSubmitPiQueuedInputInput = {
+          threadId: NATIVE_THREAD,
+          expectedProviderInstanceId: NATIVE_PI,
+          expectedGeneration: h.generation,
+          requestId: "native-rpc-full-content",
+          intent: "follow-up",
+          text: "Authored ![Capture](t3-context://v1/image/image-native) [Notes](t3-context://v1/file/file-native) [Shell](t3-context://v1/terminal/terminal-native)",
+          attachments: [
+            {
+              type: "image",
+              id: "inline-image-local",
+              name: "capture.png",
+              mimeType: "image/png",
+              sizeBytes: 6,
+              dataUrl: "data:image/png;base64,cGl4ZWxz",
+            },
+            file,
+          ],
+          context: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                contextId: ComposerContextId.make("image-native"),
+                kind: "image",
+                label: "Capture",
+                attachmentId: "inline-image-local",
+                name: "capture.png",
+                mimeType: "image/png",
+                sizeBytes: 6,
+              },
+              {
+                version: 1,
+                contextId: ComposerContextId.make("file-native"),
+                kind: "file",
+                label: "Notes",
+                attachmentId: file.id,
+                name: "notes.txt",
+                mimeType: "text/plain",
+                sizeBytes: 5,
+              },
+              {
+                version: 1,
+                contextId: ComposerContextId.make("terminal-native"),
+                kind: "terminal",
+                label: "Shell",
+                terminalId: "shell",
+                terminalLabel: "Shell",
+                lineStart: 1,
+                lineEnd: 1,
+                text: "Selected terminal output",
+              },
+            ],
+          },
+        };
+        const settled = yield* h.receipts.streamEventsForTest.pipe(
+          Stream.filter((receipt) => receipt.type === "pi.input.settled"),
+          Stream.runHead,
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            const receipt = yield* client[WS_METHODS.providerSubmitPiQueuedInput](input);
+            const request = yield* Effect.raceFirst(
+              Deferred.await(h.peer.requestedInput),
+              Fiber.join(settled).pipe(
+                Effect.andThen(Effect.die("Native full content was not admitted")),
+              ),
+            );
+            assert.deepEqual(request.images, [
+              { type: "image", data: "cGl4ZWxz", mimeType: "image/png" },
+            ]);
+            assert.include(String(request.message), "Selected terminal output");
+            assert.include(String(request.message), h.native.config.attachmentsDir);
+            const recorded = Option.getOrThrow(
+              yield* h.query.getPiInputActivity({
+                threadId: NATIVE_THREAD,
+                requestId: input.requestId,
+              }),
+            ).payload;
+            assert.equal(recorded.text, input.text);
+            assert.equal(recorded.attachments.length, 2);
+            const image = recorded.attachments[0];
+            const storedFile = recorded.attachments[1];
+            if (!image || !storedFile) return yield* Effect.die("Missing normalized content");
+            assert.notEqual(image.id, "inline-image-local");
+            assert.notEqual(storedFile.id, file.id);
+            assert.deepEqual(
+              recorded.context?.records
+                .slice(0, 2)
+                .map((record) => ("attachmentId" in record ? record.attachmentId : null)),
+              [image.id, storedFile.id],
+            );
+            const files = (yield* fs.readDirectory(h.native.config.attachmentsDir)).sort();
+            assert.equal(files.length, 3);
+            assert.deepEqual(yield* client[WS_METHODS.providerSubmitPiQueuedInput](input), receipt);
+            assert.deepEqual(
+              (yield* fs.readDirectory(h.native.config.attachmentsDir)).sort(),
+              files,
+            );
+            const conflict = yield* client[WS_METHODS.providerSubmitPiQueuedInput]({
+              ...input,
+              text: "Changed full content",
+            }).pipe(Effect.flip);
+            assert.equal(conflict._tag, "ProviderPiQueuedInputError");
+            assert.deepEqual(
+              (yield* fs.readDirectory(h.native.config.attachmentsDir)).sort(),
+              files,
+            );
+            yield* Deferred.succeed(h.peer.releaseInput, undefined);
+            const result = Option.getOrThrow(yield* Fiber.join(settled));
+            assert.equal(result.type, "pi.input.settled");
+            yield* h.reactor.drain;
+            assert.equal(
+              Option.getOrThrow(
+                yield* h.query.getPiInputActivity({
+                  threadId: NATIVE_THREAD,
+                  requestId: input.requestId,
+                }),
+              ).payload.outcome,
+              "queued",
+            );
+            assert.equal(h.peer.inputWrites(), 1);
+            const events = yield* h.engine.readEvents(0).pipe(Stream.runCollect);
+            assert.notInclude(encodeTestJson(events), "cGl4ZWxz");
+            assert.notInclude(encodeTestJson(events), h.native.config.attachmentsDir);
+            assert.notInclude(encodeTestJson(h.native.nativeRecords), "cGl4ZWxz");
+          }),
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "native queued-input RPC cleans a partial preparation and releases its slot without recording",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* buildNativeQueuedInputApp();
+        yield* h.native.fileSystem.makeDirectory(h.native.config.attachmentsDir, {
+          recursive: true,
+        });
+        const input: ProviderSubmitPiQueuedInputInput = {
+          threadId: NATIVE_THREAD,
+          expectedProviderInstanceId: NATIVE_PI,
+          expectedGeneration: h.generation,
+          requestId: "failed-native-preparation",
+          intent: "steer",
+          text: "Authored input",
+          attachments: [
+            {
+              type: "image",
+              id: "inline-image-local",
+              name: "capture.png",
+              mimeType: "image/png",
+              sizeBytes: 6,
+              dataUrl: "data:image/png;base64,cGl4ZWxz",
+            },
+            {
+              type: "file",
+              id: createPendingAttachmentId(".txt"),
+              name: "missing.txt",
+              mimeType: "text/plain",
+              sizeBytes: 5,
+            },
+          ],
+        };
+        yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+          Effect.gen(function* () {
+            const failed = yield* client[WS_METHODS.providerSubmitPiQueuedInput](input).pipe(
+              Effect.flip,
+            );
+            if (failed._tag !== "ProviderPiQueuedInputError")
+              return yield* Effect.die("Wrong preparation error");
+            assert.equal(failed.reason, "preparation-failed");
+            assert.equal(
+              Option.isNone(
+                yield* h.query.getPiInputActivity({
+                  threadId: NATIVE_THREAD,
+                  requestId: input.requestId,
+                }),
+              ),
+              true,
+            );
+            assert.deepEqual(
+              yield* h.native.fileSystem.readDirectory(h.native.config.attachmentsDir),
+              [],
+            );
+            assert.equal(h.peer.inputWrites(), 0);
+            const settled = yield* h.receipts.streamEventsForTest.pipe(
+              Stream.filter((receipt) => receipt.type === "pi.input.settled"),
+              Stream.runHead,
+              Effect.forkScoped({ startImmediately: true }),
+            );
+            yield* client[WS_METHODS.providerSubmitPiQueuedInput]({
+              ...input,
+              requestId: "explicit-next-input",
+              attachments: [],
+            });
+            yield* Deferred.await(h.peer.requestedInput);
+            yield* Deferred.succeed(h.peer.releaseInput, undefined);
+            yield* Fiber.join(settled);
+            yield* h.reactor.drain;
+            assert.equal(h.peer.inputWrites(), 1);
+          }),
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("native queued-input RPC durable history is not startup/reconnect execution", () =>
+    Effect.gen(function* () {
+      const h = yield* buildNativeQueuedInputApp("0.99.1", false);
+      const input: ProviderSubmitPiQueuedInputInput = {
+        threadId: NATIVE_THREAD,
+        expectedProviderInstanceId: NATIVE_PI,
+        expectedGeneration: h.generation,
+        requestId: "historical-native-input",
+        intent: "steer",
+        text: "Authored input",
+        attachments: [],
+      };
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const receipt = yield* withWsRpcClient(wsUrl, (client) =>
+        client[WS_METHODS.providerSubmitPiQueuedInput](input),
+      );
+      yield* h.reactor.start();
+      yield* h.reactor.drain;
+      assert.equal(h.peer.inputWrites(), 0);
+      assert.equal(
+        Option.getOrThrow(
+          yield* h.query.getPiInputActivity({
+            threadId: NATIVE_THREAD,
+            requestId: input.requestId,
+          }),
+        ).payload.outcome,
+        "unconfirmed",
+      );
+      assert.deepEqual(
+        yield* withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.providerSubmitPiQueuedInput](input),
+        ),
+        receipt,
+      );
+      yield* h.reactor.drain;
+      assert.equal(h.peer.inputWrites(), 0);
+      const release = h.native.service.releasePiQueuedInput;
+      if (!release) return yield* Effect.die("Missing native release");
+      yield* release(
+        Option.getOrThrow(
+          yield* h.query.getPiInputActivity({
+            threadId: NATIVE_THREAD,
+            requestId: input.requestId,
+          }),
+        ).payload,
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  for (const malformed of [false, true])
+    it.effect(
+      `native queued-input RPC persists ${malformed ? "unknown" : "rejected"} without private response content`,
+      () =>
+        Effect.gen(function* () {
+          const h = yield* buildNativeQueuedInputApp();
+          const input: ProviderSubmitPiQueuedInputInput = {
+            threadId: NATIVE_THREAD,
+            expectedProviderInstanceId: NATIVE_PI,
+            expectedGeneration: h.generation,
+            requestId: "native-negative-input",
+            intent: "follow-up",
+            text: "Authored input",
+            attachments: [],
+          };
+          const settled = yield* h.receipts.streamEventsForTest.pipe(
+            Stream.filter((receipt) => receipt.type === "pi.input.settled"),
+            Stream.runHead,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          yield* withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            client[WS_METHODS.providerSubmitPiQueuedInput](input),
+          );
+          const nativeRequest = yield* Deferred.await(h.peer.requestedInput);
+          yield* h.peer.setInputReply(
+            malformed
+              ? {
+                  type: "extension_ui_request",
+                  method: "setEditorText",
+                  text: "PRIVATE_NATIVE_NEGATIVE",
+                }
+              : { success: false, error: "PRIVATE_NATIVE_NEGATIVE", data: undefined },
+          );
+          yield* Deferred.succeed(h.peer.releaseInput, undefined);
+          yield* Fiber.join(settled);
+          yield* h.reactor.drain;
+          const result = Option.getOrThrow(
+            yield* h.query.getPiInputActivity({
+              threadId: NATIVE_THREAD,
+              requestId: input.requestId,
+            }),
+          ).payload;
+          assert.equal(result.outcome, malformed ? "unknown" : "rejected");
+          assert.equal(result.reason, malformed ? "invalid-response" : "native-rejected");
+          yield* h.peer.emit({
+            id: nativeRequest.id,
+            type: "response",
+            command: "follow_up",
+            success: true,
+            data: { disposition: "queued", echo: "PRIVATE_NATIVE_NEGATIVE" },
+          });
+          yield* h.peer.emit({
+            type: "extension_error",
+            event: "skill_expansion",
+            error: "PRIVATE_NATIVE_NEGATIVE",
+            stack: "PRIVATE_NATIVE_NEGATIVE",
+          });
+          yield* h.peer.emit({
+            type: "extension_ui_request",
+            method: "setStatus",
+            statusKey: "negative-drain",
+            statusText: "Drained",
+          });
+          yield* h.native.extension.observe(NATIVE_THREAD, Effect.void).pipe(
+            Stream.filter((state) =>
+              state.statuses.some((status) => status.key === "negative-drain"),
+            ),
+            Stream.runHead,
+          );
+          const events = yield* h.engine.readEvents(0).pipe(Stream.runCollect);
+          assert.notInclude(
+            encodeTestJson([events, h.native.nativeRecords, h.native.canonical]),
+            "PRIVATE_NATIVE_NEGATIVE",
+          );
+          assert.equal(
+            Option.getOrThrow(
+              yield* h.query.getPiInputActivity({
+                threadId: NATIVE_THREAD,
+                requestId: input.requestId,
+              }),
+            ).payload.outcome,
+            result.outcome,
+          );
+          assert.equal(h.peer.inputWrites(), 1);
+        }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
+
+  it.effect(
+    "native queued-input RPC resolution failure leaves unconfirmed without receipt or replay",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* buildNativeQueuedInputApp("0.99.1", true, true);
+        let published = 0;
+        yield* h.receipts.streamEventsForTest.pipe(
+          Stream.runForEach(() =>
+            Effect.sync(() => {
+              published++;
+            }),
+          ),
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        const input: ProviderSubmitPiQueuedInputInput = {
+          threadId: NATIVE_THREAD,
+          expectedProviderInstanceId: NATIVE_PI,
+          expectedGeneration: h.generation,
+          requestId: "failed-native-resolution",
+          intent: "steer",
+          text: "Authored input",
+          attachments: [],
+        };
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const receipt = yield* withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.providerSubmitPiQueuedInput](input),
+        );
+        yield* Deferred.await(h.peer.requestedInput);
+        yield* Deferred.succeed(h.peer.releaseInput, undefined);
+        yield* Deferred.await(h.resolveAttempted);
+        yield* h.reactor.drain;
+        assert.equal(published, 0);
+        assert.equal(
+          Option.getOrThrow(
+            yield* h.query.getPiInputActivity({
+              threadId: NATIVE_THREAD,
+              requestId: input.requestId,
+            }),
+          ).payload.outcome,
+          "unconfirmed",
+        );
+        assert.deepEqual(
+          yield* withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.providerSubmitPiQueuedInput](input),
+          ),
+          receipt,
+        );
+        yield* h.reactor.drain;
+        assert.equal(h.peer.inputWrites(), 1);
+        assert.equal(published, 0);
+        const events = yield* h.engine.readEvents(0).pipe(Stream.runCollect);
+        assert.equal(events.filter((event) => event.type === "thread.pi-input-resolved").length, 0);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("native queued-input RPC rejects read-only credentials before preparing content", () =>
+    Effect.gen(function* () {
+      let captures = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            capturePiQueuedInput: () =>
+              Effect.sync(() => {
+                captures++;
+              }).pipe(Effect.andThen(Effect.die("Unauthorized native capture"))),
+          },
+        },
+      });
+      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "orchestration:read",
+      });
+      const response = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+      });
+      const { ticket } = yield* responseJsonEffect<{ readonly ticket: string }>(response);
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket)}`;
+      const denied = yield* withWsRpcClient(wsUrl, (client) =>
+        client[WS_METHODS.providerSubmitPiQueuedInput]({
+          threadId: NATIVE_THREAD,
+          expectedProviderInstanceId: NATIVE_PI,
+          expectedGeneration: "unauthorized-generation",
+          requestId: "unauthorized-input",
+          intent: "steer",
+          text: "Private authored text",
+          attachments: [],
+        }).pipe(Effect.flip),
+      );
+      assert.equal(denied._tag, "EnvironmentAuthorizationError");
+      assert.equal(captures, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "native queued-input RPC unsupported owner leaves no authored history or startup work",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* buildNativeQueuedInputApp("0.99.0");
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const rejected = yield* withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.providerSubmitPiQueuedInput]({
+            threadId: NATIVE_THREAD,
+            expectedProviderInstanceId: NATIVE_PI,
+            expectedGeneration: h.generation,
+            requestId: "unsupported-input",
+            intent: "follow-up",
+            text: "Authored input",
+            attachments: [],
+          }).pipe(Effect.flip),
+        );
+        assert.equal(rejected._tag, "ProviderPiQueuedInputError");
+        if (rejected._tag !== "ProviderPiQueuedInputError")
+          return yield* Effect.die("Wrong native owner error");
+        assert.equal(rejected.reason, "owner-unavailable");
+        assert.equal(
+          Option.isNone(
+            yield* h.query.getPiInputActivity({
+              threadId: NATIVE_THREAD,
+              requestId: "unsupported-input",
+            }),
+          ),
+          true,
+        );
+        assert.equal(h.peer.inputWrites(), 0);
+        assert.equal(yield* Queue.size(h.native.peers), 0);
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

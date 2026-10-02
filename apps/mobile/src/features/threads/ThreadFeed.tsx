@@ -1,3 +1,4 @@
+import { piInputOutcomeText } from "@t3tools/client-runtime/state/piInputSubmission";
 import {
   WorktreeWorkingHeader,
   WorktreeSetupCard,
@@ -1750,6 +1751,59 @@ function renderFeedEntry(
     );
   }
 
+  const piInput =
+    entry.activities.length === 1 ? entry.activities[0]?.workEntry.piInputSubmission : undefined;
+  if (piInput) {
+    return (
+      <View
+        accessibilityLabel={
+          piInput.intent === "steer"
+            ? "Native Pi steering submission"
+            : "Native Pi follow-up submission"
+        }
+        className="mb-3 min-w-0 gap-2"
+      >
+        <Text className="font-t3-medium text-xs text-foreground-muted">
+          {piInput.intent === "steer" ? "Native Pi steering" : "Native Pi follow-up"} ·{" "}
+          {formatMessageTime(piInput.createdAt)}
+        </Text>
+        <Text className="text-xs text-foreground-muted">{piInputOutcomeText(piInput.outcome)}</Text>
+        <View className="flex-row flex-wrap gap-2">
+          {piInput.attachments.map((attachment) =>
+            isImageAttachment(attachment) ? (
+              <MessageAttachmentImage
+                key={attachment.id}
+                environmentId={props.environmentId}
+                attachmentId={attachment.id}
+                name={attachment.name}
+                mimeType={attachment.mimeType}
+                className="h-24 w-24 rounded-[14px]"
+                onPressPreview={props.onPressPreview}
+              />
+            ) : isFileAttachment(attachment) ? (
+              <MessageAttachmentFile
+                key={attachment.id}
+                environmentId={props.environmentId}
+                attachment={attachment}
+                onPressPreview={props.onPressPreview}
+                onPressVideo={props.onPressVideo}
+              />
+            ) : null,
+          )}
+        </View>
+        <UserMessageContent
+          text={piInput.text}
+          environmentId={props.environmentId}
+          context={piInput.context}
+          markdownStyles={markdownStyles.assistant}
+          reviewCommentColors={props.reviewCommentColors}
+          skills={props.skills}
+          linkHandlers={props.markdownLinkHandlers}
+          renderImage={props.renderMarkdownImage}
+        />
+      </View>
+    );
+  }
   const vaultNotice =
     entry.activities.length === 1 ? entry.activities[0]?.workEntry.vaultNotice : undefined;
   if (vaultNotice !== undefined) {

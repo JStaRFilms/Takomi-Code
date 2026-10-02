@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./piInputDraft": {
+      "types": "./src/piInputDraft.ts",
+      "default": "./src/piInputDraft.ts"
+    },
+    "./state/piInputSubmission": {
+      "types": "./src/state/piInputSubmission.ts",
+      "default": "./src/state/piInputSubmission.ts"
+    },
     "./device/stream": {
       "types": "./src/device/stream.ts",
       "default": "./src/device/stream.ts"

@@ -14,7 +14,7 @@ import type {
   TurnId,
 } from "@t3tools/contracts";
 import { threadPullRequestKeysEqual } from "@t3tools/shared/threadPullRequests";
-import { isImportedAgentSessionMessageId } from "@t3tools/contracts";
+import { isImportedAgentSessionMessageId, piInputSubmissionActivity } from "@t3tools/contracts";
 import { compareDateTimeStrings } from "@t3tools/shared/dateTime";
 
 export type ThreadDetailReducerResult =
@@ -677,6 +677,16 @@ export function applyThreadDetailEvent(
     }
 
     // ── Activities ──────────────────────────────────────────────────
+    case "thread.pi-input-recorded":
+    case "thread.pi-input-resolved":
+      return applyThreadDetailEvent(thread, {
+        ...event,
+        type: "thread.activity-appended",
+        payload: {
+          threadId: event.payload.threadId,
+          activity: piInputSubmissionActivity(event.payload.submission, event.payload.sequence),
+        },
+      });
     case "thread.activity-appended": {
       const activity = event.payload.activity;
       // A resolvable context-window update supersedes earlier resolvable ones

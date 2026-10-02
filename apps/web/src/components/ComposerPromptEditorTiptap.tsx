@@ -83,6 +83,7 @@ export interface ComposerPromptEditorHandle {
   focusAt: (cursor: number) => void;
   focusAtEnd: () => void;
   readSelectionRange: () => { start: number; end: number };
+  readRevision?: () => number;
   requestCitationComment: (request: ComposerCitationCommentRequest) => void;
   readSnapshot: () => {
     value: string;
@@ -665,6 +666,7 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
 
   const initialCursor = clampCollapsedComposerCursor(value, cursor);
   const initialExpandedCursor = expandCollapsedComposerCursor(value, initialCursor);
+  const editorRevisionRef = useRef(0);
   const snapshotRef = useRef({
     value,
     cursor: initialCursor,
@@ -1056,6 +1058,7 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
         },
       },
       onUpdate: ({ editor: updated }) => {
+        editorRevisionRef.current++;
         handleEditorChange(updated);
       },
       onSelectionUpdate: ({ editor: updated }) => {
@@ -1250,6 +1253,7 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
         }
       },
       readSnapshot,
+      readRevision: () => editorRevisionRef.current,
       isCaretOnVisualEdge: (edge) => {
         const snapshot = readSnapshot();
         if (snapshot.value.length === 0) return true;

@@ -220,6 +220,18 @@ Cumulative tokens and native-reported USD cost cover all session entries, includ
 
 Statistics are unavailable for unknown or other runtime versions. This compatibility check is separate from session catalog support. Manual Pi compaction is not exposed here because stock RPC can interrupt independent work.
 
+## Authored native input history
+
+For a connected, supported live Pi session, use Steer native Pi or Native follow-up below the existing composer on web, desktop or mobile. Both send the current text, images, files and structured context through native input hooks. Ordinary Send, waiting drafts and the mobile outbox keep their existing behavior. Native acceptance does not start idle work, prove current queue membership or mean model work completed. Submitting again after an unknown result may duplicate work.
+
+The timeline shows each submission's intent, authored content and outcome separately from user messages. Only queued or handled confirmation can clear the originating device's unchanged draft. Edits, editor revisions, attachment or context changes, navigation and connection or owner changes preserve it. Upload bookkeeping alone does not count as an edit. Other devices' confirmations never consume a local draft. If a recorded request has no terminal confirmation after one minute, the local pending slot is released and its draft callback is discarded. History remains unconfirmed and the draft stays. A late outcome can update history but cannot consume that expired draft; submitting again may duplicate native work.
+
+The persistence layer records explicit native steering and follow-up input as typed authored submissions, separate from ordinary user messages. Each entry keeps the original text, image/file references and structured context. Recording or updating it does not create a model turn, checkpoint, title input or ordinary-send acknowledgment, and does not change settled or snoozed state.
+
+A submission starts unconfirmed. Queued means native acceptance, not current queue membership or imminent execution. Handled means an input hook consumed it, not that independent model work completed. Rejected, not-submitted and unknown outcomes retain the authored content. Unknown or unconfirmed input must not be retried automatically.
+
+Record and resolve events update one stable row in the existing activity projection. Resolution keeps its original timeline sequence and creation time, including on older history pages. Durable deduplication reads that exact row rather than relying on the most recent 500 activities. Revert and bootstrap cleanup retain referenced attachments; thread deletion removes them. Expanded host-path instructions and image bytes belong only to transient provider preparation, never to this history entry. The operate-authorized RPC records each request once and delivers only its new live record event to the original supported Pi process. Delivery uses native steer or follow_up with images and projected composer context. Admission starts the uncertainty boundary; timeout, cancellation or transport loss cannot establish definite non-submission. There is no startup, reconnect or recovery replay. Clients subscribe before submitting and use correlated live events for confirmation. The RPC response confirms recording only; it never clears a draft. Disconnects do not replay submissions.
+
 ## Native queue state
 
 For a live Pi 0.99.1 thread, open Native queue from the composer or command palette on web/desktop, or the composer or thread header on mobile. Refresh reads the same live process; reconnect refreshes only while details remain open. Reads never restart a stopped process.

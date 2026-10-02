@@ -82,6 +82,7 @@ import {
 } from "@legendapp/list/react";
 import { FileDiff } from "@pierre/diffs/react";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
+import { piInputOutcomeText } from "@t3tools/client-runtime/state/piInputSubmission";
 import {
   createMessageAttachmentPreviewProjector,
   deriveTimelineEntries,
@@ -1764,6 +1765,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       ) : null}
       {row.kind === "work-live" ? <LiveWorkEntryTimelineRow row={row} /> : null}
       {row.kind === "vault-notice" ? <VaultNoticeTimelineRow row={row} /> : null}
+      {row.kind === "pi-input" ? <PiInputTimelineRow row={row} /> : null}
       {row.kind === "activity-group" ? <ActivityGroupTimelineRow row={row} /> : null}
       {row.kind === "work-toggle" ? <WorkGroupToggleTimelineRow row={row} /> : null}
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow row={row} /> : null}
@@ -2070,6 +2072,123 @@ const MESSAGE_HEADING_LEVEL = 3;
 
 function MessageAuthorHeading({ children }: { children: string }) {
   return <h3 className="sr-only select-none">{children}</h3>;
+}
+
+function PiInputTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "pi-input" }> }) {
+  const ctx = use(TimelineRowCtx);
+  const content = row.submission;
+  const resources = useMemo(
+    () => selectMessageImageResources(content.attachments),
+    [content.attachments],
+  );
+  const urls = useAssetUrls(ctx.activeThreadEnvironmentId, resources);
+  const images = content.attachments.filter(isImageAttachment).map((image) => {
+    const previewUrl = urls[resources.findIndex((resource) => resource.attachmentId === image.id)];
+    return previewUrl ? { ...image, previewUrl } : image;
+  });
+  const files = content.attachments.filter(isFileAttachment);
+  const resolved = resolveUserMessageContext(content);
+  const renderReference = (reference: ChatMarkdownContextReference) => {
+    const record = asKnownContextRecord(resolved.recordsById.get(reference.contextId));
+    const image =
+      record?.kind === "preview-annotation"
+        ? resolvePreviewAnnotationImage({
+            record,
+            recordsById: resolved.recordsById,
+            userImages: images,
+            previewImages: images.filter((image) => image.name.startsWith("preview-annotation-")),
+            annotationRecordIds: resolved.records
+              .filter((record) => record.kind === "preview-annotation")
+              .map((record) => record.contextId),
+          })
+        : null;
+    return (
+      <UserMessageContextReferenceChip
+        reference={reference}
+        record={record}
+        annotationImage={image}
+        attachment={
+          record?.kind === "image"
+            ? (images.find((image) => image.id === record.attachmentId) ?? null)
+            : record?.kind === "file"
+              ? (files.find((file) => file.id === record.attachmentId) ?? null)
+              : null
+        }
+        onOpenFile={ctx.onFileOpen}
+        onExpandImage={(image) => {
+          const preview = buildExpandedImagePreview(images, image.id);
+          if (preview) ctx.onImageExpand(preview);
+        }}
+        onExpandVideo={(file) => {
+          const preview = buildAttachmentVideoPreview(ctx.activeThreadEnvironmentId, file);
+          if (preview) ctx.onImageExpand(preview);
+        }}
+      />
+    );
+  };
+  return (
+    <section
+      aria-label={
+        row.submission.intent === "steer"
+          ? "Native Pi steering submission"
+          : "Native Pi follow-up submission"
+      }
+      className="mb-3 min-w-0 space-y-2"
+    >
+      <div className="flex flex-wrap items-baseline gap-2 text-xs text-muted-foreground">
+        <span className="font-medium">
+          {row.submission.intent === "steer" ? "Native Pi steering" : "Native Pi follow-up"}
+        </span>
+        <span>{formatDayAwareTimestamp(row.createdAt, ctx.timestampFormat)}</span>
+      </div>
+      <p className="text-xs text-muted-foreground">{piInputOutcomeText(row.submission.outcome)}</p>
+      {images.length ? (
+        <div className="flex flex-wrap gap-2">
+          {images.map((image) => (
+            <button
+              key={image.id}
+              type="button"
+              aria-label={`Preview ${image.name}`}
+              onClick={() => {
+                const preview = buildExpandedImagePreview(images, image.id);
+                if (preview) ctx.onImageExpand(preview);
+              }}
+            >
+              {image.previewUrl ? (
+                <img
+                  src={image.previewUrl}
+                  alt={image.name}
+                  className="h-24 w-24 rounded-lg object-cover"
+                />
+              ) : (
+                <span>{image.name}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {files.map((file) =>
+        isVideoAttachment(file) ? (
+          <UserVideoAttachment key={file.id} file={file} />
+        ) : (
+          <button
+            key={file.id}
+            type="button"
+            className="block text-sm underline"
+            onClick={() => ctx.onFileOpen(file)}
+          >
+            {file.name}
+          </button>
+        ),
+      )}
+      <CollapsibleUserMessageBody
+        text={resolved.text}
+        renderContextReference={renderReference}
+        skills={ctx.skills}
+        markdownCwd={ctx.markdownCwd}
+      />
+    </section>
+  );
 }
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {

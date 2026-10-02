@@ -29,6 +29,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -51,7 +52,12 @@ import {
 } from "../Errors.ts";
 import { ProviderExtensionState, type ExtensionLease } from "../ProviderExtensionState.ts";
 import { isExtensionStateSetter } from "../extensionState.ts";
-import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
+import type {
+  ProviderAdapterShape,
+  ProviderThreadSnapshot,
+  PiInputCapture,
+  PiInputResult,
+} from "../Services/ProviderAdapter.ts";
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { PiJsonlDecoder, type PiJsonlFrame } from "./PiProtocolConformance.ts";
 import { readPiVaultExportArchive } from "./PiVaultExportArchive.ts";
@@ -75,6 +81,7 @@ const REASONING_EMIT_INTERVAL = 500;
 const MAX_DYNAMIC_PAYLOAD_BYTES = 1024 * 1024;
 const MAX_DYNAMIC_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
 const MAX_PENDING_PROMPTS = 100;
+const RPC_ACKNOWLEDGMENT_DEADLINE = Duration.seconds(30);
 const MAX_UI_REQUEST_BYTES = 1024 * 1024;
 const MAX_UI_TITLE_CODE_POINTS = 4096;
 const MAX_UI_TITLE_BYTES = 16 * 1024;
@@ -196,6 +203,33 @@ interface PiTurnSnapshot {
   readonly items: Array<unknown>;
 }
 
+interface PendingPiInput {
+  readonly id: string;
+  readonly response: Deferred.Deferred<PiInputResult>;
+  command: "steer" | "follow_up" | undefined;
+  admitted: boolean;
+  known: PiInputResult | undefined;
+}
+
+const decodePiInputAck = Schema.decodeUnknownOption(
+  Schema.Union([
+    Schema.Struct({
+      type: Schema.Literal("response"),
+      id: Schema.String,
+      command: Schema.Literals(["steer", "follow_up"]),
+      success: Schema.Literal(true),
+      data: Schema.Struct({ disposition: Schema.Literals(["queued", "handled"]) }),
+    }),
+    Schema.Struct({
+      type: Schema.Literal("response"),
+      id: Schema.String,
+      command: Schema.Literals(["steer", "follow_up"]),
+      success: Schema.Literal(false),
+      error: Schema.String,
+    }),
+  ]),
+);
+
 interface PiSessionContext {
   extensionLease?: ExtensionLease | undefined;
   session: ProviderSession;
@@ -209,6 +243,8 @@ interface PiSessionContext {
   readonly settledUi: Set<RuntimeRequestId>;
   readonly pendingRpc: Map<string, Deferred.Deferred<Record<string, unknown>>>;
   readonly pendingPrompts: Map<string, PendingPiPrompt>;
+  pendingInput: PendingPiInput | undefined;
+  inputClosed: boolean;
   nativeRunActive: boolean;
   /** Skills accepted by this exact Pi process, for native `/skill:name` dispatch. */
   skillNames: ReadonlySet<string> | undefined;
@@ -1847,6 +1883,18 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       }
     });
 
+    const settlePiInput = (context: PiSessionContext, result: PiInputResult) => {
+      const pending = context.pendingInput;
+      if (!pending) return Effect.void;
+      pending.known ??= result;
+      return Deferred.succeed(pending.response, pending.known).pipe(Effect.asVoid);
+    };
+    const losePiInputTransport = (context: PiSessionContext) =>
+      settlePiInput(context, {
+        outcome: context.pendingInput?.admitted ? "unknown" : "not-submitted",
+        reason: context.pendingInput?.admitted ? "transport-lost" : "owner-unavailable",
+      });
+
     const sendRpc = (context: PiSessionContext, message: Record<string, unknown>) =>
       Effect.gen(function* () {
         const encoded = jsonString(message);
@@ -1872,7 +1920,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         Effect.onError(() => Effect.sync(() => context.pendingRpc.delete(id))),
       );
       const result = yield* Deferred.await(response).pipe(
-        Effect.timeoutOption("30 seconds"),
+        Effect.timeoutOption(RPC_ACKNOWLEDGMENT_DEADLINE),
         Effect.ensuring(Effect.sync(() => context.pendingRpc.delete(id))),
       );
       if (Option.isNone(result)) {
@@ -2664,6 +2712,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         }).pipe(Effect.ignore);
       }
       context.pendingRpc.clear();
+      yield* losePiInputTransport(context);
       context.pendingPrompts.clear();
       context.pendingVaultPrompt = undefined;
       context.pendingVaultExport = undefined;
@@ -2832,6 +2881,8 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         settledUi: new Set(),
         pendingRpc: new Map(),
         pendingPrompts: new Map(),
+        pendingInput: undefined,
+        inputClosed: false,
         nativeRunActive: false,
         skillNames: undefined,
         vaultCommandNames: new Set(),
@@ -2865,6 +2916,11 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       }
 
       yield* Stream.run(Stream.fromQueue(rpcInput), process.stdin).pipe(
+        Effect.onExit(() =>
+          Effect.sync(() => {
+            context.inputClosed = true;
+          }).pipe(Effect.andThen(losePiInputTransport(context))),
+        ),
         Effect.ignore,
         Effect.forkIn(sessionScope),
       );
@@ -2880,9 +2936,13 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
               const id = typeof frame.record.id === "string" ? frame.record.id : undefined;
               const statsId = id?.startsWith("get_session_stats-");
               const queueStateId = id?.startsWith("t3-pi-queue-state-");
+              const inputId = id?.startsWith("t3-pi-input-");
               // Read identity takes precedence over claimed command/event/setter type.
               // The read's schema rejects malformed replies; late IDs need no history.
-              if (statsId || (!queueStateId && frame.record.command === "get_session_stats")) {
+              if (
+                statsId ||
+                (!queueStateId && !inputId && frame.record.command === "get_session_stats")
+              ) {
                 const pending = statsId && id ? context.pendingRpc.get(id) : undefined;
                 return pending && isLiveContext(context, sessionGeneration)
                   ? Deferred.succeed(pending, frame.record).pipe(Effect.asVoid)
@@ -2893,6 +2953,44 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 return pending && isLiveContext(context, sessionGeneration)
                   ? Deferred.succeed(pending, frame.record).pipe(Effect.asVoid)
                   : Effect.void;
+              }
+              if (inputId) {
+                const pending = context.pendingInput;
+                if (
+                  !pending ||
+                  !pending.admitted ||
+                  pending.id !== id ||
+                  !isLiveContext(context, sessionGeneration)
+                )
+                  return Effect.void;
+                const ack = decodePiInputAck(frame.record);
+                return settlePiInput(
+                  context,
+                  Option.isSome(ack) && ack.value.command === pending.command
+                    ? ack.value.success
+                      ? { outcome: ack.value.data.disposition }
+                      : { outcome: "rejected", reason: "native-rejected" }
+                    : { outcome: "unknown", reason: "invalid-response" },
+                );
+              }
+              if (frame.record.command === "steer" || frame.record.command === "follow_up")
+                return Effect.void;
+              if (
+                frame.record.type === "extension_error" &&
+                (frame.record.event === "input" || frame.record.event === "skill_expansion")
+              ) {
+                if (!isLiveContext(context, sessionGeneration)) return Effect.void;
+                const safe = {
+                  type: "extension_error",
+                  event: frame.record.event,
+                  error:
+                    frame.record.event === "input"
+                      ? "Pi input handler failed."
+                      : "Pi skill expansion failed.",
+                };
+                return logNativePiRecord(context, safe).pipe(
+                  Effect.andThen(handleMessage(context, safe)),
+                );
               }
               // Native queue snapshots contain private text. Counts do not authorize publishing it.
               if (frame.record.type === "queue_update") return Effect.void;
@@ -2995,6 +3093,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                   }).pipe(Effect.ignore);
                 }
                 context.pendingRpc.clear();
+                yield* losePiInputTransport(context);
                 context.pendingPrompts.clear();
                 context.pendingVaultPrompt = undefined;
                 context.pendingVaultExport = undefined;
@@ -3506,6 +3605,142 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       };
     });
 
+    const capturePiQueuedInput: NonNullable<
+      ProviderAdapterShape<ProviderAdapterError>["capturePiQueuedInput"]
+    > = Effect.fnUntraced(function* (input) {
+      const context = yield* ensureContext(input.threadId);
+      const generation = context.generation;
+      const lease = context.extensionLease;
+      const process = context.process;
+      const version = context.runtimeVersion;
+      const unavailable = () =>
+        new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "capturePiQueuedInput",
+          issue: "Native input is unavailable for this owner.",
+        });
+      const live = () =>
+        lease !== undefined &&
+        input.expectedGeneration === lease.generation &&
+        input.expectedProviderInstanceId === options.instanceId &&
+        piQueueStateSupported(version) &&
+        context.runtimeVersion === version &&
+        context.process === process &&
+        !context.inputClosed &&
+        isLiveContext(context, generation) &&
+        extensionState.isCurrentLease(lease);
+      if (!live()) return yield* unavailable();
+      const id = `t3-pi-input-${yield* randomId}`;
+      const response = yield* Deferred.make<PiInputResult>();
+      if (!(yield* process.isRunning.pipe(Effect.orElseSucceed(() => false))) || !live())
+        return yield* unavailable();
+      if (context.pendingInput)
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "capturePiQueuedInput",
+          issue: "Native input is busy.",
+        });
+      const pending: PendingPiInput = {
+        id,
+        response,
+        command: undefined,
+        admitted: false,
+        known: undefined,
+      };
+      context.pendingInput = pending;
+      const release = Effect.sync(() => {
+        if (context.pendingInput === pending) context.pendingInput = undefined;
+      });
+      const validateOwnership = Effect.gen(function* () {
+        if (
+          !(yield* process.isRunning.pipe(Effect.orElseSucceed(() => false))) ||
+          !live() ||
+          context.pendingInput !== pending
+        )
+          return yield* unavailable();
+      });
+      const captured: PiInputCapture<ProviderAdapterError> = {
+        validateOwnership,
+        release,
+        submit: (prepared, beforeAdmission) =>
+          Effect.uninterruptible(
+            Effect.gen(function* () {
+              let preparedImages = false;
+              const attempted = yield* Effect.interruptible(
+                Effect.gen(function* () {
+                  const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
+                  for (const attachment of prepared.attachments) {
+                    if (attachment.type !== "image") continue;
+                    const imagePath = resolveAttachmentPath({
+                      attachmentsDir: serverConfig.attachmentsDir,
+                      attachment,
+                    });
+                    if (!imagePath) return yield* unavailable();
+                    const stat = yield* fileSystem.stat(imagePath);
+                    if (Number(stat.size) !== attachment.sizeBytes) return yield* unavailable();
+                    const bytes = yield* fileSystem.readFile(imagePath);
+                    if (bytes.byteLength !== attachment.sizeBytes) return yield* unavailable();
+                    images.push({
+                      type: "image",
+                      data: Buffer.from(bytes).toString("base64"),
+                      mimeType: attachment.mimeType,
+                    });
+                  }
+                  const command = prepared.intent === "steer" ? "steer" : "follow_up";
+                  const message = jsonString({
+                    id,
+                    type: command,
+                    message: prepared.text,
+                    ...(images.length ? { images } : {}),
+                  });
+                  if (message === undefined) return yield* unavailable();
+                  const encoded = encoder.encode(`${message}\n`);
+                  preparedImages = true;
+                  if (!(yield* process.isRunning.pipe(Effect.orElseSucceed(() => false))))
+                    return yield* unavailable();
+                  yield* beforeAdmission;
+                  // No await between the exact local proof and admission to the original stdin queue.
+                  const offered = yield* Effect.sync(() => {
+                    if (!live() || context.pendingInput !== pending) return false;
+                    pending.command = command;
+                    pending.admitted = true;
+                    return Queue.offerUnsafe(context.input, encoded);
+                  });
+                  if (!offered)
+                    return {
+                      outcome: pending.admitted ? "unknown" : "not-submitted",
+                      reason: pending.admitted ? "transport-lost" : "owner-unavailable",
+                    } satisfies PiInputResult;
+                  const acknowledged = yield* Deferred.await(response).pipe(
+                    Effect.timeoutOption(RPC_ACKNOWLEDGMENT_DEADLINE),
+                  );
+                  return Option.isSome(acknowledged)
+                    ? acknowledged.value
+                    : ({
+                        outcome: "unknown",
+                        reason: "acknowledgment-timeout",
+                      } satisfies PiInputResult);
+                }),
+              ).pipe(Effect.exit);
+              yield* release;
+              if (pending.known) return pending.known;
+              if (Exit.isSuccess(attempted)) return attempted.value;
+              return {
+                outcome: pending.admitted ? "unknown" : "not-submitted",
+                reason: Cause.hasInterrupts(attempted.cause)
+                  ? "cancelled"
+                  : pending.admitted
+                    ? "transport-lost"
+                    : preparedImages
+                      ? "owner-unavailable"
+                      : "preparation-failed",
+              } satisfies PiInputResult;
+            }),
+          ),
+      };
+      return captured;
+    });
+
     const readThread = (
       threadId: ThreadId,
     ): Effect.Effect<ProviderThreadSnapshot, ProviderAdapterError> =>
@@ -3528,6 +3763,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       takePiVaultExport,
       getPiSessionStats,
       getPiQueueState,
+      capturePiQueuedInput,
       stopSession: (threadId) =>
         ensureContext(threadId).pipe(Effect.flatMap((context) => stopContext(context, true))),
       listSessions: () => Effect.succeed([...sessions.values()].map((context) => context.session)),
