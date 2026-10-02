@@ -319,6 +319,9 @@ import {
 } from "./composerSubmission";
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
 import { ProviderExtensionText } from "./ProviderExtensionText";
+import { PiSessionStatsDetails } from "./PiSessionStats";
+import { environmentPiSessionStats } from "../../state/piSessionStats";
+import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { ProviderEditorSuggestion } from "./ProviderEditorSuggestion";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { pendingDraftWork } from "./pendingDraftWork";
@@ -1223,6 +1226,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
   onCompactContext?: (() => void) | undefined;
+  onSessionStats?: (() => void) | undefined;
   compactDisabled: boolean;
   compactDisabledReason: string | null;
 }) {
@@ -1233,11 +1237,17 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
           usage={props.activeContextWindow}
           modelDisplayName={props.activeThreadModelDisplayName}
           onCompact={props.onCompactContext}
+          onSessionStats={props.onSessionStats}
           compactDisabled={props.compactDisabled}
           compactDisabledReason={props.compactDisabledReason}
         />
       ) : props.reserveContextWindowMeter ? (
         <ContextWindowMeterPlaceholder />
+      ) : null}
+      {!props.activeContextWindow && props.onSessionStats ? (
+        <Button size="xs" variant="ghost-muted" onClick={props.onSessionStats}>
+          Session statistics
+        </Button>
       ) : null}
       <ComposerPrimaryActions
         compact={props.compact}
@@ -1968,6 +1978,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [selectedProviderEntry],
   );
   const compactCommandAvailable = providerSupportsManualCompaction(selectedProviderEntry);
+  const statsOwner =
+    props.activeThreadShell?.session?.providerInstanceId ??
+    activeThread?.session?.providerInstanceId;
+  const piStatsOwner =
+    routeKind === "server" &&
+    providerStatuses.some(
+      (provider) => provider.instanceId === statsOwner && provider.driver === "pi",
+    );
+  const openSessionStats = piStatsOwner
+    ? () => appAtomRegistry.set(environmentPiSessionStats.openAtom(routeThreadRef), true)
+    : undefined;
   const selectedProviderSkills = selectedProviderStatus
     ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd)
     : [];
@@ -7158,6 +7179,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         compactDisabled || noProviderAvailable || isSendBusy || isConnecting
                       }
                       compactDisabledReason={resolvedCompactDisabledReason}
+                      onSessionStats={openSessionStats}
                       {...(compactCommandAvailable
                         ? { onCompactContext: compactThreadContext }
                         : {})}
@@ -7170,7 +7192,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         </ComposerSurface.Main>
       </div>
       {routeKind === "server" ? (
-        <ProviderExtensionText threadRef={routeThreadRef} section="belowEditor" />
+        <>
+          <ProviderExtensionText threadRef={routeThreadRef} section="belowEditor" />
+          <PiSessionStatsDetails
+            key={`${routeThreadRef.environmentId}:${routeThreadRef.threadId}`}
+            threadRef={routeThreadRef}
+          />
+        </>
       ) : null}
     </form>
   );

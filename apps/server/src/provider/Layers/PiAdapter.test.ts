@@ -2924,3 +2924,33 @@ describe("Pi adapter process-path JSONL decoding", () => {
     ),
   );
 });
+
+for (const version of ["0.84.4", "unknown", "0.99.2"]) {
+  effectIt.live("does not read native session stats for unverified runtime " + version, () =>
+    runPiProcessScenario(
+      { ...process.env, T3_PI_STATS_VERSION: version },
+      ({ adapter, threadId }) =>
+        Effect.gen(function* () {
+          yield* adapter.startSession({
+            threadId,
+            provider: ProviderDriverKind.make("pi"),
+            runtimeMode: "full-access",
+          });
+          if (!adapter.getPiSessionStats) return yield* Effect.die("Missing stats read");
+          const failed = yield* adapter
+            .getPiSessionStats({
+              threadId,
+              expectedProviderInstanceId: ProviderInstanceId.make("pi-conformance"),
+            })
+            .pipe(
+              Effect.match({
+                onFailure: (error) => error._tag,
+                onSuccess: () => "unexpected-success",
+              }),
+            );
+          expect(failed).toBe("ProviderAdapterValidationError");
+          yield* adapter.stopSession(threadId);
+        }),
+    ),
+  );
+}

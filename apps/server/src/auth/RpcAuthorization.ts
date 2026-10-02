@@ -128,6 +128,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.providerUploadFeedback]: AuthOrchestrationOperateScope,
   [WS_METHODS.providerRespondPiSecretInput]: AuthOrchestrationOperateScope,
   [WS_METHODS.providerTakePiVaultExport]: AuthOrchestrationOperateScope,
+  [WS_METHODS.providerGetPiSessionStats]: AuthOrchestrationReadScope,
   [WS_METHODS.providerListPiSessions]: AuthOrchestrationReadScope,
   [WS_METHODS.providerAttachPiSession]: AuthOrchestrationOperateScope,
   [WS_METHODS.providerForkPiSession]: AuthOrchestrationOperateScope,

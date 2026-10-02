@@ -1,10 +1,20 @@
-import { appendFileSync, readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodeURL from "node:url";
+import * as NodePath from "node:path";
 
-const fixtureDirectory = dirname(fileURLToPath(import.meta.url));
-const fixture = JSON.parse(readFileSync(join(fixtureDirectory, "pi-v0.84.4-rpc.json"), "utf8"));
-const sessionRecords = readFileSync(join(fixtureDirectory, "pi-v0.84.4-session.v3.jsonl"), "utf8")
+if (process.argv.includes("--version")) {
+  process.stdout.write(`${process.env.T3_PI_STATS_VERSION ?? "0.84.4"}\n`);
+  process.exit(0);
+}
+
+const fixtureDirectory = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
+const fixture = JSON.parse(
+  NodeFS.readFileSync(NodePath.join(fixtureDirectory, "pi-v0.84.4-rpc.json"), "utf8"),
+);
+const sessionRecords = NodeFS.readFileSync(
+  NodePath.join(fixtureDirectory, "pi-v0.84.4-session.v3.jsonl"),
+  "utf8",
+)
   .trim()
   .split("\n")
   .map((line) => JSON.parse(line));
@@ -20,7 +30,7 @@ const sessionTree = (entriesByParent.get(null) ?? []).map(function node(entry) {
 });
 const transcriptPath = process.env.T3_PI_CONFORMANCE_TRANSCRIPT;
 if (process.env.T3_PI_CONFORMANCE_LAUNCH_ARGS_PATH) {
-  appendFileSync(
+  NodeFS.appendFileSync(
     process.env.T3_PI_CONFORMANCE_LAUNCH_ARGS_PATH,
     JSON.stringify(process.argv.slice(2)),
     "utf8",
@@ -36,7 +46,7 @@ function emit(record, crlf = false) {
 }
 
 function recordInput(line) {
-  if (transcriptPath) appendFileSync(transcriptPath, `${line}\n`, "utf8");
+  if (transcriptPath) NodeFS.appendFileSync(transcriptPath, `${line}\n`, "utf8");
 }
 
 function emitTimeoutRequest() {

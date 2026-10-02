@@ -16,6 +16,7 @@ import {
   discoverPiResources,
   makePendingPiProvider,
   piSessionCatalogSupported,
+  piSessionStatsSupported,
   piMachineProbeLaunchArgs,
   serverModelsFromPiModels,
 } from "./PiProvider.ts";
@@ -26,6 +27,11 @@ const fixturePath = NodePath.join(
 );
 
 describe("Pi provider snapshot", () => {
+  it("gates cumulative native stats on verified 0.99.1 semantics, independently of catalogs", () => {
+    NodeAssert.equal(piSessionStatsSupported("0.99.1"), true);
+    for (const version of [undefined, null, "unknown", "0.84.4", "0.85.1", "0.99.0", "0.99.2"])
+      NodeAssert.equal(piSessionStatsSupported(version), false);
+  });
   it("removes trust flags only before positional arguments", () => {
     NodeAssert.deepEqual(
       piMachineProbeLaunchArgs("--approve --extension global.ts -na -- --no-approve positional"),
@@ -60,6 +66,7 @@ describe("Pi provider snapshot", () => {
           list: false,
           clone: false,
           attach: false,
+          stats: false,
         },
       });
       NodeAssert.equal(provider.showInteractionModeToggle, false);

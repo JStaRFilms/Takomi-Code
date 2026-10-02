@@ -212,6 +212,14 @@ Forks accept a record limit for point-splits (clone up to a chosen message). Mes
 are read-only and bounded. All three require a fresh thread with no turns for the bind step;
 the next message continues with full CLI context.
 
+## Session statistics
+
+For a running Pi 0.99.1 session, open Session statistics from the context details or command palette on web/desktop, or from the thread header or composer on mobile. Opening details reads the native process. Refresh reads it again; reconnect refreshes only while details remain open. A stopped process is never restarted for a statistics read.
+
+Cumulative tokens and native-reported USD cost cover all session entries, including abandoned branches, tool usage and compaction. They are not current context, an invoice or account quota. Current context is a separate native estimate. After compaction it can be unknown until the next response. Disconnected values are labeled last known.
+
+Statistics are unavailable for unknown or other runtime versions. This compatibility check is separate from session catalog support. Manual Pi compaction is not exposed here because stock RPC can interrupt independent work.
+
 ## Known limitations
 
 - utility text generation (thread titles, branch names, commit messages, and PR text) is not implemented by the Pi driver

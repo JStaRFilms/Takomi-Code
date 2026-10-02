@@ -61,7 +61,14 @@ const encodeUnknownJsonString = Schema.encodeUnknownSync(UnknownFromJsonString);
 export const piSessionCatalogSupported = (version: string): boolean =>
   PI_CATALOG_VERSIONS.includes(version);
 
-const piCapabilities = (resourcesAvailable: boolean, sessionCatalogAvailable: boolean) =>
+export const piSessionStatsSupported = (version: string | null | undefined): boolean =>
+  version === "0.99.1";
+
+const piCapabilities = (
+  resourcesAvailable: boolean,
+  sessionCatalogAvailable: boolean,
+  statsAvailable: boolean,
+) =>
   ({
     runtimeModes: ["full-access"],
     interactionModes: ["default"],
@@ -75,15 +82,20 @@ const piCapabilities = (resourcesAvailable: boolean, sessionCatalogAvailable: bo
       list: sessionCatalogAvailable,
       clone: sessionCatalogAvailable,
       attach: sessionCatalogAvailable,
+      stats: statsAvailable,
     },
   }) satisfies ServerProviderCapabilities;
 
-const piPresentation = (resourcesAvailable = false, sessionCatalogAvailable = false) => ({
+const piPresentation = (
+  resourcesAvailable = false,
+  sessionCatalogAvailable = false,
+  statsAvailable = false,
+) => ({
   displayName: PI_PROVIDER_IDENTITY.displayName,
   // Legacy clients read this field instead of interactionModes. Keep Plan
   // hidden there too because Pi rejects it.
   showInteractionModeToggle: false,
-  capabilities: piCapabilities(resourcesAvailable, sessionCatalogAvailable),
+  capabilities: piCapabilities(resourcesAvailable, sessionCatalogAvailable, statsAvailable),
 });
 
 export function piResourceDiscoveryMessage(resources: PiDiscoveredResources): string {
@@ -503,7 +515,11 @@ export function checkPiProviderStatus(
       driver: DRIVER_KIND,
       // Resource catalogs are always cwd-scoped; the machine snapshot stays
       // project-neutral so a scoped failure cannot leak another cwd's paths.
-      presentation: piPresentation(true, piSessionCatalogSupported(version)),
+      presentation: piPresentation(
+        true,
+        piSessionCatalogSupported(version),
+        piSessionStatsSupported(version),
+      ),
       enabled: true,
       checkedAt,
       models,

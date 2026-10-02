@@ -150,6 +150,60 @@ export class ProviderPiVaultExportError extends Schema.TaggedError<ProviderPiVau
   { message: Schema.String },
 ) {}
 
+export const ProviderGetPiSessionStatsInput = Schema.Struct({
+  threadId: ThreadId,
+  expectedProviderInstanceId: ProviderInstanceId,
+});
+export type ProviderGetPiSessionStatsInput = typeof ProviderGetPiSessionStatsInput.Type;
+
+const PiStatsCount = Schema.Number.check(
+  Schema.isInt(),
+  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+);
+const PiStatsAmount = Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0));
+export const ProviderPiSessionStats = Schema.Struct({
+  threadId: ThreadId,
+  providerInstanceId: ProviderInstanceId,
+  generation: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  fetchedAt: IsoDateTime,
+  source: Schema.Literal("pi-native"),
+  scope: Schema.Literal("all-session-entries"),
+  messages: Schema.Struct({
+    user: PiStatsCount,
+    assistant: PiStatsCount,
+    toolCalls: PiStatsCount,
+    toolResults: PiStatsCount,
+    total: PiStatsCount,
+  }),
+  tokens: Schema.Struct({
+    input: PiStatsCount,
+    output: PiStatsCount,
+    cacheRead: PiStatsCount,
+    cacheWrite: PiStatsCount,
+    total: PiStatsCount,
+  }),
+  cost: Schema.Struct({
+    amount: PiStatsAmount,
+    currency: Schema.Literal("USD"),
+    provenance: Schema.Literal("native-reported"),
+  }),
+  contextUsage: Schema.NullOr(
+    Schema.Struct({
+      tokens: Schema.NullOr(PiStatsCount),
+      contextWindow: PiStatsCount.check(Schema.isGreaterThan(0)),
+      percent: Schema.NullOr(PiStatsAmount),
+      provenance: Schema.Literal("native-estimate"),
+    }),
+  ),
+});
+export type ProviderPiSessionStats = typeof ProviderPiSessionStats.Type;
+
+export class ProviderPiSessionStatsError extends Schema.TaggedError<ProviderPiSessionStatsError>()(
+  "ProviderPiSessionStatsError",
+  { message: Schema.String },
+) {}
+
 export const ProviderUploadFeedbackInput = Schema.Struct({
   threadId: ThreadId,
   reason: Schema.optional(TrimmedNonEmptyString),

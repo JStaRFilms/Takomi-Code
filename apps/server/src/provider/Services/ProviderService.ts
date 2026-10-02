@@ -12,6 +12,8 @@
  * @module ProviderService
  */
 import type {
+  ProviderGetPiSessionStatsInput,
+  ProviderPiSessionStats,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
   ProviderRespondToRequestInput,
@@ -56,6 +58,10 @@ export interface ProviderServiceShape {
   readonly sendTurn: (
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
+
+  readonly getPiSessionStats?: (
+    input: ProviderGetPiSessionStatsInput,
+  ) => Effect.Effect<ProviderPiSessionStats, ProviderServiceError>;
 
   readonly compactThread: (
     threadId: ThreadId,

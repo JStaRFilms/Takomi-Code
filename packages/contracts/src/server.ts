@@ -98,6 +98,7 @@ export const ServerProviderCapabilities = Schema.Struct({
       resume: Schema.optional(Schema.Boolean),
       fork: Schema.optional(Schema.Boolean),
       tree: Schema.optional(Schema.Boolean),
+      stats: Schema.optional(Schema.Boolean),
       import: Schema.optional(Schema.Boolean),
       export: Schema.optional(Schema.Boolean),
     }),

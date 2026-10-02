@@ -1,3 +1,4 @@
+import { PiSessionStatsDetails } from "./PiSessionStats";
 import type { WorktreeSetupCardProps } from "./worktree-setup-card";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
@@ -1155,6 +1156,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
           </Animated.View>
         </KeyboardStickyView>
       ) : null}
+      <PiSessionStatsDetails
+        key={`${props.environmentId}:${props.selectedThread.id}`}
+        threadRef={{ environmentId: props.environmentId, threadId: props.selectedThread.id }}
+      />
     </View>
   );
 });

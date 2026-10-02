@@ -112,6 +112,7 @@ import * as ServerConfig from "./config.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { HTTP_ROUTER_CONFIG, makeRoutesLayer } from "./server.ts";
 import { ProviderExtensionState } from "./provider/ProviderExtensionState.ts";
+import type { ProviderPiSessionStats } from "@t3tools/contracts";
 import {
   isThreadDetailEvent,
   resolveAvailableEditorsForConfig,
@@ -6733,6 +6734,121 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.equal(error.requiredScope, "orchestration:operate");
       }
       assert.equal(calls, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "native stats RPC allows orchestration reads, denies mutations, checks thread existence and hides provider errors",
+    () =>
+      Effect.gen(function* () {
+        let reads = 0;
+        let missing = false;
+        let fail = false;
+        const stats: ProviderPiSessionStats = {
+          threadId: defaultThreadId,
+          providerInstanceId: ProviderInstanceId.make("pi"),
+          generation: "native-process",
+          fetchedAt: "2026-09-30T00:00:00.000Z",
+          source: "pi-native",
+          scope: "all-session-entries",
+          messages: { user: 0, assistant: 0, toolCalls: 0, toolResults: 0, total: 0 },
+          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          cost: { amount: 0, currency: "USD", provenance: "native-reported" },
+          contextUsage: null,
+        };
+        yield* buildAppUnderTest({
+          layers: {
+            projectionSnapshotQuery: {
+              getThreadShellById: () =>
+                Effect.succeed(
+                  missing ? Option.none() : Option.some(makeDefaultOrchestrationThreadShell()),
+                ),
+            },
+            providerService: {
+              getPiSessionStats: (input) =>
+                Effect.gen(function* () {
+                  reads++;
+                  assert.equal(input.expectedProviderInstanceId, stats.providerInstanceId);
+                  if (fail)
+                    return yield* new ProviderAdapterRequestError({
+                      provider: "pi",
+                      method: "get_session_stats",
+                      detail: "/private/stats-secret.jsonl",
+                    });
+                  return stats;
+                }),
+            },
+          },
+        });
+        const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "orchestration:read",
+        });
+        const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+          headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+        });
+        const { ticket } = yield* responseJsonEffect<{ readonly ticket: string }>(ticketResponse);
+        const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket)}`;
+        yield* withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const input = {
+              threadId: defaultThreadId,
+              expectedProviderInstanceId: stats.providerInstanceId,
+            };
+            assert.deepEqual(yield* client[WS_METHODS.providerGetPiSessionStats](input), stats);
+            const denied = yield* client[WS_METHODS.providerRespondPiSecretInput]({
+              threadId: defaultThreadId,
+              requestId: ApprovalRequestId.make("request"),
+              cancelled: true,
+            }).pipe(Effect.flip);
+            assert.equal(denied._tag, "EnvironmentAuthorizationError");
+            missing = true;
+            const unavailable = yield* client[WS_METHODS.providerGetPiSessionStats](input).pipe(
+              Effect.flip,
+            );
+            assert.equal(unavailable._tag, "ProviderPiSessionStatsError");
+            assert.equal(reads, 1);
+            missing = false;
+            fail = true;
+            const failed = yield* client[WS_METHODS.providerGetPiSessionStats](input).pipe(
+              Effect.flip,
+            );
+            assert.equal(failed._tag, "ProviderPiSessionStatsError");
+            assert.equal(failed.message, "Native session statistics are unavailable.");
+          }),
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("native stats RPC denies other scopes before looking up a thread or provider", () =>
+    Effect.gen(function* () {
+      let queried = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadShellById: () =>
+              Effect.sync(() => {
+                queried++;
+                return Option.none();
+              }),
+          },
+        },
+      });
+      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "terminal:operate",
+      });
+      const response = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+      });
+      const { ticket } = yield* responseJsonEffect<{ readonly ticket: string }>(response);
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket)}`;
+      const denied = yield* withWsRpcClient(wsUrl, (client) =>
+        client[WS_METHODS.providerGetPiSessionStats]({
+          threadId: defaultThreadId,
+          expectedProviderInstanceId: ProviderInstanceId.make("pi"),
+        }).pipe(Effect.flip),
+      );
+      assert.equal(denied._tag, "EnvironmentAuthorizationError");
+      assert.equal(queried, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

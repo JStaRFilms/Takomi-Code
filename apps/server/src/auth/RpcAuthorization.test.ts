@@ -62,6 +62,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("treats native Pi statistics as read-only without granting mutation access", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerGetPiSessionStats)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerRespondPiSecretInput)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("treats Pi catalog and cloned-child ownership diagnostics as scoped reads", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.providerListPiSessions)).toBe(
       AuthOrchestrationReadScope,

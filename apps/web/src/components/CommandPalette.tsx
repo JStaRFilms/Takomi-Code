@@ -79,6 +79,8 @@ import {
   type ReactNode,
 } from "react";
 import { useAtomValue } from "@effect/atom-react";
+import { environmentPiSessionStats } from "../state/piSessionStats";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
@@ -2025,6 +2027,23 @@ function OpenCommandPaletteDialog(props: {
 
   if (activeThread !== null) {
     const thread = activeThread;
+    const owner = activeThreadServerConfig?.providers.find(
+      (provider) => provider.instanceId === thread.session?.providerInstanceId,
+    );
+    if (owner?.driver === "pi")
+      actionItems.push({
+        kind: "action",
+        value: "action:pi-session-statistics",
+        title: "Session statistics",
+        searchTerms: ["pi", "session", "statistics", "tokens", "cost", "context"],
+        icon: <ChartNoAxesColumnIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          appAtomRegistry.set(
+            environmentPiSessionStats.openAtom(scopeThreadRef(thread.environmentId, thread.id)),
+            true,
+          );
+        },
+      });
     actionItems.push({
       kind: "action",
       value: "action:restart-agent-session",

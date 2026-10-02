@@ -1,5 +1,6 @@
 import {
   ApprovalRequestId,
+  ProviderPiSessionStats,
   PI_VAULT_ARCHIVE_MAX_BYTES,
   EventId,
   type PiSettings,
@@ -59,6 +60,9 @@ import {
   parsePiDiscoveredResources,
 } from "./PiResources.ts";
 import { resolvePiLaunchResources } from "./PiLaunchResources.ts";
+import { piSessionStatsSupported } from "./PiProvider.ts";
+import { decodeNativePiSessionStats } from "./PiSessionStats.ts";
+import { parseGenericCliVersion, spawnAndCollect } from "../providerSnapshot.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
 const VAULT_SECRET_TITLE_PREFIX = "[takomi-vault-secret] ";
@@ -195,12 +199,13 @@ interface PiSessionContext {
   session: ProviderSession;
   readonly scope: Scope.Closeable;
   readonly generation: number;
+  readonly runtimeVersion: string | null;
   readonly process: ChildProcessSpawner.ChildProcessHandle;
   readonly input: Queue.Queue<Uint8Array>;
   readonly pendingUi: Map<RuntimeRequestId, PendingUiRequest>;
   readonly sensitiveUiIds: Set<string>;
   readonly settledUi: Set<RuntimeRequestId>;
-  readonly pendingRpc: Map<string, Deferred.Deferred<PiRpcMessage>>;
+  readonly pendingRpc: Map<string, Deferred.Deferred<Record<string, unknown>>>;
   readonly pendingPrompts: Map<string, PendingPiPrompt>;
   nativeRunActive: boolean;
   /** Skills accepted by this exact Pi process, for native `/skill:name` dispatch. */
@@ -1637,6 +1642,8 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
     ) {
       if (
         !options.nativeEventLogger ||
+        record.command === "get_session_stats" ||
+        (typeof record.id === "string" && record.id.startsWith("get_session_stats-")) ||
         record.type === "takomi_vault_export" ||
         (record.type === "extension_ui_request" &&
           typeof record.title === "string" &&
@@ -1856,13 +1863,15 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       command: Record<string, unknown> & { readonly type: string },
     ) {
       const id = `${command.type}-${yield* randomId}`;
-      const response = yield* Deferred.make<PiRpcMessage>();
+      const response = yield* Deferred.make<Record<string, unknown>>();
       context.pendingRpc.set(id, response);
       yield* sendRpc(context, { ...command, id }).pipe(
         Effect.onError(() => Effect.sync(() => context.pendingRpc.delete(id))),
       );
-      const result = yield* Deferred.await(response).pipe(Effect.timeoutOption("30 seconds"));
-      context.pendingRpc.delete(id);
+      const result = yield* Deferred.await(response).pipe(
+        Effect.timeoutOption("30 seconds"),
+        Effect.ensuring(Effect.sync(() => context.pendingRpc.delete(id))),
+      );
       if (Option.isNone(result)) {
         return yield* new ProviderAdapterRequestError({
           provider: PROVIDER,
@@ -2752,6 +2761,31 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         env: environment,
         shell: spawnCommand.shell,
       });
+      // Probe this launch configuration once, not the mutable machine snapshot.
+      // RPC get_state does not report a runtime version. Failed/unknown probes
+      // leave statistics unsupported for this process's entire lifetime.
+      const versionCommand = yield* resolveSpawnCommand(
+        settings.binaryPath,
+        [...launchArgs, "--version"],
+        { env: environment },
+      );
+      const runtimeVersion = yield* spawnAndCollect(
+        settings.binaryPath,
+        ChildProcess.make(versionCommand.command, versionCommand.args, {
+          cwd,
+          env: environment,
+          shell: versionCommand.shell,
+        }),
+      ).pipe(
+        Effect.map((result) =>
+          result.code === 0
+            ? (parseGenericCliVersion(result.stdout.trim() || result.stderr.trim()) ?? null)
+            : null,
+        ),
+        Effect.timeout("5 seconds"),
+        Effect.orElseSucceed(() => null),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      );
       const process = yield* spawner.spawn(command).pipe(
         Effect.provideService(Scope.Scope, sessionScope),
         Effect.mapError(
@@ -2787,6 +2821,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         session,
         scope: sessionScope,
         generation: ++nextSessionGeneration,
+        runtimeVersion,
         process,
         input: rpcInput,
         pendingUi: new Map(),
@@ -2839,6 +2874,16 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           frames,
           (frame) => {
             if (frame.type === "record") {
+              const id = typeof frame.record.id === "string" ? frame.record.id : undefined;
+              const statsId = id?.startsWith("get_session_stats-");
+              // Stats identity takes precedence over claimed event/setter type.
+              // The read's schema rejects malformed replies; late IDs need no history.
+              if (statsId || frame.record.command === "get_session_stats") {
+                const pending = statsId && id ? context.pendingRpc.get(id) : undefined;
+                return pending && isLiveContext(context, sessionGeneration)
+                  ? Deferred.succeed(pending, frame.record).pipe(Effect.asVoid)
+                  : Effect.void;
+              }
               if (isExtensionStateSetter(frame.record)) {
                 return isLiveContext(context, sessionGeneration) && context.extensionLease
                   ? extensionState.write(context.extensionLease, frame.record)
@@ -3321,6 +3366,71 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       );
     });
 
+    const getPiSessionStats: NonNullable<
+      ProviderAdapterShape<ProviderAdapterError>["getPiSessionStats"]
+    > = Effect.fnUntraced(function* (input) {
+      const context = yield* ensureContext(input.threadId);
+      const generation = context.generation;
+      const lease = context.extensionLease;
+      const unavailable = () =>
+        new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "getPiSessionStats",
+          issue: "Native session statistics are unavailable for this process.",
+        });
+      if (
+        !lease ||
+        input.expectedProviderInstanceId !== options.instanceId ||
+        !piSessionStatsSupported(context.runtimeVersion) ||
+        !isLiveContext(context, generation) ||
+        !(yield* context.process.isRunning.pipe(Effect.orElseSucceed(() => false)))
+      )
+        return yield* unavailable();
+      const response = yield* requestRpc(context, { type: "get_session_stats" });
+      if (
+        !isLiveContext(context, generation) ||
+        !(yield* context.process.isRunning.pipe(Effect.orElseSucceed(() => false)))
+      )
+        return yield* unavailable();
+      const { data } = yield* decodeNativePiSessionStats(response).pipe(
+        Effect.mapError(
+          () =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "get_session_stats",
+              detail: "Pi returned invalid session statistics.",
+            }),
+        ),
+      );
+      const fetchedAt = yield* nowIso;
+      // Check again after clock/schema effects before publishing a snapshot.
+      if (
+        !(yield* context.process.isRunning.pipe(Effect.orElseSucceed(() => false))) ||
+        !isLiveContext(context, generation)
+      )
+        return yield* unavailable();
+      return {
+        threadId: input.threadId,
+        providerInstanceId: options.instanceId,
+        generation: lease.generation,
+        fetchedAt,
+        source: "pi-native",
+        scope: "all-session-entries",
+        messages: {
+          user: data.userMessages,
+          assistant: data.assistantMessages,
+          toolCalls: data.toolCalls,
+          toolResults: data.toolResults,
+          total: data.totalMessages,
+        },
+        tokens: data.tokens,
+        cost: { amount: data.cost, currency: "USD", provenance: "native-reported" },
+        contextUsage: data.contextUsage
+          ? { ...data.contextUsage, provenance: "native-estimate" }
+          : null,
+      } satisfies ProviderPiSessionStats;
+    });
+
     const readThread = (
       threadId: ThreadId,
     ): Effect.Effect<ProviderThreadSnapshot, ProviderAdapterError> =>
@@ -3341,6 +3451,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       respondToUserInput,
       respondPiSecretInput,
       takePiVaultExport,
+      getPiSessionStats,
       stopSession: (threadId) =>
         ensureContext(threadId).pipe(Effect.flatMap((context) => stopContext(context, true))),
       listSessions: () => Effect.succeed([...sessions.values()].map((context) => context.session)),

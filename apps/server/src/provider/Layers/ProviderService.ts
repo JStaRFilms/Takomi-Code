@@ -2136,6 +2136,43 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
   );
 
+  const getPiSessionStats: NonNullable<ProviderServiceMethod<"getPiSessionStats">> =
+    Effect.fnUntraced(function* (input) {
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "getPiSessionStats",
+        allowRecovery: false,
+      });
+      if (
+        !routed.isActive ||
+        routed.adapter.provider !== "pi" ||
+        routed.instanceId !== input.expectedProviderInstanceId ||
+        !routed.adapter.getPiSessionStats
+      ) {
+        return yield* toValidationError(
+          "getPiSessionStats",
+          "Session statistics are unavailable for this owner.",
+        );
+      }
+      const result = yield* routed.adapter.getPiSessionStats(input);
+      const current = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "getPiSessionStats",
+        allowRecovery: false,
+      });
+      if (
+        !current.isActive ||
+        current.adapter !== routed.adapter ||
+        current.instanceId !== routed.instanceId
+      ) {
+        return yield* toValidationError(
+          "getPiSessionStats",
+          "The session owner changed during the read.",
+        );
+      }
+      return result;
+    });
+
   const takePiVaultExport: NonNullable<ProviderServiceMethod<"takePiVaultExport">> =
     Effect.fnUntraced(function* (input: ProviderTakePiVaultExportInput) {
       const routed = yield* resolveRoutableSession({
@@ -2537,6 +2574,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondToUserInput,
     respondPiSecretInput,
     takePiVaultExport,
+    getPiSessionStats,
     stopSession,
     listSessions,
     getCapabilities,

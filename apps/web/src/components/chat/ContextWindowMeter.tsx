@@ -19,6 +19,7 @@ export function ContextWindowMeter(props: {
   usage: ContextWindowSnapshot;
   modelDisplayName?: string | null;
   onCompact?: (() => void) | undefined;
+  onSessionStats?: (() => void) | undefined;
   compactDisabled?: boolean | undefined;
   compactDisabledReason?: string | null | undefined;
 }) {
@@ -40,7 +41,7 @@ export function ContextWindowMeter(props: {
       <PopoverTrigger
         openOnHover
         delay={150}
-        closeDelay={onCompact ? 150 : 0}
+        closeDelay={onCompact || props.onSessionStats ? 150 : 0}
         render={
           <Button
             size="icon-sm"
@@ -137,6 +138,11 @@ export function ContextWindowMeter(props: {
             <div className="mt-1 text-pretty text-secondary-label text-2xs font-medium">
               {formatContextWindowCompactionMessage(modelDisplayName, usage.autoCompactThreshold)}
             </div>
+          ) : null}
+          {props.onSessionStats ? (
+            <Button size="xs" variant="outline" onClick={props.onSessionStats}>
+              Session statistics
+            </Button>
           ) : null}
           {onCompact ? (
             <>

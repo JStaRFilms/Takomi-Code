@@ -10,6 +10,8 @@ import { ScreenHeader } from "../../components/ScreenHeader";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { environmentExtensionState } from "../../state/providerExtensionState";
+import { environmentPiSessionStats } from "../../state/piSessionStats";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { ScreenHeaderButton } from "../../components/ScreenHeaderButton";
 import type { ScreenHeaderAction } from "../../components/ScreenHeader.types";
 import { useThreadHeaderOptions } from "./useThreadHeaderOptions";
@@ -141,6 +143,12 @@ function ThreadHeader(
         onPress: () => onOpenTerminal(null),
       });
     }
+    if (props.onSessionStats)
+      actions.push({
+        accessibilityLabel: "Session statistics",
+        icon: "chart.bar.xaxis",
+        onPress: props.onSessionStats,
+      });
     actions.push({
       accessibilityLabel: "Open git controls",
       icon: "point.topleft.down.curvedto.point.bottomright.up",
@@ -157,6 +165,7 @@ function ThreadHeader(
     props.onReturnToThread,
     props.hasThreadCwd,
     props.hasWorkspaceRoot,
+    props.onSessionStats,
   ]);
 
   return (
@@ -1067,6 +1076,21 @@ function ThreadRouteContent(
         onOpenGitInspector={handleOpenGitInspector}
         onOpenFilesInspector={handleOpenFilesInspector}
         onReturnToThread={props.onReturnToThread}
+        onSessionStats={
+          serverConfig?.providers.some(
+            (provider) =>
+              provider.instanceId === selectedThread.session?.providerInstanceId &&
+              provider.driver === "pi",
+          )
+            ? () =>
+                appAtomRegistry.set(
+                  environmentPiSessionStats.openAtom(
+                    scopeThreadRef(environmentId, selectedThread.id),
+                  ),
+                  true,
+                )
+            : undefined
+        }
       />
 
       {renderThreadRouteBody()}

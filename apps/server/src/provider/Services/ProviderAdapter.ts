@@ -8,6 +8,8 @@
  * @module ProviderAdapter
  */
 import type {
+  ProviderGetPiSessionStatsInput,
+  ProviderPiSessionStats,
   ApprovalRequestId,
   ProviderApprovalDecision,
   ProviderDriverKind,
@@ -87,6 +89,11 @@ export interface ProviderAdapterShape<TError> {
 
   /** Omitted when this adapter does not support manual context compaction. */
   readonly compaction?: ProviderCompaction<TError>;
+
+  /** Read only the captured live native process. Never start or recover a session. */
+  readonly getPiSessionStats?: (
+    input: ProviderGetPiSessionStatsInput,
+  ) => Effect.Effect<ProviderPiSessionStats, TError>;
 
   /**
    * Interrupt an active turn.

@@ -62,6 +62,7 @@ import {
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   ProviderUploadFeedbackError,
+  ProviderPiSessionStatsError,
   ProviderPiSecretInputError,
   ProviderExtensionStateError,
   ProviderPiVaultExportError,
@@ -3646,6 +3647,30 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.providerAuthLogout, providerAuth.logout(input), {
             "rpc.aggregate": "provider",
           }),
+        [WS_METHODS.providerGetPiSessionStats]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerGetPiSessionStats,
+            Effect.gen(function* () {
+              const unavailable = () =>
+                new ProviderPiSessionStatsError({
+                  message: "Native session statistics are unavailable.",
+                });
+              const thread = yield* projectionSnapshotQuery
+                .getThreadShellById(input.threadId)
+                .pipe(Effect.mapError(unavailable));
+              if (Option.isNone(thread) || !providerService.getPiSessionStats)
+                return yield* unavailable();
+              const result = yield* providerService
+                .getPiSessionStats(input)
+                .pipe(Effect.mapError(unavailable));
+              const current = yield* projectionSnapshotQuery
+                .getThreadShellById(input.threadId)
+                .pipe(Effect.mapError(unavailable));
+              if (Option.isNone(current)) return yield* unavailable();
+              return result;
+            }),
+            { "rpc.aggregate": "provider" },
+          ),
         [WS_METHODS.providerExtensionStateSubscribe]: (input) =>
           observeRpcStream(
             WS_METHODS.providerExtensionStateSubscribe,

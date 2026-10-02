@@ -58,6 +58,21 @@ const makePeer = Effect.fnUntraced(function* (index: number) {
   const stopped = yield* Deferred.make<void>();
   const releaseSpawn = yield* Deferred.make<void>();
   const secretReceived = yield* Deferred.make<unknown>();
+  const requestedStats = yield* Deferred.make<string>();
+  const releaseStats = yield* Deferred.make<void>();
+  let stats: unknown = {
+    sessionFile: "/private/stats.jsonl",
+    sessionId: "private-native-id",
+    userMessages: 2,
+    assistantMessages: 3,
+    toolCalls: 4,
+    toolResults: 4,
+    totalMessages: 9,
+    tokens: { input: 100, output: 20, cacheRead: 30, cacheWrite: 5, total: 155 },
+    cost: 0,
+    contextUsage: { tokens: null, contextWindow: 200000, percent: null },
+    details: { secret: "private-stats-detail" },
+  };
   let failState = false;
   const emit = (record: Record<string, unknown>) =>
     Queue.offer(output, encoder.encode(`${encodeJson(record)}\n`)).pipe(Effect.asVoid);
@@ -85,6 +100,19 @@ const makePeer = Effect.fnUntraced(function* (index: number) {
         if (request.type === "get_state") {
           yield* Deferred.succeed(requestedState, undefined);
           yield* Deferred.await(releaseState);
+        }
+        if (request.type === "get_session_stats") {
+          if (typeof request.id !== "string") return yield* Effect.die("Missing stats request ID");
+          yield* Deferred.succeed(requestedStats, request.id);
+          yield* Deferred.await(releaseStats);
+          yield* emit({
+            type: "response",
+            command: "get_session_stats",
+            id: request.id,
+            success: true,
+            data: stats,
+          });
+          return;
         }
         if (request.type === "extension_ui_response") {
           yield* Deferred.succeed(secretReceived, request.value);
@@ -129,6 +157,12 @@ const makePeer = Effect.fnUntraced(function* (index: number) {
     stopped,
     releaseSpawn,
     secretReceived,
+    requestedStats,
+    releaseStats,
+    setStats: (value: unknown) =>
+      Effect.sync(() => {
+        stats = value;
+      }),
     naturalEnd: Queue.end(output).pipe(
       Effect.andThen(Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0))),
       Effect.asVoid,
@@ -160,12 +194,19 @@ const makeHarness = Effect.fnUntraced(function* (releaseStartup = false) {
       return Effect.succeed(
         ChildProcessSpawner.makeHandle({
           pid: ChildProcessSpawner.ProcessId(1000),
-          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+          exitCode: Effect.succeed(
+            ChildProcessSpawner.ExitCode(
+              command._tag === "StandardCommand" && command.args.includes("--version") ? 0 : 1,
+            ),
+          ),
           isRunning: Effect.succeed(false),
           kill: () => Effect.void,
           unref: Effect.succeed(Effect.void),
           stdin: Sink.drain,
-          stdout: Stream.empty,
+          stdout:
+            command._tag === "StandardCommand" && command.args.includes("--version")
+              ? Stream.succeed(encoder.encode("0.99.1\n"))
+              : Stream.empty,
           stderr: Stream.empty,
           all: Stream.empty,
           getInputFd: () => Sink.drain,
@@ -759,6 +800,234 @@ it.effect(
           expect(encodeJson(harness.canonical)).not.toContain(value);
         }
         expect(state.statuses).toEqual([{ key: "safe", text: "Ready" }]);
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+const readStats = (h: Effect.Success<ReturnType<typeof makeHarness>>, owner = PI) => {
+  if (!h.service.getPiSessionStats) return Effect.die("Missing statistics route");
+  return h.service.getPiSessionStats({ threadId: THREAD, expectedProviderInstanceId: owner });
+};
+
+for (const claimedType of ["agent_start", "setWidget", "set_editor_text"] as const) {
+  for (const lifecycle of ["pending", "interrupted", "settled"] as const) {
+    it.effect(`native stats wrong-type ${claimedType} is private while ${lifecycle}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const h = yield* makeHarness(true);
+          yield* start(h);
+          const peer = yield* Queue.take(h.peers);
+          // Publishing this sentinel drains startup through the canonical logger.
+          const startup = yield* h.service.streamEvents.pipe(
+            Stream.filter(
+              (event) => event.type === "runtime.warning" && event.payload.message === "Ready",
+            ),
+            Stream.runHead,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          yield* peer.emit({
+            type: "extension_ui_request",
+            id: "startup-drain",
+            method: "notify",
+            message: "Ready",
+          });
+          yield* Fiber.join(startup);
+          const initial = yield* current(h);
+          const reading = yield* readStats(h).pipe(
+            Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }),
+            Effect.forkScoped,
+          );
+          const id = yield* Deferred.await(peer.requestedStats);
+          if (lifecycle === "interrupted") {
+            yield* Fiber.interrupt(reading);
+            expect(Exit.hasInterrupts(yield* Fiber.await(reading))).toBe(true);
+          } else if (lifecycle === "settled") {
+            yield* Deferred.succeed(peer.releaseStats, undefined);
+            expect(yield* Fiber.join(reading)).toBeUndefined();
+          }
+          const events = yield* h.service.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "user-input.requested"),
+            Stream.runCollect,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          const privatePath = "/private/review-stats.jsonl";
+          const privateText = "REVIEW_PRIVATE_STATS";
+          const malformed = {
+            type: claimedType === "agent_start" ? "agent_start" : "extension_ui_request",
+            method: claimedType,
+            widgetKey: "private-stats",
+            widgetLines: [privateText, privatePath],
+            widgetPlacement: "belowEditor",
+            text: privateText,
+            success: true,
+            data: {
+              sessionFile: privatePath,
+              sessionId: privateText,
+              userMessages: 2,
+              assistantMessages: 3,
+              toolCalls: 4,
+              toolResults: 4,
+              totalMessages: 9,
+              tokens: { input: 100, output: 20, cacheRead: 30, cacheWrite: 5, total: 155 },
+              cost: 0,
+              contextUsage: { tokens: null, contextWindow: 200000, percent: null },
+              details: privateText,
+            },
+          };
+          yield* peer.emit({ ...malformed, id });
+          yield* peer.emit({ ...malformed, id: "unrelated-record", command: "get_session_stats" });
+          yield* peer.emit({ ...malformed, id: "get_session_stats-unseen-late-record" });
+          yield* peer.emit({
+            type: "extension_ui_request",
+            id: "post-stats-input",
+            method: "input",
+            title: "Normal input",
+          });
+          const received = yield* Fiber.join(events);
+          const snapshot = yield* current(h);
+          for (const marker of [privatePath, privateText]) {
+            expect(encodeJson([received, snapshot, h.nativeRecords, h.canonical])).not.toContain(
+              marker,
+            );
+          }
+          expect(snapshot).toEqual(initial);
+          expect(received.map((event) => event.type)).toEqual(["user-input.requested"]);
+          if (lifecycle === "pending") {
+            const error = yield* Fiber.join(reading);
+            expect(error).toMatchObject({
+              _tag: "ProviderAdapterRequestError",
+              method: "get_session_stats",
+              detail: "Pi returned invalid session statistics.",
+            });
+            expect(encodeJson(error)).not.toContain(privateText);
+            expect(encodeJson(error)).not.toContain(privatePath);
+          }
+          yield* Deferred.succeed(peer.releaseStats, undefined);
+          const input = received.at(-1);
+          if (input?.type !== "user-input.requested" || !input.requestId)
+            return yield* Effect.die("Normal input was not delivered");
+          yield* h.service.respondToUserInput({
+            threadId: THREAD,
+            requestId: ApprovalRequestId.make(input.requestId),
+            answers: { [input.requestId]: "Normal answer" },
+          });
+          expect(yield* Deferred.await(peer.secretReceived)).toBe("Normal answer");
+          const turn = yield* h.service.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "turn.completed"),
+            Stream.runCollect,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          yield* peer.emit({ type: "agent_start" });
+          yield* peer.emit({ type: "agent_end", messages: [], willRetry: false });
+          yield* peer.emit({ type: "agent_settled" });
+          expect((yield* Fiber.join(turn)).map((event) => event.type)).toEqual([
+            "turn.started",
+            "turn.completed",
+          ]);
+          for (const marker of [privatePath, privateText])
+            expect(encodeJson([yield* current(h), h.nativeRecords, h.canonical])).not.toContain(
+              marker,
+            );
+        }),
+      ).pipe(Effect.provide(TEST_LAYER)),
+    );
+  }
+}
+
+it.effect(
+  "native stats read routes the live owner, preserves zero/null and excludes private fields and raw logs",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        const reading = yield* readStats(h).pipe(Effect.forkScoped);
+        yield* Deferred.await(peer.requestedStats);
+        yield* Deferred.succeed(peer.releaseStats, undefined);
+        const stats = yield* Fiber.join(reading);
+        expect(stats).toMatchObject({
+          source: "pi-native",
+          scope: "all-session-entries",
+          providerInstanceId: PI,
+          messages: { user: 2, assistant: 3, toolCalls: 4, toolResults: 4, total: 9 },
+          tokens: { total: 155 },
+          cost: { amount: 0, currency: "USD", provenance: "native-reported" },
+          contextUsage: {
+            tokens: null,
+            percent: null,
+            contextWindow: 200000,
+            provenance: "native-estimate",
+          },
+        });
+        expect(stats.generation).toBe((yield* current(h)).generation);
+        const text = encodeJson([stats, h.nativeRecords, h.canonical]);
+        for (const privateValue of [
+          "/private/stats.jsonl",
+          "private-native-id",
+          "private-stats-detail",
+          "get_session_stats",
+        ])
+          expect(text).not.toContain(privateValue);
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+it.effect("native stats read rejects wrong and stopped owners without startup or recovery", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const h = yield* makeHarness(true);
+      yield* start(h);
+      const peer = yield* Queue.take(h.peers);
+      expect(
+        Exit.isFailure(yield* readStats(h, ProviderInstanceId.make("other")).pipe(Effect.exit)),
+      ).toBe(true);
+      expect(yield* Deferred.isDone(peer.requestedStats)).toBe(false);
+      yield* h.service.stopSession({ threadId: THREAD });
+      const starting = vi.spyOn(h.service, "startSession");
+      expect(Exit.isFailure(yield* readStats(h).pipe(Effect.exit))).toBe(true);
+      expect(starting).not.toHaveBeenCalled();
+      expect(yield* Queue.size(h.peers)).toBe(0);
+      starting.mockRestore();
+    }),
+  ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+it.effect("native stats read discards a replaced same-instance process", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const h = yield* makeHarness(true);
+      yield* start(h);
+      const first = yield* Queue.take(h.peers);
+      const old = (yield* current(h)).generation;
+      const reading = yield* readStats(h).pipe(Effect.exit, Effect.forkScoped);
+      yield* Deferred.await(first.requestedStats);
+      yield* start(h);
+      expect((yield* current(h)).generation).not.toBe(old);
+      yield* Deferred.succeed(first.releaseStats, undefined);
+      expect(Exit.isFailure(yield* Fiber.join(reading))).toBe(true);
+    }),
+  ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+it.effect(
+  "native stats malformed required fields fail without fabricated usage or raw logging",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        yield* peer.setStats({
+          sessionFile: "/private/malformed.jsonl",
+          cost: 0,
+          userMessages: -1,
+        });
+        yield* Deferred.succeed(peer.releaseStats, undefined);
+        expect(Exit.isFailure(yield* readStats(h).pipe(Effect.exit))).toBe(true);
+        expect(encodeJson([h.nativeRecords, h.canonical])).not.toContain(
+          "/private/malformed.jsonl",
+        );
       }),
     ).pipe(Effect.provide(TEST_LAYER)),
 );

@@ -116,6 +116,9 @@ import {
   OrchestrationGetWorkflowScriptError,
 } from "./orchestration.ts";
 import {
+  ProviderGetPiSessionStatsInput,
+  ProviderPiSessionStats,
+  ProviderPiSessionStatsError,
   ProviderUploadFeedbackError,
   ProviderPiSecretInputError,
   ProviderPiVaultExportError,
@@ -338,6 +341,7 @@ export const WS_METHODS = {
   attachmentsDelete: "attachments.delete",
 
   // Provider methods
+  providerGetPiSessionStats: "provider.getPiSessionStats",
   providerUploadFeedback: "provider.uploadFeedback",
   providerRespondPiSecretInput: "provider.respondPiSecretInput",
   providerTakePiVaultExport: "provider.takePiVaultExport",
@@ -1102,6 +1106,12 @@ const WsAttachmentsDeleteRpc = Rpc.make(WS_METHODS.attachmentsDelete, {
   error: EnvironmentAuthorizationError,
 });
 
+const WsProviderGetPiSessionStatsRpc = Rpc.make(WS_METHODS.providerGetPiSessionStats, {
+  payload: ProviderGetPiSessionStatsInput,
+  success: ProviderPiSessionStats,
+  error: Schema.Union([ProviderPiSessionStatsError, EnvironmentAuthorizationError]),
+});
+
 const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -1641,6 +1651,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAssetsCreateUrlRpc,
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,
+  WsProviderGetPiSessionStatsRpc,
   WsProviderUploadFeedbackRpc,
   WsProviderRespondPiSecretInputRpc,
   WsProviderTakePiVaultExportRpc,
