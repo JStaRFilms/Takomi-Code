@@ -220,6 +220,12 @@ Cumulative tokens and native-reported USD cost cover all session entries, includ
 
 Statistics are unavailable for unknown or other runtime versions. This compatibility check is separate from session catalog support. Manual Pi compaction is not exposed here because stock RPC can interrupt independent work.
 
+## Native queue state
+
+For a live Pi 0.99.1 thread, open Native queue from the composer or command palette on web/desktop, or the composer or thread header on mobile. Refresh reads the same live process; reconnect refreshes only while details remain open. Reads never restart a stopped process.
+
+The count combines native steering and follow-up messages. It is separate from local waiting drafts and the mobile outbox. Queue contents are unavailable here, and both delivery modes are read-only. Disconnected counts are last known. Other runtime versions are unsupported.
+
 ## Known limitations
 
 - utility text generation (thread titles, branch names, commit messages, and PR text) is not implemented by the Pi driver

@@ -71,6 +71,7 @@ export class ProviderExtensionState extends Context.Service<
       publisher: ExtensionPublisher,
       reservation: ExtensionReservation,
     ) => Effect.Effect<ExtensionLease | undefined>;
+    readonly isCurrentLease: (lease: ExtensionLease) => boolean;
     readonly write: (lease: ExtensionLease, input: Record<string, unknown>) => Effect.Effect<void>;
     readonly close: (lease: ExtensionLease) => Effect.Effect<void>;
     readonly delete: (threadId: ThreadId) => Effect.Effect<void>;
@@ -275,6 +276,10 @@ export class ProviderExtensionState extends Context.Service<
               }),
             ),
           ),
+        isCurrentLease: (lease) => {
+          const value = topics.get(lease.threadId);
+          return !!value && !value.deleted && !lease.publisher.retired && value.lease === lease;
+        },
         write: (lease, input) =>
           mutate((updatedAt) => {
             const value = topics.get(lease.threadId);

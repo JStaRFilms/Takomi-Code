@@ -13,6 +13,7 @@
  */
 import type {
   ProviderGetPiSessionStatsInput,
+  ProviderGetPiQueueStateInput,
   ProviderPiSessionStats,
   ProviderInterruptTurnInput,
   ProviderInstanceId,
@@ -37,7 +38,7 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { ProviderServiceError } from "../Errors.ts";
-import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
+import type { ProviderAdapterCapabilities, PiQueueStateRead } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
 
 /**
@@ -62,6 +63,9 @@ export interface ProviderServiceShape {
   readonly getPiSessionStats?: (
     input: ProviderGetPiSessionStatsInput,
   ) => Effect.Effect<ProviderPiSessionStats, ProviderServiceError>;
+  readonly getPiQueueState?: (
+    input: ProviderGetPiQueueStateInput,
+  ) => Effect.Effect<PiQueueStateRead<ProviderServiceError>, ProviderServiceError>;
 
   readonly compactThread: (
     threadId: ThreadId,

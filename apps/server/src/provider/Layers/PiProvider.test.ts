@@ -17,6 +17,7 @@ import {
   makePendingPiProvider,
   piSessionCatalogSupported,
   piSessionStatsSupported,
+  piQueueStateSupported,
   piMachineProbeLaunchArgs,
   serverModelsFromPiModels,
 } from "./PiProvider.ts";
@@ -31,6 +32,11 @@ describe("Pi provider snapshot", () => {
     NodeAssert.equal(piSessionStatsSupported("0.99.1"), true);
     for (const version of [undefined, null, "unknown", "0.84.4", "0.85.1", "0.99.0", "0.99.2"])
       NodeAssert.equal(piSessionStatsSupported(version), false);
+  });
+  it("gates native queue readback on exactly 0.99.1", () => {
+    NodeAssert.equal(piQueueStateSupported("0.99.1"), true);
+    for (const version of [undefined, null, "unknown", "0.84.4", "0.99.0", "0.99.2"])
+      NodeAssert.equal(piQueueStateSupported(version), false);
   });
   it("removes trust flags only before positional arguments", () => {
     NodeAssert.deepEqual(
@@ -62,6 +68,7 @@ describe("Pi provider snapshot", () => {
         commandDiscovery: "unavailable",
         skillDiscovery: "unavailable",
         workspaceSnapshotFreshness: true,
+        queueState: false,
         sessions: {
           list: false,
           clone: false,

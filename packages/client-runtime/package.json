@@ -199,6 +199,10 @@
       "types": "./src/editorSuggestion.ts",
       "default": "./src/editorSuggestion.ts"
     },
+    "./state/piQueueState": {
+      "types": "./src/state/piQueueState.ts",
+      "default": "./src/state/piQueueState.ts"
+    },
     "./state/piSessionStats": {
       "types": "./src/state/piSessionStats.ts",
       "default": "./src/state/piSessionStats.ts"

@@ -320,6 +320,8 @@ import {
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
 import { ProviderExtensionText } from "./ProviderExtensionText";
 import { PiSessionStatsDetails } from "./PiSessionStats";
+import { PiQueueDetails } from "./PiQueueDetails";
+import { environmentPiQueueState } from "../../state/piQueueState";
 import { environmentPiSessionStats } from "../../state/piSessionStats";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { ProviderEditorSuggestion } from "./ProviderEditorSuggestion";
@@ -1227,6 +1229,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   onImplementPlanInNewThread: () => void;
   onCompactContext?: (() => void) | undefined;
   onSessionStats?: (() => void) | undefined;
+  onQueueState?: (() => void) | undefined;
   compactDisabled: boolean;
   compactDisabledReason: string | null;
 }) {
@@ -1247,6 +1250,11 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
       {!props.activeContextWindow && props.onSessionStats ? (
         <Button size="xs" variant="ghost-muted" onClick={props.onSessionStats}>
           Session statistics
+        </Button>
+      ) : null}
+      {props.onQueueState ? (
+        <Button size="xs" variant="ghost-muted" onClick={props.onQueueState}>
+          Native queue
         </Button>
       ) : null}
       <ComposerPrimaryActions
@@ -1988,6 +1996,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
   const openSessionStats = piStatsOwner
     ? () => appAtomRegistry.set(environmentPiSessionStats.openAtom(routeThreadRef), true)
+    : undefined;
+  const openQueueState = piStatsOwner
+    ? () => appAtomRegistry.set(environmentPiQueueState.openAtom(routeThreadRef), true)
     : undefined;
   const selectedProviderSkills = selectedProviderStatus
     ? resolveProviderSkillsForCwd(selectedProviderStatus, gitCwd)
@@ -7180,6 +7191,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       }
                       compactDisabledReason={resolvedCompactDisabledReason}
                       onSessionStats={openSessionStats}
+                      onQueueState={openQueueState}
                       {...(compactCommandAvailable
                         ? { onCompactContext: compactThreadContext }
                         : {})}
@@ -7194,6 +7206,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       {routeKind === "server" ? (
         <>
           <ProviderExtensionText threadRef={routeThreadRef} section="belowEditor" />
+          <PiQueueDetails
+            key={`queue:${routeThreadRef.environmentId}:${routeThreadRef.threadId}`}
+            threadRef={routeThreadRef}
+          />
           <PiSessionStatsDetails
             key={`${routeThreadRef.environmentId}:${routeThreadRef.threadId}`}
             threadRef={routeThreadRef}

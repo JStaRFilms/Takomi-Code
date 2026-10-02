@@ -90,6 +90,7 @@ export const ServerProviderCapabilities = Schema.Struct({
       bash: Schema.optional(Schema.Boolean),
     }),
   ),
+  queueState: Schema.optional(Schema.Boolean),
   sessions: Schema.optional(
     Schema.Struct({
       list: Schema.optional(Schema.Boolean),

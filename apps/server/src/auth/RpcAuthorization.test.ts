@@ -71,6 +71,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("treats native queue state as read-only", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerGetPiQueueState)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerRespondPiSecretInput)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("treats Pi catalog and cloned-child ownership diagnostics as scoped reads", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.providerListPiSessions)).toBe(
       AuthOrchestrationReadScope,

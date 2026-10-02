@@ -2173,6 +2173,55 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       return result;
     });
 
+  const getPiQueueState: NonNullable<ProviderServiceMethod<"getPiQueueState">> = Effect.fnUntraced(
+    function* (input) {
+      const routed = yield* resolveRoutableSession({
+        threadId: input.threadId,
+        operation: "getPiQueueState",
+        allowRecovery: false,
+      });
+      if (
+        !routed.isActive ||
+        routed.adapter.provider !== "pi" ||
+        routed.instanceId !== input.expectedProviderInstanceId ||
+        !routed.adapter.getPiQueueState
+      ) {
+        return yield* toValidationError(
+          "getPiQueueState",
+          "Native queue state is unavailable for this owner.",
+        );
+      }
+      const result = yield* routed.adapter.getPiQueueState(input);
+      const validateOwnership = Effect.gen(function* () {
+        const current = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "getPiQueueState",
+          allowRecovery: false,
+        });
+        if (
+          !current.isActive ||
+          current.adapter !== routed.adapter ||
+          current.instanceId !== routed.instanceId
+        ) {
+          return yield* toValidationError(
+            "getPiQueueState",
+            "The session owner changed during the read.",
+          );
+        }
+        if (result.state.generation !== input.expectedGeneration)
+          return yield* toValidationError(
+            "getPiQueueState",
+            "The native process changed during the read.",
+          );
+        // Routing can yield even when the wrapper has not changed. Recheck the
+        // originally captured native context, not the process now routed here.
+        yield* result.validateOwnership;
+      });
+      yield* validateOwnership;
+      return { state: result.state, validateOwnership };
+    },
+  );
+
   const takePiVaultExport: NonNullable<ProviderServiceMethod<"takePiVaultExport">> =
     Effect.fnUntraced(function* (input: ProviderTakePiVaultExportInput) {
       const routed = yield* resolveRoutableSession({
@@ -2575,6 +2624,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     respondPiSecretInput,
     takePiVaultExport,
     getPiSessionStats,
+    getPiQueueState,
     stopSession,
     listSessions,
     getCapabilities,

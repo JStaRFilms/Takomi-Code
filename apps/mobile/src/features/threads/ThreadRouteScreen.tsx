@@ -10,6 +10,7 @@ import { ScreenHeader } from "../../components/ScreenHeader";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { environmentExtensionState } from "../../state/providerExtensionState";
+import { environmentPiQueueState } from "../../state/piQueueState";
 import { environmentPiSessionStats } from "../../state/piSessionStats";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { ScreenHeaderButton } from "../../components/ScreenHeaderButton";
@@ -108,6 +109,7 @@ function ThreadHeader(
     readonly onToggleInspector: () => void;
     readonly onOpenGitInspector: () => void;
     readonly onOpenFilesInspector: () => void;
+    readonly onQueueState?: () => void;
   },
 ) {
   const navigation = useNavigation();
@@ -149,6 +151,12 @@ function ThreadHeader(
         icon: "chart.bar.xaxis",
         onPress: props.onSessionStats,
       });
+    if (props.onQueueState)
+      actions.push({
+        accessibilityLabel: "Native queue",
+        icon: "chart.bar.xaxis",
+        onPress: props.onQueueState,
+      });
     actions.push({
       accessibilityLabel: "Open git controls",
       icon: "point.topleft.down.curvedto.point.bottomright.up",
@@ -166,6 +174,7 @@ function ThreadHeader(
     props.hasThreadCwd,
     props.hasWorkspaceRoot,
     props.onSessionStats,
+    props.onQueueState,
   ]);
 
   return (
@@ -1085,6 +1094,21 @@ function ThreadRouteContent(
             ? () =>
                 appAtomRegistry.set(
                   environmentPiSessionStats.openAtom(
+                    scopeThreadRef(environmentId, selectedThread.id),
+                  ),
+                  true,
+                )
+            : undefined
+        }
+        onQueueState={
+          serverConfig?.providers.some(
+            (provider) =>
+              provider.instanceId === selectedThread.session?.providerInstanceId &&
+              provider.driver === "pi",
+          )
+            ? () =>
+                appAtomRegistry.set(
+                  environmentPiQueueState.openAtom(
                     scopeThreadRef(environmentId, selectedThread.id),
                   ),
                   true,

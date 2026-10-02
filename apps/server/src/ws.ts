@@ -63,6 +63,7 @@ import {
   ProjectWriteFileError,
   ProviderUploadFeedbackError,
   ProviderPiSessionStatsError,
+  ProviderPiQueueStateError,
   ProviderPiSecretInputError,
   ProviderExtensionStateError,
   ProviderPiVaultExportError,
@@ -3668,6 +3669,31 @@ const makeWsRpcLayer = (
                 .pipe(Effect.mapError(unavailable));
               if (Option.isNone(current)) return yield* unavailable();
               return result;
+            }),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerGetPiQueueState]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerGetPiQueueState,
+            Effect.gen(function* () {
+              const unavailable = () =>
+                new ProviderPiQueueStateError({
+                  message: "Native queue state is unavailable.",
+                });
+              const thread = yield* projectionSnapshotQuery
+                .getThreadShellById(input.threadId)
+                .pipe(Effect.mapError(unavailable));
+              if (Option.isNone(thread) || !providerService.getPiQueueState)
+                return yield* unavailable();
+              const result = yield* providerService
+                .getPiQueueState(input)
+                .pipe(Effect.mapError(unavailable));
+              const current = yield* projectionSnapshotQuery
+                .getThreadShellById(input.threadId)
+                .pipe(Effect.mapError(unavailable));
+              if (Option.isNone(current)) return yield* unavailable();
+              yield* result.validateOwnership.pipe(Effect.mapError(unavailable));
+              return result.state;
             }),
             { "rpc.aggregate": "provider" },
           ),

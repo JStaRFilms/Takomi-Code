@@ -79,6 +79,7 @@ import {
   type ReactNode,
 } from "react";
 import { useAtomValue } from "@effect/atom-react";
+import { environmentPiQueueState } from "../state/piQueueState";
 import { environmentPiSessionStats } from "../state/piSessionStats";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 
@@ -2040,6 +2041,20 @@ function OpenCommandPaletteDialog(props: {
         run: async () => {
           appAtomRegistry.set(
             environmentPiSessionStats.openAtom(scopeThreadRef(thread.environmentId, thread.id)),
+            true,
+          );
+        },
+      });
+    if (owner?.driver === "pi")
+      actionItems.push({
+        kind: "action",
+        value: "action:pi-native-queue",
+        title: "Native queue",
+        searchTerms: ["pi", "native", "queue", "pending", "steering", "follow-up"],
+        icon: <ChartNoAxesColumnIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          appAtomRegistry.set(
+            environmentPiQueueState.openAtom(scopeThreadRef(thread.environmentId, thread.id)),
             true,
           );
         },

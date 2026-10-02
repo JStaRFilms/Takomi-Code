@@ -204,6 +204,32 @@ export class ProviderPiSessionStatsError extends Schema.TaggedError<ProviderPiSe
   { message: Schema.String },
 ) {}
 
+export const ProviderGetPiQueueStateInput = Schema.Struct({
+  threadId: ThreadId,
+  expectedProviderInstanceId: ProviderInstanceId,
+  expectedGeneration: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+});
+export type ProviderGetPiQueueStateInput = typeof ProviderGetPiQueueStateInput.Type;
+
+export const ProviderPiQueueState = Schema.Struct({
+  threadId: ThreadId,
+  providerInstanceId: ProviderInstanceId,
+  generation: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  fetchedAt: IsoDateTime,
+  source: Schema.Literal("pi-native"),
+  pendingMessageCount: PiStatsCount,
+  steeringMode: Schema.Literals(["all", "one-at-a-time"]),
+  followUpMode: Schema.Literals(["all", "one-at-a-time"]),
+  isStreaming: Schema.Boolean,
+  isCompacting: Schema.Boolean,
+});
+export type ProviderPiQueueState = typeof ProviderPiQueueState.Type;
+
+export class ProviderPiQueueStateError extends Schema.TaggedError<ProviderPiQueueStateError>()(
+  "ProviderPiQueueStateError",
+  { message: Schema.String },
+) {}
+
 export const ProviderUploadFeedbackInput = Schema.Struct({
   threadId: ThreadId,
   reason: Schema.optional(TrimmedNonEmptyString),

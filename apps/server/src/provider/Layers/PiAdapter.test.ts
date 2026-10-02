@@ -2729,9 +2729,18 @@ describe("Pi adapter process-path JSONL decoding", () => {
         yield* adapter.sendTurn({ threadId, input: "Native logging", attachments: [] });
         yield* waitFor((event) => event.type === "turn.completed");
         yield* adapter.stopSession(threadId);
-        // Three RPC responses and 28 native events. Four current-state setters
-        // bypass raw logging.
-        expect(nativeRecords).toHaveLength(31);
+        // Three RPC responses and 27 native events. Four current-state setters
+        // and the private queue snapshot bypass raw logging.
+        expect(nativeRecords).toHaveLength(30);
+        expect(
+          nativeRecords.some(
+            (record) =>
+              isRecord(record) &&
+              isRecord(record.event) &&
+              isRecord(record.event.payload) &&
+              record.event.payload.type === "queue_update",
+          ),
+        ).toBe(false);
         const openedIds = events
           .filter(
             (event) => event.type === "request.opened" || event.type === "user-input.requested",

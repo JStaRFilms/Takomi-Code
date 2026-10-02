@@ -112,7 +112,7 @@ import * as ServerConfig from "./config.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { HTTP_ROUTER_CONFIG, makeRoutesLayer } from "./server.ts";
 import { ProviderExtensionState } from "./provider/ProviderExtensionState.ts";
-import type { ProviderPiSessionStats } from "@t3tools/contracts";
+import type { ProviderPiSessionStats, ProviderPiQueueState } from "@t3tools/contracts";
 import {
   isThreadDetailEvent,
   resolveAvailableEditorsForConfig,
@@ -6851,6 +6851,232 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(queried, 0);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
+
+  it.effect(
+    "native queue RPC allows orchestration reads, denies mutations, checks thread existence and hides provider errors",
+    () =>
+      Effect.gen(function* () {
+        let reads = 0;
+        let missing = false;
+        let fail = false;
+        const stats: ProviderPiQueueState = {
+          threadId: defaultThreadId,
+          providerInstanceId: ProviderInstanceId.make("pi"),
+          generation: "native-process",
+          fetchedAt: "2026-09-30T00:00:00.000Z",
+          source: "pi-native",
+          pendingMessageCount: 0,
+          steeringMode: "all",
+          followUpMode: "one-at-a-time",
+          isStreaming: false,
+          isCompacting: false,
+        };
+        yield* buildAppUnderTest({
+          layers: {
+            projectionSnapshotQuery: {
+              getThreadShellById: () =>
+                Effect.succeed(
+                  missing ? Option.none() : Option.some(makeDefaultOrchestrationThreadShell()),
+                ),
+            },
+            providerService: {
+              getPiQueueState: (input) =>
+                Effect.gen(function* () {
+                  reads++;
+                  assert.equal(input.expectedProviderInstanceId, stats.providerInstanceId);
+                  assert.equal(input.expectedGeneration, stats.generation);
+                  if (fail)
+                    return yield* new ProviderAdapterRequestError({
+                      provider: "pi",
+                      method: "get_session_stats",
+                      detail: "/private/stats-secret.jsonl",
+                    });
+                  return { state: stats, validateOwnership: Effect.void };
+                }),
+            },
+          },
+        });
+        const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+          scope: "orchestration:read",
+        });
+        const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+          headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+        });
+        const { ticket } = yield* responseJsonEffect<{ readonly ticket: string }>(ticketResponse);
+        const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket)}`;
+        yield* withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const input = {
+              threadId: defaultThreadId,
+              expectedProviderInstanceId: stats.providerInstanceId,
+              expectedGeneration: stats.generation,
+            };
+            assert.deepEqual(yield* client[WS_METHODS.providerGetPiQueueState](input), stats);
+            const denied = yield* client[WS_METHODS.providerRespondPiSecretInput]({
+              threadId: defaultThreadId,
+              requestId: ApprovalRequestId.make("request"),
+              cancelled: true,
+            }).pipe(Effect.flip);
+            assert.equal(denied._tag, "EnvironmentAuthorizationError");
+            missing = true;
+            const unavailable = yield* client[WS_METHODS.providerGetPiQueueState](input).pipe(
+              Effect.flip,
+            );
+            assert.equal(unavailable._tag, "ProviderPiQueueStateError");
+            assert.equal(reads, 1);
+            missing = false;
+            fail = true;
+            const failed = yield* client[WS_METHODS.providerGetPiQueueState](input).pipe(
+              Effect.flip,
+            );
+            assert.equal(failed._tag, "ProviderPiQueueStateError");
+            assert.equal(failed.message, "Native queue state is unavailable.");
+          }),
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("native queue RPC denies other scopes before looking up a thread or provider", () =>
+    Effect.gen(function* () {
+      let queried = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadShellById: () =>
+              Effect.sync(() => {
+                queried++;
+                return Option.none();
+              }),
+          },
+        },
+      });
+      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "terminal:operate",
+      });
+      const response = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+      });
+      const { ticket } = yield* responseJsonEffect<{ readonly ticket: string }>(response);
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket)}`;
+      const denied = yield* withWsRpcClient(wsUrl, (client) =>
+        client[WS_METHODS.providerGetPiQueueState]({
+          threadId: defaultThreadId,
+          expectedProviderInstanceId: ProviderInstanceId.make("pi"),
+          expectedGeneration: "native-process",
+        }).pipe(Effect.flip),
+      );
+      assert.equal(denied._tag, "EnvironmentAuthorizationError");
+      assert.equal(queried, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  for (const change of ["delete", "replace"] as const) {
+    it.effect(
+      `native queue post-read RPC fence rejects ${change} while the final thread lookup is held`,
+      () =>
+        Effect.gen(function* () {
+          const extension = yield* ProviderExtensionState;
+          const instanceId = ProviderInstanceId.make("pi");
+          const publisher = yield* extension.publisher(instanceId);
+          const adapter = {};
+          yield* extension.associate(adapter, publisher);
+          const start = yield* extension.startAdmission(defaultThreadId);
+          yield* extension.reserve(start, adapter);
+          const reservation = yield* extension.admission(defaultThreadId, publisher);
+          if (!reservation) return yield* Effect.die("Missing reservation");
+          const lease = yield* extension.open(defaultThreadId, publisher, reservation);
+          if (!lease) return yield* Effect.die("Missing lease");
+          const state: ProviderPiQueueState = {
+            threadId: defaultThreadId,
+            providerInstanceId: instanceId,
+            generation: lease.generation,
+            fetchedAt: "2026-09-30T00:00:00.000Z",
+            source: "pi-native",
+            pendingMessageCount: 0,
+            steeringMode: "all",
+            followUpMode: "one-at-a-time",
+            isStreaming: false,
+            isCompacting: false,
+          };
+          const held = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          let lookups = 0;
+          let reads = 0;
+          yield* buildAppUnderTest({
+            layers: {
+              extensionState: extension,
+              projectionSnapshotQuery: {
+                getThreadShellById: () =>
+                  Effect.gen(function* () {
+                    if (++lookups === 2) {
+                      yield* Deferred.succeed(held, undefined);
+                      yield* Deferred.await(release);
+                    }
+                    return Option.some(makeDefaultOrchestrationThreadShell());
+                  }),
+              },
+              providerService: {
+                getPiQueueState: () =>
+                  Effect.sync(() => {
+                    reads++;
+                    return {
+                      state,
+                      validateOwnership: Effect.suspend(() =>
+                        extension.isCurrentLease(lease)
+                          ? Effect.void
+                          : Effect.fail(
+                              new ProviderAdapterRequestError({
+                                provider: "pi",
+                                method: "get_state",
+                                detail: "Original native queue owner retired.",
+                              }),
+                            ),
+                      ),
+                    };
+                  }),
+              },
+            },
+          });
+          const wsUrl = yield* getWsServerUrl("/ws");
+          const reading = yield* withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.providerGetPiQueueState]({
+              threadId: defaultThreadId,
+              expectedProviderInstanceId: instanceId,
+              expectedGeneration: lease.generation,
+            }),
+          ).pipe(Effect.result, Effect.forkScoped);
+          yield* Deferred.await(held).pipe(
+            Effect.race(
+              Fiber.join(reading).pipe(
+                Effect.andThen(Effect.die("RPC settled before the final lookup")),
+              ),
+            ),
+          );
+          if (change === "delete") {
+            yield* extension.delete(defaultThreadId);
+          } else {
+            const nextStart = yield* extension.startAdmission(defaultThreadId);
+            yield* extension.reserve(nextStart, adapter);
+            const nextReservation = yield* extension.admission(defaultThreadId, publisher);
+            if (!nextReservation) return yield* Effect.die("Missing replacement reservation");
+            const nextLease = yield* extension.open(defaultThreadId, publisher, nextReservation);
+            if (!nextLease) return yield* Effect.die("Missing replacement lease");
+            assert.notEqual(nextLease.generation, lease.generation);
+          }
+          assert.isFalse(extension.isCurrentLease(lease));
+          yield* Deferred.succeed(release, undefined);
+          const result = yield* Fiber.join(reading);
+          assert.equal(result._tag, "Failure");
+          if (result._tag === "Failure") {
+            assert.equal(result.failure._tag, "ProviderPiQueueStateError");
+            assert.equal(result.failure.message, "Native queue state is unavailable.");
+          }
+          assert.equal(reads, 1);
+        }).pipe(
+          Effect.provide(Layer.mergeAll(ProviderExtensionState.layer, NodeHttpServer.layerTest)),
+        ),
+    );
+  }
 
   it.effect(
     "extension state RPC authorizes reads, rejects missing threads, and coalesces behind a held client acknowledgement",

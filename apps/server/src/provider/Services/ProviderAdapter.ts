@@ -9,7 +9,9 @@
  */
 import type {
   ProviderGetPiSessionStatsInput,
+  ProviderGetPiQueueStateInput,
   ProviderPiSessionStats,
+  ProviderPiQueueState,
   ApprovalRequestId,
   ProviderApprovalDecision,
   ProviderDriverKind,
@@ -66,6 +68,12 @@ export interface ProviderThreadSnapshot {
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
 }
 
+/** Server-only read result. Recheck the captured owner after callers finish awaiting. */
+export interface PiQueueStateRead<TError> {
+  readonly state: ProviderPiQueueState;
+  readonly validateOwnership: Effect.Effect<void, TError>;
+}
+
 export interface ProviderAdapterShape<TError> {
   /**
    * Provider kind implemented by this adapter.
@@ -94,6 +102,9 @@ export interface ProviderAdapterShape<TError> {
   readonly getPiSessionStats?: (
     input: ProviderGetPiSessionStatsInput,
   ) => Effect.Effect<ProviderPiSessionStats, TError>;
+  readonly getPiQueueState?: (
+    input: ProviderGetPiQueueStateInput,
+  ) => Effect.Effect<PiQueueStateRead<TError>, TError>;
 
   /**
    * Interrupt an active turn.

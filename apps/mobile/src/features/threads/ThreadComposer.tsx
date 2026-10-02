@@ -2,6 +2,7 @@ import { ChatGptUsageLimitNotice } from "./ChatGptUsageLimitNotice";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { useAtomValue } from "@effect/atom-react";
+import { PiQueueButton } from "./PiQueueDetails";
 import { PiSessionStatsButton } from "./PiSessionStats";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
 import { pastedTextDisposition, replaceTextSelection } from "@t3tools/client-runtime/text-paste";
@@ -703,9 +704,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
             provider.instanceId === props.selectedThread.session?.providerInstanceId &&
             provider.driver === "pi",
         ) ? (
-          <PiSessionStatsButton
-            threadRef={scopeThreadRef(props.environmentId, props.selectedThread.id)}
-          />
+          <>
+            <PiQueueButton
+              threadRef={scopeThreadRef(props.environmentId, props.selectedThread.id)}
+            />
+            <PiSessionStatsButton
+              threadRef={scopeThreadRef(props.environmentId, props.selectedThread.id)}
+            />
+          </>
         ) : null}
         <ProviderExtensionText
           threadRef={scopeThreadRef(props.environmentId, props.selectedThread.id)}

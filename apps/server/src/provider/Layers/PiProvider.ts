@@ -64,6 +64,9 @@ export const piSessionCatalogSupported = (version: string): boolean =>
 export const piSessionStatsSupported = (version: string | null | undefined): boolean =>
   version === "0.99.1";
 
+export const piQueueStateSupported = (version: string | null | undefined): boolean =>
+  version === "0.99.1";
+
 const piCapabilities = (
   resourcesAvailable: boolean,
   sessionCatalogAvailable: boolean,
@@ -78,6 +81,7 @@ const piCapabilities = (
     commandDiscovery: resourcesAvailable ? "available" : "unavailable",
     skillDiscovery: resourcesAvailable ? "available" : "unavailable",
     workspaceSnapshotFreshness: true,
+    queueState: statsAvailable,
     sessions: {
       list: sessionCatalogAvailable,
       clone: sessionCatalogAvailable,

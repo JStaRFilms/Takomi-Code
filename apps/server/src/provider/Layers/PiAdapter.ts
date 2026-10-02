@@ -1,6 +1,7 @@
 import {
   ApprovalRequestId,
   ProviderPiSessionStats,
+  ProviderPiQueueState,
   PI_VAULT_ARCHIVE_MAX_BYTES,
   EventId,
   type PiSettings,
@@ -60,8 +61,9 @@ import {
   parsePiDiscoveredResources,
 } from "./PiResources.ts";
 import { resolvePiLaunchResources } from "./PiLaunchResources.ts";
-import { piSessionStatsSupported } from "./PiProvider.ts";
+import { piSessionStatsSupported, piQueueStateSupported } from "./PiProvider.ts";
 import { decodeNativePiSessionStats } from "./PiSessionStats.ts";
+import { decodeNativePiQueueState } from "./PiQueueState.ts";
 import { parseGenericCliVersion, spawnAndCollect } from "../providerSnapshot.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
@@ -1861,8 +1863,9 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
     const requestRpc = Effect.fn("requestPiRpc")(function* (
       context: PiSessionContext,
       command: Record<string, unknown> & { readonly type: string },
+      idPrefix?: "t3-pi-queue-state",
     ) {
-      const id = `${command.type}-${yield* randomId}`;
+      const id = `${idPrefix ?? command.type}-${yield* randomId}`;
       const response = yield* Deferred.make<Record<string, unknown>>();
       context.pendingRpc.set(id, response);
       yield* sendRpc(context, { ...command, id }).pipe(
@@ -2876,14 +2879,23 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             if (frame.type === "record") {
               const id = typeof frame.record.id === "string" ? frame.record.id : undefined;
               const statsId = id?.startsWith("get_session_stats-");
-              // Stats identity takes precedence over claimed event/setter type.
+              const queueStateId = id?.startsWith("t3-pi-queue-state-");
+              // Read identity takes precedence over claimed command/event/setter type.
               // The read's schema rejects malformed replies; late IDs need no history.
-              if (statsId || frame.record.command === "get_session_stats") {
+              if (statsId || (!queueStateId && frame.record.command === "get_session_stats")) {
                 const pending = statsId && id ? context.pendingRpc.get(id) : undefined;
                 return pending && isLiveContext(context, sessionGeneration)
                   ? Deferred.succeed(pending, frame.record).pipe(Effect.asVoid)
                   : Effect.void;
               }
+              if (queueStateId) {
+                const pending = id ? context.pendingRpc.get(id) : undefined;
+                return pending && isLiveContext(context, sessionGeneration)
+                  ? Deferred.succeed(pending, frame.record).pipe(Effect.asVoid)
+                  : Effect.void;
+              }
+              // Native queue snapshots contain private text. Counts do not authorize publishing it.
+              if (frame.record.type === "queue_update") return Effect.void;
               if (isExtensionStateSetter(frame.record)) {
                 return isLiveContext(context, sessionGeneration) && context.extensionLease
                   ? extensionState.write(context.extensionLease, frame.record)
@@ -3431,6 +3443,69 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       } satisfies ProviderPiSessionStats;
     });
 
+    const getPiQueueState: NonNullable<
+      ProviderAdapterShape<ProviderAdapterError>["getPiQueueState"]
+    > = Effect.fnUntraced(function* (input) {
+      const context = yield* ensureContext(input.threadId);
+      const generation = context.generation;
+      const lease = context.extensionLease;
+      const unavailable = () =>
+        new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "getPiQueueState",
+          issue: "Native queue state is unavailable for this process.",
+        });
+      if (
+        !lease ||
+        input.expectedGeneration !== lease.generation ||
+        input.expectedProviderInstanceId !== options.instanceId ||
+        !piQueueStateSupported(context.runtimeVersion) ||
+        !(yield* context.process.isRunning.pipe(Effect.orElseSucceed(() => false))) ||
+        !isLiveContext(context, generation) ||
+        !extensionState.isCurrentLease(lease)
+      )
+        return yield* unavailable();
+      const response = yield* requestRpc(context, { type: "get_state" }, "t3-pi-queue-state");
+      if (
+        !(yield* context.process.isRunning.pipe(Effect.orElseSucceed(() => false))) ||
+        !isLiveContext(context, generation) ||
+        !extensionState.isCurrentLease(lease)
+      )
+        return yield* unavailable();
+      const { data } = yield* decodeNativePiQueueState(response).pipe(
+        Effect.mapError(
+          () =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "get_state",
+              detail: "Pi returned invalid native queue state.",
+            }),
+        ),
+      );
+      const fetchedAt = yield* nowIso;
+      // Retain this exact process/lease for service and transport post-await fences.
+      const validateOwnership = Effect.gen(function* () {
+        if (
+          !(yield* context.process.isRunning.pipe(Effect.orElseSucceed(() => false))) ||
+          !isLiveContext(context, generation) ||
+          !extensionState.isCurrentLease(lease)
+        )
+          return yield* unavailable();
+      });
+      yield* validateOwnership;
+      return {
+        state: {
+          threadId: input.threadId,
+          providerInstanceId: options.instanceId,
+          generation: lease.generation,
+          fetchedAt,
+          source: "pi-native",
+          ...data,
+        } satisfies ProviderPiQueueState,
+        validateOwnership,
+      };
+    });
+
     const readThread = (
       threadId: ThreadId,
     ): Effect.Effect<ProviderThreadSnapshot, ProviderAdapterError> =>
@@ -3452,6 +3527,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       respondPiSecretInput,
       takePiVaultExport,
       getPiSessionStats,
+      getPiQueueState,
       stopSession: (threadId) =>
         ensureContext(threadId).pipe(Effect.flatMap((context) => stopContext(context, true))),
       listSessions: () => Effect.succeed([...sessions.values()].map((context) => context.session)),

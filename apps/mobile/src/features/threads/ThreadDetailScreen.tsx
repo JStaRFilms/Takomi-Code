@@ -1,3 +1,4 @@
+import { PiQueueDetails } from "./PiQueueDetails";
 import { PiSessionStatsDetails } from "./PiSessionStats";
 import type { WorktreeSetupCardProps } from "./worktree-setup-card";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
@@ -1156,6 +1157,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
           </Animated.View>
         </KeyboardStickyView>
       ) : null}
+      <PiQueueDetails
+        key={`queue:${props.environmentId}:${props.selectedThread.id}`}
+        threadRef={{ environmentId: props.environmentId, threadId: props.selectedThread.id }}
+      />
       <PiSessionStatsDetails
         key={`${props.environmentId}:${props.selectedThread.id}`}
         threadRef={{ environmentId: props.environmentId, threadId: props.selectedThread.id }}

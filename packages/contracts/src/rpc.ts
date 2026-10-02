@@ -117,8 +117,11 @@ import {
 } from "./orchestration.ts";
 import {
   ProviderGetPiSessionStatsInput,
+  ProviderGetPiQueueStateInput,
   ProviderPiSessionStats,
+  ProviderPiQueueState,
   ProviderPiSessionStatsError,
+  ProviderPiQueueStateError,
   ProviderUploadFeedbackError,
   ProviderPiSecretInputError,
   ProviderPiVaultExportError,
@@ -342,6 +345,7 @@ export const WS_METHODS = {
 
   // Provider methods
   providerGetPiSessionStats: "provider.getPiSessionStats",
+  providerGetPiQueueState: "provider.getPiQueueState",
   providerUploadFeedback: "provider.uploadFeedback",
   providerRespondPiSecretInput: "provider.respondPiSecretInput",
   providerTakePiVaultExport: "provider.takePiVaultExport",
@@ -1112,6 +1116,12 @@ const WsProviderGetPiSessionStatsRpc = Rpc.make(WS_METHODS.providerGetPiSessionS
   error: Schema.Union([ProviderPiSessionStatsError, EnvironmentAuthorizationError]),
 });
 
+const WsProviderGetPiQueueStateRpc = Rpc.make(WS_METHODS.providerGetPiQueueState, {
+  payload: ProviderGetPiQueueStateInput,
+  success: ProviderPiQueueState,
+  error: Schema.Union([ProviderPiQueueStateError, EnvironmentAuthorizationError]),
+});
+
 const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -1652,6 +1662,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,
   WsProviderGetPiSessionStatsRpc,
+  WsProviderGetPiQueueStateRpc,
   WsProviderUploadFeedbackRpc,
   WsProviderRespondPiSecretInputRpc,
   WsProviderTakePiVaultExportRpc,

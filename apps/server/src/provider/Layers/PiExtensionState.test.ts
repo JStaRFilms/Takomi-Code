@@ -58,6 +58,20 @@ const makePeer = Effect.fnUntraced(function* (index: number) {
   const stopped = yield* Deferred.make<void>();
   const releaseSpawn = yield* Deferred.make<void>();
   const secretReceived = yield* Deferred.make<unknown>();
+  let queueReads = 0;
+  const requestedQueue = yield* Deferred.make<string>();
+  const releaseQueue = yield* Deferred.make<void>();
+  let queue: unknown = {
+    pendingMessageCount: 4,
+    steeringMode: "all",
+    followUpMode: "one-at-a-time",
+    isStreaming: true,
+    isCompacting: false,
+    sessionFile: "/private/queue.jsonl",
+    sessionId: "private-queue-id",
+    model: { secret: "private-queue-model" },
+    steering: ["PRIVATE_QUEUE_TEXT"],
+  };
   const requestedStats = yield* Deferred.make<string>();
   const releaseStats = yield* Deferred.make<void>();
   let stats: unknown = {
@@ -97,6 +111,20 @@ const makePeer = Effect.fnUntraced(function* (index: number) {
     stdin: Sink.forEach((bytes: Uint8Array) =>
       Effect.gen(function* () {
         const request = decoder(new TextDecoder().decode(bytes));
+        if (typeof request.id === "string" && request.id.startsWith("t3-pi-queue-state-")) {
+          expect(request.type).toBe("get_state");
+          queueReads++;
+          yield* Deferred.succeed(requestedQueue, request.id);
+          yield* Deferred.await(releaseQueue);
+          yield* emit({
+            type: "response",
+            command: "get_state",
+            id: request.id,
+            success: true,
+            data: queue,
+          });
+          return;
+        }
         if (request.type === "get_state") {
           yield* Deferred.succeed(requestedState, undefined);
           yield* Deferred.await(releaseState);
@@ -157,6 +185,13 @@ const makePeer = Effect.fnUntraced(function* (index: number) {
     stopped,
     releaseSpawn,
     secretReceived,
+    requestedQueue,
+    releaseQueue,
+    queueReads: () => queueReads,
+    setQueue: (value: unknown) =>
+      Effect.sync(() => {
+        queue = value;
+      }),
     requestedStats,
     releaseStats,
     setStats: (value: unknown) =>
@@ -176,7 +211,7 @@ const makePeer = Effect.fnUntraced(function* (index: number) {
 const TRANSFER_KEY = "c9".repeat(32);
 const TRANSFER_PATH = "/synthetic-private-vault-archive.enc";
 type Peer = Effect.Success<ReturnType<typeof makePeer>>;
-const makeHarness = Effect.fnUntraced(function* (releaseStartup = false) {
+const makeHarness = Effect.fnUntraced(function* (releaseStartup = false, version = "0.99.1") {
   const config = yield* ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   yield* fs.makeDirectory(config.stateDir, { recursive: true });
@@ -205,7 +240,7 @@ const makeHarness = Effect.fnUntraced(function* (releaseStartup = false) {
           stdin: Sink.drain,
           stdout:
             command._tag === "StandardCommand" && command.args.includes("--version")
-              ? Stream.succeed(encoder.encode("0.99.1\n"))
+              ? Stream.succeed(encoder.encode(`${version}\n`))
               : Stream.empty,
           stderr: Stream.empty,
           all: Stream.empty,
@@ -1031,3 +1066,411 @@ it.effect(
       }),
     ).pipe(Effect.provide(TEST_LAYER)),
 );
+
+const readQueue = (
+  h: Effect.Success<ReturnType<typeof makeHarness>>,
+  generation: string | null,
+  owner = PI,
+) => {
+  if (!generation) return Effect.die("Missing native lease");
+  if (!h.service.getPiQueueState) return Effect.die("Missing queue route");
+  return h.service
+    .getPiQueueState({
+      threadId: THREAD,
+      expectedProviderInstanceId: owner,
+      expectedGeneration: generation,
+    })
+    .pipe(Effect.map((read) => read.state));
+};
+for (const claimedType of ["agent_start", "setWidget", "set_editor_text"] as const) {
+  for (const lifecycle of ["pending", "interrupted", "settled"] as const) {
+    it.effect(`native queue wrong-type ${claimedType} is private while ${lifecycle}`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const h = yield* makeHarness(true);
+          yield* start(h);
+          const peer = yield* Queue.take(h.peers);
+          // Publishing this sentinel drains startup through the canonical logger.
+          const startup = yield* h.service.streamEvents.pipe(
+            Stream.filter(
+              (event) => event.type === "runtime.warning" && event.payload.message === "Ready",
+            ),
+            Stream.runHead,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          yield* peer.emit({
+            type: "extension_ui_request",
+            id: "startup-drain",
+            method: "notify",
+            message: "Ready",
+          });
+          yield* Fiber.join(startup);
+          const initial = yield* current(h);
+          const reading = yield* readQueue(h, (yield* current(h)).generation).pipe(
+            Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }),
+            Effect.forkScoped,
+          );
+          const id = yield* Deferred.await(peer.requestedQueue);
+          if (lifecycle === "interrupted") {
+            yield* Fiber.interrupt(reading);
+            expect(Exit.hasInterrupts(yield* Fiber.await(reading))).toBe(true);
+          } else if (lifecycle === "settled") {
+            yield* Deferred.succeed(peer.releaseQueue, undefined);
+            expect(yield* Fiber.join(reading)).toBeUndefined();
+          }
+          const events = yield* h.service.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "user-input.requested"),
+            Stream.runCollect,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          const privatePath = "/private/review-queue.jsonl";
+          const privateText = "REVIEW_PRIVATE_QUEUE";
+          const malformed = {
+            type: claimedType === "agent_start" ? "agent_start" : "extension_ui_request",
+            method: claimedType,
+            widgetKey: "private-queue",
+            widgetLines: [privateText, privatePath],
+            widgetPlacement: "belowEditor",
+            text: privateText,
+            success: true,
+            data: {
+              sessionFile: privatePath,
+              sessionId: privateText,
+              pendingMessageCount: 2,
+              steeringMode: "all",
+              followUpMode: "one-at-a-time",
+              isStreaming: false,
+              isCompacting: false,
+              details: privateText,
+            },
+          };
+          yield* peer.emit({ ...malformed, id });
+          yield* peer.emit({
+            ...malformed,
+            id: "t3-pi-queue-state-unrelated-record",
+            command: "get_state",
+          });
+          yield* peer.emit({ ...malformed, id: "t3-pi-queue-state-unseen-late-record" });
+          yield* peer.emit({
+            type: "extension_ui_request",
+            id: "post-queue-input",
+            method: "input",
+            title: "Normal input",
+          });
+          const received = yield* Fiber.join(events);
+          const snapshot = yield* current(h);
+          for (const marker of [privatePath, privateText]) {
+            expect(encodeJson([received, snapshot, h.nativeRecords, h.canonical])).not.toContain(
+              marker,
+            );
+          }
+          expect(snapshot).toEqual(initial);
+          expect(received.map((event) => event.type)).toEqual(["user-input.requested"]);
+          if (lifecycle === "pending") {
+            const error = yield* Fiber.join(reading);
+            expect(error).toMatchObject({
+              _tag: "ProviderAdapterRequestError",
+              method: "get_state",
+              detail: "Pi returned invalid native queue state.",
+            });
+            expect(encodeJson(error)).not.toContain(privateText);
+            expect(encodeJson(error)).not.toContain(privatePath);
+          }
+          yield* Deferred.succeed(peer.releaseQueue, undefined);
+          const input = received.at(-1);
+          if (input?.type !== "user-input.requested" || !input.requestId)
+            return yield* Effect.die("Normal input was not delivered");
+          yield* h.service.respondToUserInput({
+            threadId: THREAD,
+            requestId: ApprovalRequestId.make(input.requestId),
+            answers: { [input.requestId]: "Normal answer" },
+          });
+          expect(yield* Deferred.await(peer.secretReceived)).toBe("Normal answer");
+          const turn = yield* h.service.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "turn.completed"),
+            Stream.runCollect,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          yield* peer.emit({ type: "agent_start" });
+          yield* peer.emit({ type: "agent_end", messages: [], willRetry: false });
+          yield* peer.emit({ type: "agent_settled" });
+          expect((yield* Fiber.join(turn)).map((event) => event.type)).toEqual([
+            "turn.started",
+            "turn.completed",
+          ]);
+          for (const marker of [privatePath, privateText])
+            expect(encodeJson([yield* current(h), h.nativeRecords, h.canonical])).not.toContain(
+              marker,
+            );
+        }),
+      ).pipe(Effect.provide(TEST_LAYER)),
+    );
+  }
+}
+
+it.effect(
+  "native queue read preserves combined counts/modes and excludes private state and queue_update before logs/events",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        const generation = (yield* current(h)).generation;
+        const reading = yield* readQueue(h, generation).pipe(Effect.forkScoped);
+        yield* Deferred.await(peer.requestedQueue);
+        yield* Deferred.succeed(peer.releaseQueue, undefined);
+        const result = yield* Fiber.join(reading);
+        expect(result).toMatchObject({
+          providerInstanceId: PI,
+          generation,
+          source: "pi-native",
+          pendingMessageCount: 4,
+          steeringMode: "all",
+          followUpMode: "one-at-a-time",
+          isStreaming: true,
+          isCompacting: false,
+        });
+        const drained = yield* h.service.streamEvents.pipe(
+          Stream.filter((event) => event.type === "user-input.requested"),
+          Stream.runHead,
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        yield* peer.emit({
+          type: "queue_update",
+          steering: ["PRIVATE_QUEUE_UPDATE"],
+          followUp: ["PRIVATE_FOLLOW_UP"],
+        });
+        yield* peer.emit({
+          type: "extension_ui_request",
+          method: "input",
+          id: "drain-queue",
+          title: "Normal input",
+        });
+        yield* Fiber.join(drained);
+        const text = encodeJson([result, yield* current(h), h.nativeRecords, h.canonical]);
+        for (const marker of [
+          "/private/queue.jsonl",
+          "private-queue-id",
+          "private-queue-model",
+          "PRIVATE_QUEUE_TEXT",
+          "PRIVATE_QUEUE_UPDATE",
+          "PRIVATE_FOLLOW_UP",
+          "t3-pi-queue-state-",
+        ])
+          expect(text).not.toContain(marker);
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+it.effect(
+  "native queue rejects wrong generations/owners and stopped/deleted threads without recovery",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        const generation = (yield* current(h)).generation;
+        for (const [lease, owner] of [
+          ["wrong", PI],
+          [generation, ProviderInstanceId.make("other")],
+        ] as const)
+          expect(Exit.isFailure(yield* readQueue(h, lease, owner).pipe(Effect.exit))).toBe(true);
+        expect(yield* Deferred.isDone(peer.requestedQueue)).toBe(false);
+        yield* h.service.stopSession({ threadId: THREAD });
+        expect(Exit.isFailure(yield* readQueue(h, generation).pipe(Effect.exit))).toBe(true);
+        yield* h.extension.delete(THREAD);
+        expect(Exit.isFailure(yield* readQueue(h, generation).pipe(Effect.exit))).toBe(true);
+        expect(yield* Queue.size(h.peers)).toBe(0);
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+it.effect("native queue discards a replaced same-instance process and its old lease", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const h = yield* makeHarness(true);
+      yield* start(h);
+      const first = yield* Queue.take(h.peers);
+      const old = (yield* current(h)).generation;
+      const reading = yield* readQueue(h, old).pipe(Effect.exit, Effect.forkScoped);
+      yield* Deferred.await(first.requestedQueue);
+      yield* start(h);
+      expect((yield* current(h)).generation).not.toBe(old);
+      yield* Deferred.succeed(first.releaseQueue, undefined);
+      expect(Exit.isFailure(yield* Fiber.join(reading))).toBe(true);
+      expect(Exit.isFailure(yield* readQueue(h, old).pipe(Effect.exit))).toBe(true);
+    }),
+  ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+for (const version of ["0.84.4", "unknown", "0.99.2"]) {
+  it.effect(
+    "native queue rejects captured unsupported launch version " + version + " with a valid lease",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const h = yield* makeHarness(true, version);
+          yield* start(h);
+          const peer = yield* Queue.take(h.peers);
+          const generation = (yield* current(h)).generation;
+          expect(Exit.isFailure(yield* readQueue(h, generation).pipe(Effect.exit))).toBe(true);
+          expect(yield* Deferred.isDone(peer.requestedQueue)).toBe(false);
+        }),
+      ).pipe(Effect.provide(TEST_LAYER)),
+  );
+}
+
+it.effect("native queue rejects deletion during an awaited read without reviving the owner", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const h = yield* makeHarness(true);
+      yield* start(h);
+      const peer = yield* Queue.take(h.peers);
+      const generation = (yield* current(h)).generation;
+      const reading = yield* readQueue(h, generation).pipe(Effect.exit, Effect.forkScoped);
+      yield* Deferred.await(peer.requestedQueue);
+      yield* h.extension.delete(THREAD);
+      yield* Deferred.succeed(peer.releaseQueue, undefined);
+      expect(Exit.isFailure(yield* Fiber.join(reading))).toBe(true);
+      expect(yield* Queue.size(h.peers)).toBe(0);
+    }),
+  ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+it.effect("native queue rejects an awaited read when the actual registry wrapper is retired", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const h = yield* makeHarness(true);
+      yield* start(h);
+      const peer = yield* Queue.take(h.peers);
+      const generation = (yield* current(h)).generation;
+      const oldAdapter = yield* h.registry.getByInstance(PI);
+      const reading = yield* readQueue(h, generation).pipe(Effect.exit, Effect.forkScoped);
+      yield* Deferred.await(peer.requestedQueue);
+      yield* h.mutator.reconcile({
+        [PI]: {
+          ...h.configMap[PI],
+          driver: ProviderDriverKind.make("pi"),
+          config: {
+            binaryPath: "synthetic-pi-rebuilt",
+            homePath: h.config.stateDir,
+            launchArgs: "--no-extensions",
+          },
+          environment: [{ name: "HOME", value: h.config.stateDir, sensitive: false }],
+        },
+      });
+      expect(yield* h.registry.getByInstance(PI)).not.toBe(oldAdapter);
+      yield* Deferred.succeed(peer.releaseQueue, undefined);
+      expect(Exit.isFailure(yield* Fiber.join(reading))).toBe(true);
+      expect(Exit.isFailure(yield* readQueue(h, generation).pipe(Effect.exit))).toBe(true);
+      expect(yield* Queue.size(h.peers)).toBe(0);
+    }),
+  ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+it.effect(
+  "native queue malformed required data fails generically without native paths or queued text",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* makeHarness(true);
+        yield* start(h);
+        const peer = yield* Queue.take(h.peers);
+        yield* peer.setQueue({
+          pendingMessageCount: 0,
+          sessionFile: "/private/malformed-queue.jsonl",
+          steering: ["PRIVATE_MALFORMED_QUEUE"],
+        });
+        yield* Deferred.succeed(peer.releaseQueue, undefined);
+        const error = yield* readQueue(h, (yield* current(h)).generation).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterRequestError",
+          method: "get_state",
+          detail: "Pi returned invalid native queue state.",
+        });
+        const text = encodeJson([error, yield* current(h), h.nativeRecords, h.canonical]);
+        expect(text).not.toContain("/private/malformed-queue.jsonl");
+        expect(text).not.toContain("PRIVATE_MALFORMED_QUEUE");
+      }),
+    ).pipe(Effect.provide(TEST_LAYER)),
+);
+
+for (const change of ["delete", "restart"] as const) {
+  it.effect(
+    `native queue post-read service fence rejects ${change} while the second registry lookup is held`,
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const h = yield* makeHarness(true);
+          yield* start(h);
+          const peer = yield* Queue.take(h.peers);
+          const generation = (yield* current(h)).generation;
+          const barrier = yield* holdBeforeReserve(h, 2);
+          const reading = yield* readQueue(h, generation).pipe(Effect.exit, Effect.forkScoped);
+          yield* Deferred.await(peer.requestedQueue);
+          yield* Deferred.succeed(peer.releaseQueue, undefined);
+          yield* Deferred.await(barrier.held);
+          if (change === "delete") {
+            yield* h.extension.delete(THREAD);
+            expect(yield* current(h)).toMatchObject({ active: false });
+          } else {
+            yield* start(h);
+            expect((yield* current(h)).generation).not.toBe(generation);
+          }
+          yield* Deferred.succeed(barrier.release, undefined);
+          expect(Exit.isFailure(yield* Fiber.join(reading))).toBe(true);
+          expect(peer.queueReads()).toBe(1);
+        }),
+      ).pipe(Effect.provide(TEST_LAYER)),
+  );
+}
+
+for (const command of ["get_session_stats", "get_commands", undefined]) {
+  it.effect(
+    "native queue identity rejects private mismatched command " + String(command) + " immediately",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const h = yield* makeHarness(true);
+          yield* start(h);
+          const peer = yield* Queue.take(h.peers);
+          const reading = yield* readQueue(h, (yield* current(h)).generation).pipe(
+            Effect.flip,
+            Effect.forkScoped,
+          );
+          const id = yield* Deferred.await(peer.requestedQueue);
+          yield* peer.emit({
+            id,
+            type: "response",
+            command,
+            success: true,
+            data: { secret: "PRIVATE_WRONG_COMMAND" },
+          });
+          const error = yield* Fiber.join(reading);
+          expect(error).toMatchObject({
+            _tag: "ProviderAdapterRequestError",
+            method: "get_state",
+            detail: "Pi returned invalid native queue state.",
+          });
+          yield* Deferred.succeed(peer.releaseQueue, undefined);
+          const drained = yield* h.service.streamEvents.pipe(
+            Stream.filter((event) => event.type === "user-input.requested"),
+            Stream.runHead,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          yield* peer.emit({
+            type: "extension_ui_request",
+            method: "input",
+            id: "wrong-command-drain",
+            title: "Normal input",
+          });
+          yield* Fiber.join(drained);
+          expect(
+            encodeJson([error, yield* current(h), h.nativeRecords, h.canonical]),
+          ).not.toContain("PRIVATE_WRONG_COMMAND");
+        }),
+      ).pipe(Effect.provide(TEST_LAYER)),
+  );
+}
