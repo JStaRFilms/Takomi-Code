@@ -51,6 +51,7 @@ import {
 } from "../environments/primary/target";
 import { clearComposerDraftsEnvironment } from "../composerDraftStore";
 import { isHostedStaticApp } from "../hostedPairing";
+import { isLocalEnvironmentDisabled } from "../localEnvironment";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { acknowledgeRpcRequest, trackRpcRequestSent } from "../rpc/requestLatencyState";
 import {
@@ -90,7 +91,27 @@ const connectivityLayer = Connectivity.layer({
   ),
 });
 
+const beforeHeartbeat = Effect.suspend(() =>
+  typeof document === "undefined" || document.visibilityState === "visible"
+    ? Effect.void
+    : Stream.callback<void>((queue) =>
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            const listener = () => {
+              if (document.visibilityState === "visible") Queue.offerUnsafe(queue, undefined);
+            };
+            document.addEventListener("visibilitychange", listener);
+            listener();
+            return listener;
+          }),
+          (listener) =>
+            Effect.sync(() => document.removeEventListener("visibilitychange", listener)),
+        ).pipe(Effect.asVoid),
+      ).pipe(Stream.runHead, Effect.asVoid),
+);
+
 const wakeupsLayer = Wakeups.layer({
+  beforeHeartbeat,
   changes: Stream.merge(
     Stream.callback<"application-active">((queue) =>
       Effect.acquireRelease(
@@ -182,6 +203,9 @@ const capabilitiesLayer = Layer.effectContext(
       scopes: AuthStandardClientScopes,
     });
     const cloudSession = CloudSession.of({
+      identity: Effect.sync(() =>
+        Option.fromNullishOr(appAtomRegistry.get(managedRelaySessionAtom)),
+      ),
       clerkToken: Effect.gen(function* () {
         const session = appAtomRegistry.get(managedRelaySessionAtom);
         if (session === null) {
@@ -209,7 +233,7 @@ const capabilitiesLayer = Layer.effectContext(
       }),
     });
     const identity = RelayDeviceIdentity.of({
-      deviceId: Effect.succeed(Option.none()),
+      deviceId: Effect.succeedNone,
     });
     const primaryAuth = PrimaryEnvironmentAuth.of({
       bearerToken: Effect.tryPromise({
@@ -461,7 +485,7 @@ export function secondaryRegistrationsToRetainAfterTopologyRead(
 const platformConnectionSourceLayer = Layer.effect(
   PlatformConnectionSource,
   Effect.gen(function* () {
-    if (isHostedStaticApp()) {
+    if (isHostedStaticApp() || isLocalEnvironmentDisabled()) {
       return PlatformConnectionSource.of({
         registrations: Stream.empty,
       });

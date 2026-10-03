@@ -103,6 +103,8 @@ export function resolveProviderSkillSourceKind(
   }
 }
 
+export const PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS = 5 * 60 * 1_000;
+
 function resolveProviderWorkspaceSnapshot(
   provider: ServerProvider,
   cwd: string | null | undefined,
@@ -123,4 +125,18 @@ export function resolveProviderSlashCommandsForCwd(
   cwd: string | null | undefined,
 ): ServerProvider["slashCommands"] {
   return resolveProviderWorkspaceSnapshot(provider, cwd)?.slashCommands ?? provider.slashCommands;
+}
+
+/** Null means this provider does not support client-driven freshness refresh. */
+export function providerWorkspaceSnapshotRefreshDelay(
+  provider: ServerProvider,
+  cwd: string | null | undefined,
+  nowMs: number,
+): number | null {
+  if (provider.capabilities?.workspaceSnapshotFreshness !== true) return null;
+  const snapshot = resolveProviderWorkspaceSnapshot(provider, cwd);
+  if (!snapshot) return 0;
+  const checkedAtMs = Date.parse(snapshot.checkedAt);
+  if (!Number.isFinite(checkedAtMs)) return 0;
+  return Math.max(0, checkedAtMs + PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS - nowMs);
 }

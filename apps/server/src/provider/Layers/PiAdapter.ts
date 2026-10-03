@@ -1,13 +1,14 @@
 import {
   ApprovalRequestId,
+  PI_VAULT_ARCHIVE_MAX_BYTES,
   EventId,
   type PiSettings,
   type ProviderApprovalDecision,
+  ToolPresentationEnvelope,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type RuntimeTaskUsage,
-  type ToolPresentationEnvelope,
   type ToolLifecycleItemType,
   type ProviderSendTurnInput,
   type ProviderSession,
@@ -22,9 +23,9 @@ import {
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
-import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -47,21 +48,38 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
+import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { PiJsonlDecoder, type PiJsonlFrame } from "./PiProtocolConformance.ts";
+import { readPiVaultExportArchive } from "./PiVaultExportArchive.ts";
+import {
+  discoverPiProjectTrust,
+  expandPiSkillReferences,
+  parsePiDiscoveredResources,
+} from "./PiResources.ts";
+import { resolvePiLaunchResources } from "./PiLaunchResources.ts";
 
 const PROVIDER = ProviderDriverKind.make("pi");
+const VAULT_SECRET_TITLE_PREFIX = "[takomi-vault-secret] ";
+const VAULT_ARCHIVE_TITLE_PREFIX = "[takomi-vault-archive] ";
 const PI_RESUME_VERSION = 1 as const;
 const REASONING_DETAIL_LIMIT = 16_000;
 const REASONING_EMIT_INTERVAL = 500;
-const TAKOMI_EXTENSION_NAMES = [
-  "takomi-runtime",
-  "takomi-subagents",
-  "oauth-router",
-  "takomi-context-manager",
-  "notify-sound",
-] as const;
+const MAX_DYNAMIC_PAYLOAD_BYTES = 1024 * 1024;
+const MAX_DYNAMIC_PAYLOAD_PREVIEW_BYTES = 32 * 1024;
+const MAX_UI_REQUEST_BYTES = 1024 * 1024;
+const MAX_UI_TITLE_CODE_POINTS = 4096;
+const MAX_UI_TITLE_BYTES = 16 * 1024;
+const UI_HEADER_CODE_POINTS = 256;
+const MAX_UI_MESSAGE_BYTES = 16 * 1024;
+const MAX_UI_PLACEHOLDER_BYTES = 2 * 1024;
+const MAX_UI_EDITOR_PREFILL_BYTES = 512 * 1024;
+const MAX_UI_OPTIONS = 500;
+const MAX_UI_OPTION_BYTES = 2 * 1024;
+const MAX_UI_OPTIONS_BYTES = 256 * 1024;
+const MAX_UI_REQUEST_ID_CODE_POINTS = 256;
+const MAX_UI_REQUEST_ID_BYTES = 512;
 const encoder = new TextEncoder();
 const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);
-const decodeJsonString = Schema.decodeUnknownExit(UnknownFromJsonString);
 const encodeJsonString = Schema.encodeUnknownExit(UnknownFromJsonString);
 
 function jsonString(value: unknown): string | undefined {
@@ -69,9 +87,80 @@ function jsonString(value: unknown): string | undefined {
   return Exit.isSuccess(encoded) ? encoded.value : undefined;
 }
 
+function utf8Bytes(value: string): number {
+  return encoder.encode(value).byteLength;
+}
+
+function truncateUtf8(value: string, limit: number): string {
+  let retained = "";
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = utf8Bytes(character);
+    if (bytes + characterBytes > limit) break;
+    retained += character;
+    bytes += characterBytes;
+  }
+  return retained;
+}
+
+function boundedDynamicPayload(value: unknown): {
+  readonly value: unknown;
+  readonly truncated: boolean;
+} {
+  if (value === undefined) return { value: undefined, truncated: false };
+  const encoded = jsonString(value);
+  if (encoded === undefined) {
+    return {
+      value: { truncated: true, reason: "not-json-serializable" },
+      truncated: true,
+    };
+  }
+  const bytes = utf8Bytes(encoded);
+  if (bytes <= MAX_DYNAMIC_PAYLOAD_BYTES) return { value, truncated: false };
+  const preview = MAX_DYNAMIC_PAYLOAD_PREVIEW_BYTES / 2;
+  return {
+    value: {
+      truncated: true,
+      strategy: "head-tail",
+      originalBytes: bytes,
+      head: truncateUtf8(encoded, preview),
+      tail: truncateUtf8End(encoded, preview),
+    },
+    truncated: true,
+  };
+}
+
+function truncateUtf8End(value: string, limit: number): string {
+  const characters = Array.from(value);
+  let start = characters.length;
+  let bytes = 0;
+  while (start > 0) {
+    const characterBytes = utf8Bytes(characters[start - 1]!);
+    if (bytes + characterBytes > limit) break;
+    start -= 1;
+    bytes += characterBytes;
+  }
+  return characters.slice(start).join("");
+}
+
+function validUiText(value: unknown, maxBytes: number, required = false): string | undefined {
+  if (typeof value !== "string") return undefined;
+  if (required && value.trim().length === 0) return undefined;
+  return utf8Bytes(value) <= maxBytes ? value : undefined;
+}
+
+function validUiRequestId(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.trim() !== value || value.length === 0) return undefined;
+  if (utf8Bytes(value) > MAX_UI_REQUEST_ID_BYTES) return undefined;
+  return Array.from(value).length <= MAX_UI_REQUEST_ID_CODE_POINTS ? value : undefined;
+}
+
+const decodeToolPresentationEnvelope = Schema.decodeUnknownOption(ToolPresentationEnvelope);
+
 export interface PiAdapterOptions {
   readonly instanceId: ProviderInstanceId;
   readonly environment: NodeJS.ProcessEnv;
+  readonly nativeEventLogger?: EventNdjsonLogger;
 }
 
 type PiRpcMessage = Record<string, unknown> & { readonly type: string };
@@ -80,7 +169,10 @@ type PiUiMethod = "confirm" | "select" | "input" | "editor";
 
 interface PendingUiRequest {
   readonly method: PiUiMethod;
-  readonly requestId: ApprovalRequestId;
+  readonly nativeRequestId: string;
+  readonly generation: number;
+  readonly sensitive?: boolean;
+  readonly archive?: boolean;
 }
 
 interface PiTurnSnapshot {
@@ -91,10 +183,33 @@ interface PiTurnSnapshot {
 interface PiSessionContext {
   session: ProviderSession;
   readonly scope: Scope.Closeable;
+  readonly generation: number;
   readonly process: ChildProcessSpawner.ChildProcessHandle;
   readonly input: Queue.Queue<Uint8Array>;
-  readonly pendingUi: Map<ApprovalRequestId, PendingUiRequest>;
+  readonly pendingUi: Map<RuntimeRequestId, PendingUiRequest>;
+  readonly sensitiveUiIds: Set<string>;
+  readonly settledUi: Set<RuntimeRequestId>;
   readonly pendingRpc: Map<string, Deferred.Deferred<PiRpcMessage>>;
+  /** Skills accepted by this exact Pi process, for native `/skill:name` dispatch. */
+  skillNames: ReadonlySet<string> | undefined;
+  vaultCommandNames: ReadonlySet<string>;
+  pendingVaultExport:
+    | {
+        readonly id: string;
+        readonly key: string;
+        readonly path: string;
+        readonly generation: number;
+      }
+    | undefined;
+  pendingVaultPrompt:
+    | {
+        readonly id: string;
+        readonly generation: number;
+        readonly turnId: TurnId;
+        readonly commandName: string;
+        error?: string;
+      }
+    | undefined;
   readonly toolActivityByCallId: Map<
     string,
     ReadonlyArray<NonNullable<ToolPresentationEnvelope["activity"]>[number]>
@@ -114,6 +229,7 @@ interface PiSessionContext {
   appliedModelSlug: string | undefined;
   appliedThinkingLevel: string | undefined;
   turnFailure: string | undefined;
+  outputFenced: boolean;
   stopped: boolean;
 }
 
@@ -154,116 +270,6 @@ const TAKOMI_TOOL_FAMILIES = {
 
 type TakomiToolName = keyof typeof TAKOMI_TOOL_FAMILIES;
 
-type PiResourceSettings = {
-  readonly extensions: readonly string[];
-  readonly packages: readonly string[];
-};
-
-function parsePiResourceSettings(raw: string): PiResourceSettings {
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return {
-      extensions: Array.isArray(parsed.extensions)
-        ? parsed.extensions.filter((value): value is string => typeof value === "string")
-        : [],
-      packages: Array.isArray(parsed.packages)
-        ? parsed.packages.filter((value): value is string => typeof value === "string")
-        : [],
-    };
-  } catch {
-    return { extensions: [], packages: [] };
-  }
-}
-
-function npmPackageName(source: string): string | undefined {
-  if (!source.startsWith("npm:")) return undefined;
-  const spec = source.slice("npm:".length);
-  if (!spec) return undefined;
-  if (!spec.startsWith("@")) return spec.split("@", 1)[0] || undefined;
-  const slash = spec.indexOf("/");
-  if (slash < 0) return undefined;
-  const version = spec.indexOf("@", slash);
-  return version < 0 ? spec : spec.slice(0, version);
-}
-
-function packageExtensionEntries(raw: string): readonly string[] {
-  try {
-    const parsed = JSON.parse(raw) as { pi?: { extensions?: unknown } };
-    return Array.isArray(parsed.pi?.extensions)
-      ? parsed.pi.extensions.filter((value): value is string => typeof value === "string")
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function discoverPiCompanionExtensions(input: {
-  readonly fileSystem: FileSystem.FileSystem;
-  readonly path: Path.Path;
-  readonly environment: NodeJS.ProcessEnv;
-  readonly homePath: string;
-}) {
-  return Effect.gen(function* () {
-    const configuredHome =
-      readString(input.homePath) ?? readString(input.environment.PI_CODING_AGENT_DIR);
-    const userHome =
-      readString(input.environment.USERPROFILE) ?? readString(input.environment.HOME);
-    const agentDir =
-      configuredHome ?? (userHome ? input.path.join(userHome, ".pi", "agent") : undefined);
-    if (!agentDir) return [];
-
-    const settingsRaw = yield* input.fileSystem
-      .readFileString(input.path.join(agentDir, "settings.json"))
-      .pipe(Effect.orElseSucceed(() => ""));
-    const resourceSettings = parsePiResourceSettings(settingsRaw);
-    const candidates = resourceSettings.extensions.map((extensionPath) =>
-      input.path.isAbsolute(extensionPath)
-        ? extensionPath
-        : input.path.resolve(agentDir, extensionPath),
-    );
-
-    const globalExtensionsDir = input.path.join(agentDir, "extensions");
-    const globalEntries = yield* input.fileSystem
-      .readDirectory(globalExtensionsDir)
-      .pipe(Effect.orElseSucceed(() => [] as string[]));
-    for (const entry of globalEntries) {
-      const extensionName = entry.replace(/\.ts$/u, "");
-      if (
-        TAKOMI_EXTENSION_NAMES.includes(extensionName as (typeof TAKOMI_EXTENSION_NAMES)[number])
-      ) {
-        continue;
-      }
-      candidates.push(
-        entry.endsWith(".ts")
-          ? input.path.join(globalExtensionsDir, entry)
-          : input.path.join(globalExtensionsDir, entry, "index.ts"),
-      );
-    }
-
-    for (const source of resourceSettings.packages) {
-      const packageName = npmPackageName(source);
-      if (!packageName) continue;
-      const packageDir = input.path.join(
-        agentDir,
-        "npm",
-        "node_modules",
-        ...packageName.split("/"),
-      );
-      const manifestRaw = yield* input.fileSystem
-        .readFileString(input.path.join(packageDir, "package.json"))
-        .pipe(Effect.orElseSucceed(() => ""));
-      for (const extensionPath of packageExtensionEntries(manifestRaw)) {
-        candidates.push(input.path.resolve(packageDir, extensionPath));
-      }
-    }
-
-    const existing = yield* Effect.filter([...new Set(candidates)], (candidate) =>
-      input.fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false)),
-    );
-    return existing;
-  });
-}
-
 function takomiFamily(toolName: string): ToolPresentationEnvelope["family"] | undefined {
   const normalized = toolName.toLowerCase();
   if (normalized.startsWith("takomi_flow_")) return "execution";
@@ -297,22 +303,34 @@ function classifyTool(toolName: string): ToolLifecycleItemType {
   return "dynamic_tool_call";
 }
 
-function filePathsFromToolArgs(args: unknown): Array<{ readonly path: string }> {
+function filePathsFromToolArgs(args: unknown): {
+  readonly files: Array<{ readonly path: string }>;
+  readonly truncated: boolean;
+} {
   const input = isRecord(args) ? args : undefined;
-  if (!input) return [];
+  if (!input) return { files: [], truncated: false };
   const paths = new Set<string>();
-  for (const value of [input.path, input.filePath, input.filename, input.newPath, input.oldPath]) {
+  let truncated = false;
+  const add = (value: unknown) => {
     const path = readString(value);
-    if (path) paths.add(path);
+    if (!path) return;
+    const boundedPath = truncateUtf8(path, 512);
+    if (boundedPath !== path || paths.size >= 100) {
+      truncated = true;
+      return;
+    }
+    paths.add(boundedPath);
+  };
+  for (const value of [input.path, input.filePath, input.filename, input.newPath, input.oldPath]) {
+    add(value);
   }
   const patch = typeof input.patch === "string" ? input.patch : undefined;
   if (patch) {
     for (const match of patch.matchAll(/^\*\*\* (?:Add|Delete|Update) File: (.+)$/gmu)) {
-      const path = readString(match[1]);
-      if (path) paths.add(path);
+      add(match[1]);
     }
   }
-  return [...paths].map((path) => ({ path }));
+  return { files: [...paths].map((path) => ({ path })), truncated };
 }
 
 export function normalizePiToolWorkLog(input: {
@@ -328,9 +346,13 @@ export function normalizePiToolWorkLog(input: {
   if (!toolCallId) return undefined;
 
   const itemType = classifyTool(input.toolName);
-  const rawOutput = input.partialResult ?? input.result;
+  const argsPayload = boundedDynamicPayload(input.args);
+  const resultPayload = boundedDynamicPayload(input.result);
+  const partialResultPayload = boundedDynamicPayload(input.partialResult);
+  const rawOutputPayload = boundedDynamicPayload(input.partialResult ?? input.result);
   const args = firstRecord(input.args);
   const command = readString(args?.command ?? args?.cmd);
+  const filePaths = itemType === "file_change" ? filePathsFromToolArgs(input.args) : undefined;
   const data = {
     toolCallId,
     ...(suppliedToolCallId
@@ -339,16 +361,24 @@ export function normalizePiToolWorkLog(input: {
           warning: "Pi tool lifecycle event was missing toolCallId; rendered as an isolated item.",
         }),
     toolName: input.toolName,
-    args: input.args,
-    ...(input.result !== undefined ? { result: input.result } : {}),
-    ...(input.partialResult !== undefined ? { partialResult: input.partialResult } : {}),
+    ...(input.args !== undefined ? { args: argsPayload.value } : {}),
+    ...(input.result !== undefined ? { result: resultPayload.value } : {}),
+    ...(input.partialResult !== undefined ? { partialResult: partialResultPayload.value } : {}),
+    ...(argsPayload.truncated ||
+    resultPayload.truncated ||
+    partialResultPayload.truncated ||
+    filePaths?.truncated
+      ? { payloadTruncated: true }
+      : {}),
     ...(itemType === "command_execution"
       ? {
           ...(command ? { command } : {}),
-          ...(rawOutput !== undefined ? { rawOutput } : {}),
+          ...(input.partialResult !== undefined || input.result !== undefined
+            ? { rawOutput: rawOutputPayload.value }
+            : {}),
         }
       : {}),
-    ...(itemType === "file_change" ? { files: filePathsFromToolArgs(input.args) } : {}),
+    ...(filePaths ? { files: filePaths.files } : {}),
   };
   return { itemType, data };
 }
@@ -707,28 +737,190 @@ function nativeTakomiTaskStatus(
   return normalizeTakomiTaskStatus(record.status ?? record.state) ?? fallback;
 }
 
+const MERGE_MAX_COUNTERS: ReadonlySet<string> = new Set([
+  "tokens",
+  "total",
+  "totalTokens",
+  "toolCount",
+  "durationMs",
+  "input",
+  "output",
+  "cacheRead",
+  "cacheWrite",
+  "cost",
+  "turns",
+]);
+
+/**
+ * Best-wins merge for one child's fields across Details snapshots. A naive
+ * spread lets a stale placeholder progress entry (`tokens: 0, toolCount: 0`,
+ * as the extension emits alongside real results) clobber the end-of-task
+ * totals the same payload carries in `results[]`. Counters keep the max,
+ * terminal status sticks, nested usage/progress records merge field by field,
+ * arrays keep the longest (cumulative), and empty strings never overwrite
+ * real text.
+ */
+function mergeRowValues(
+  existing: Record<string, unknown> | undefined,
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!existing) return { ...incoming };
+  const merged: Record<string, unknown> = { ...existing };
+  for (const [key, next] of Object.entries(incoming)) {
+    const prev = existing[key];
+    if (next === undefined || next === null) continue;
+    if (prev === undefined || prev === null) {
+      merged[key] = next;
+      continue;
+    }
+    if (MERGE_MAX_COUNTERS.has(key) && typeof next === "number" && typeof prev === "number") {
+      merged[key] = Math.max(prev, next);
+      continue;
+    }
+    if ((key === "status" || key === "state") && typeof next === "string") {
+      const prevStatus = normalizeTakomiTaskStatus(prev);
+      const nextStatus = normalizeTakomiTaskStatus(next);
+      const prevTerminal = prevStatus !== undefined && isTerminalTakomiTaskStatus(prevStatus);
+      const nextTerminal = nextStatus !== undefined && isTerminalTakomiTaskStatus(nextStatus);
+      merged[key] = nextTerminal || !prevTerminal ? next : prev;
+      continue;
+    }
+    if ((key === "usage" || key === "progress") && isRecord(prev) && isRecord(next)) {
+      merged[key] = mergeRowValues(prev, next);
+      continue;
+    }
+    if (Array.isArray(next)) {
+      merged[key] = Array.isArray(prev) && prev.length >= next.length ? prev : next;
+      continue;
+    }
+    if (typeof next === "string") {
+      merged[key] = next.trim().length === 0 ? prev : next;
+      continue;
+    }
+    merged[key] = next;
+  }
+  return merged;
+}
+
+/**
+ * Cross-snapshot best-wins for typed usage: a final placeholder-zero frame
+ * must not regress a real live total an earlier partial already reported.
+ */
+function bestTypedUsage(
+  prev: RuntimeTaskUsage | undefined,
+  next: RuntimeTaskUsage | undefined,
+): RuntimeTaskUsage | undefined {
+  if (!prev) return next;
+  if (!next) return prev;
+  const maxOptional = (left: number | undefined, right: number | undefined) =>
+    left === undefined ? right : right === undefined ? left : Math.max(left, right);
+  const inputTokens = maxOptional(prev.inputTokens, next.inputTokens);
+  const cachedInputTokens = maxOptional(prev.cachedInputTokens, next.cachedInputTokens);
+  const outputTokens = maxOptional(prev.outputTokens, next.outputTokens);
+  return {
+    totalTokens: Math.max(prev.totalTokens, next.totalTokens),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(Math.max(prev.toolUses ?? 0, next.toolUses ?? 0) > 0
+      ? { toolUses: Math.max(prev.toolUses ?? 0, next.toolUses ?? 0) }
+      : {}),
+    ...(Math.max(prev.durationMs ?? 0, next.durationMs ?? 0) > 0
+      ? { durationMs: Math.max(prev.durationMs ?? 0, next.durationMs ?? 0) }
+      : {}),
+  };
+}
+
+function countMessageToolCalls(value: unknown): number {
+  if (!Array.isArray(value)) return 0;
+  let count = 0;
+  for (const messageValue of value) {
+    const message = isRecord(messageValue) ? messageValue : undefined;
+    const content = message && Array.isArray(message.content) ? message.content : [];
+    for (const partValue of content) {
+      const part = isRecord(partValue) ? partValue : undefined;
+      if (part?.type === "toolCall" || part?.type === "tool_call") count += 1;
+    }
+  }
+  return count;
+}
+
+/**
+ * Tool calls the native payload shows but its counters don't. Pi's
+ * `toolCount`/`tokens` frequently stay 0 while `toolCalls`, message
+ * tool-call parts, and `recentTools` list real work (e.g. a completed
+ * list-folders run reading "0 tok · 0 tools"). Counts are different views
+ * of the same calls, so take the max rather than summing.
+ */
+function countObservedToolCalls(
+  record: Record<string, unknown>,
+  progress: Record<string, unknown> | undefined,
+): number {
+  const fromToolCalls = Array.isArray(record.toolCalls) ? record.toolCalls.length : 0;
+  const fromMessages = Math.max(
+    countMessageToolCalls(record.messages),
+    progress ? countMessageToolCalls(progress.messages) : 0,
+  );
+  const recentTools = (value: unknown): number =>
+    isRecord(value) && Array.isArray(value.recentTools) ? value.recentTools.length : 0;
+  const fromRecent = Math.max(recentTools(record), progress ? recentTools(progress) : 0);
+  return Math.max(fromToolCalls, fromMessages, fromRecent);
+}
+
 function takomiTaskUsage(
   record: Record<string, unknown>,
   progress: Record<string, unknown> | undefined,
 ): RuntimeTaskUsage | undefined {
   const usage = firstRecord(record.usage, progress?.usage);
   const tokenUsage = firstRecord(record.totalTokens, progress?.totalTokens);
+  // End-of-task rollup (`progressSummary: {toolCount, tokens, durationMs}`)
+  // carried next to per-message `usage`. Read it as a fallback source.
+  const progressSummary = firstRecord(record.progressSummary);
   const inputTokens = readFiniteCount(usage?.input ?? tokenUsage?.input);
   const cachedInputTokens = readFiniteCount(usage?.cacheRead ?? tokenUsage?.cacheRead);
   const outputTokens = readFiniteCount(usage?.output ?? tokenUsage?.output);
+  const explicitTotalSource =
+    tokenUsage?.total ??
+    record.tokens ??
+    progress?.tokens ??
+    progressSummary?.tokens ??
+    record.total ??
+    progress?.total;
   const totalTokens =
     readFiniteCount(tokenUsage?.total) ??
-    readFiniteCount(record.tokens ?? progress?.tokens) ??
+    readFiniteCount(record.tokens ?? progress?.tokens ?? progressSummary?.tokens) ??
+    readFiniteCount(record.total ?? progress?.total) ??
     (inputTokens !== undefined || outputTokens !== undefined
       ? (inputTokens ?? 0) + (outputTokens ?? 0)
       : undefined);
   const durationMs =
-    readFiniteCount(record.durationMs ?? progress?.durationMs) ??
+    readFiniteCount(record.durationMs ?? progress?.durationMs ?? progressSummary?.durationMs) ??
     (typeof record.startedAt === "number" && typeof record.endedAt === "number"
       ? readFiniteCount(record.endedAt - record.startedAt)
       : undefined);
-  const toolUses = readFiniteCount(record.toolCount ?? progress?.toolCount);
+  const toolUses = (() => {
+    const native = readFiniteCount(
+      record.toolCount ?? progress?.toolCount ?? progressSummary?.toolCount,
+    );
+    if (native !== undefined && native > 0) return native;
+    const observed = countObservedToolCalls(record, progress);
+    if (observed > 0) return observed;
+    return undefined;
+  })();
   if (totalTokens === undefined && durationMs === undefined && toolUses === undefined) {
+    return undefined;
+  }
+  // Pi emits placeholder usage ({input: 0, output: 0, toolCount: 0}) before
+  // live token totals arrive. A synthesized 0 with no duration/tool signal
+  // would render as "0 tok" next to a real model name — suppress it so the
+  // row reads "— tok" until genuine totals land, matching Claude's
+  // total_tokens gating.
+  if (
+    explicitTotalSource === undefined &&
+    (totalTokens === undefined || totalTokens === 0) &&
+    durationMs === undefined &&
+    toolUses === undefined
+  ) {
     return undefined;
   }
   return {
@@ -751,6 +943,8 @@ function takomiTaskFromRecord(
     readonly agentIndex?: number;
     readonly phaseIndex?: number;
     readonly phaseTitle?: string;
+    readonly fallbackModel?: string;
+    readonly fallbackEffort?: string;
   },
 ): TakomiSubagentTask | undefined {
   const record = isRecord(value) ? value : undefined;
@@ -758,14 +952,17 @@ function takomiTaskFromRecord(
   const taskId = defaults.taskId ?? readTakomiTaskId(record);
   if (!taskId) return undefined;
   const progress = firstRecord(record.progress);
+  // Title is the work description (Claude: description), not the agent kind.
+  // Agent/type names belong in `role` so the panel renders
+  // "Explore Takomi backend [Explore]" instead of "researcher [researcher]".
   const title = boundedText(
     record.title ??
       record.name ??
       record.label ??
-      record.agentName ??
-      record.agent ??
       record.description ??
-      record.task,
+      record.task ??
+      record.agentName ??
+      record.agent,
     240,
   );
   const summary = boundedText(
@@ -781,7 +978,10 @@ function takomiTaskFromRecord(
         ? progress.recentOutput
             .filter((line): line is string => typeof line === "string")
             .join("\n")
-        : undefined),
+        : undefined) ??
+      extractText(record.messages) ??
+      extractText(progress?.messages) ??
+      boundedText(progress?.currentToolArgs, 1_200),
     1_200,
   );
   const lastToolName = boundedText(
@@ -789,9 +989,18 @@ function takomiTaskFromRecord(
     100,
   );
   const error = boundedText(record.error ?? record.errorMessage, 1_200);
-  const role = boundedText(record.role ?? record.subagentType ?? record.subagent_type, 120);
-  const model = boundedText(record.model ?? record.modelId ?? record.model_id, 160);
-  const effort = boundedText(record.effort ?? record.thinkingLevel ?? record.thinking_level, 80);
+  const role = boundedText(
+    record.role ?? record.subagentType ?? record.subagent_type ?? record.agentName ?? record.agent,
+    120,
+  );
+  const model = boundedText(
+    record.model ?? record.modelId ?? record.model_id ?? defaults.fallbackModel,
+    160,
+  );
+  const effort = boundedText(
+    record.effort ?? record.thinkingLevel ?? record.thinking_level ?? defaults.fallbackEffort,
+    80,
+  );
   const typedUsage = takomiTaskUsage(record, progress);
   const agentIndex =
     readFiniteCount(record.agentIndex ?? record.agent_index ?? record.index ?? record.flatIndex) ??
@@ -854,6 +1063,9 @@ export function normalizeTakomiSubagentTasks(input: {
   readonly result: unknown;
   readonly partialResult: unknown;
   readonly lifecycleStatus: "inProgress" | "completed" | "failed";
+  /** Session model slug (Claude-style inheritance) when a child omits its own. */
+  readonly fallbackModel?: string;
+  readonly fallbackEffort?: string;
 }): readonly TakomiSubagentTask[] {
   const sources = [
     ...takomiDetailsSnapshots(input.partialResult),
@@ -875,7 +1087,7 @@ export function normalizeTakomiSubagentTasks(input: {
     const add = (index: number | undefined, value: unknown) => {
       const row = isRecord(value) ? value : undefined;
       if (index === undefined || !row) return;
-      rows.set(index, { ...rows.get(index), ...row });
+      rows.set(index, mergeRowValues(rows.get(index), row));
     };
 
     if (Array.isArray(source.results)) {
@@ -889,10 +1101,58 @@ export function normalizeTakomiSubagentTasks(input: {
         if (progress) add(readFiniteCount(progress.index) ?? index, progress);
       });
     }
-    if (Array.isArray(source.progress)) {
-      source.progress.forEach((progress, arrayIndex) => {
+    const progressList = Array.isArray(source.progress) ? source.progress : undefined;
+    const resultsList = Array.isArray(source.results) ? source.results : undefined;
+    if (progressList) {
+      // A progress-only array without explicit indexes must never merge by
+      // position into results rows: a single active-child entry would land on
+      // row 0 and pair researcher model with builder tokens. Match by index
+      // or by agent/task identity; otherwise leave it for the live row.
+      const nameToIndex = new Map<string, number>();
+      for (const [index, row] of rows) {
+        for (const key of [row.agent, row.agentName, row.task, row.title, row.label]) {
+          const name = readString(key)?.toLowerCase();
+          if (name && !nameToIndex.has(name)) nameToIndex.set(name, index);
+        }
+      }
+      const liveIndexes = [...rows.entries()]
+        .filter(
+          ([, row]) =>
+            normalizeTakomiTaskStatus(row.status ?? row.state) === "running" ||
+            normalizeTakomiTaskStatus(row.status ?? row.state) === undefined,
+        )
+        .map(([index]) => index);
+      progressList.forEach((progress, arrayIndex) => {
         const record = isRecord(progress) ? progress : undefined;
-        add(readFiniteCount(record?.index) ?? arrayIndex, progress);
+        if (!record) return;
+        const explicit = readFiniteCount(record?.index);
+        if (explicit !== undefined) {
+          add(explicit, progress);
+          return;
+        }
+        const identity = readString(
+          record.agent ?? record.agentName ?? record.task ?? record.title,
+        )?.toLowerCase();
+        const byName = identity ? nameToIndex.get(identity) : undefined;
+        if (byName !== undefined) {
+          add(byName, progress);
+          return;
+        }
+        if (source.results === undefined) {
+          // Progress-only snapshot (live run before results arrive): position
+          // is self-consistent within this source.
+          add(arrayIndex, progress);
+          return;
+        }
+        if (resultsList !== undefined && resultsList.length === progressList.length) {
+          add(arrayIndex, progress);
+          return;
+        }
+        if (liveIndexes.length === 1) {
+          add(liveIndexes[0]!, progress);
+        }
+        // Otherwise drop: mis-merging into row 0 pairs the wrong model with
+        // the wrong token totals, which is worse than a delayed update.
       });
     }
     for (const node of workflowGraphNodes(graph)) {
@@ -909,15 +1169,20 @@ export function normalizeTakomiSubagentTasks(input: {
         parentAgentId: input.toolCallId,
         ...(workflowName ? { workflowName } : {}),
         agentIndex: index,
+        ...(input.fallbackModel ? { fallbackModel: input.fallbackModel } : {}),
+        ...(input.fallbackEffort ? { fallbackEffort: input.fallbackEffort } : {}),
         ...(readFiniteCount(row.stepIndex) !== undefined
           ? { phaseIndex: readFiniteCount(row.stepIndex)! }
           : {}),
         ...(boundedText(row.phase, 120) ? { phaseTitle: boundedText(row.phase, 120)! } : {}),
       });
       if (!task) continue;
+      const prevTask = tasks.get(task.taskId);
+      const bestUsage = bestTypedUsage(prevTask?.typedUsage, task.typedUsage);
       tasks.set(task.taskId, {
-        ...tasks.get(task.taskId),
+        ...prevTask,
         ...task,
+        ...(bestUsage ? { typedUsage: bestUsage } : {}),
         ...(nativeRunId ? { runHandles: { runId: nativeRunId } } : {}),
       });
     }
@@ -970,7 +1235,12 @@ function taskFingerprint(task: TakomiSubagentTask): string {
 export function createTakomiSubagentTaskTracker(): TakomiSubagentTaskTracker {
   const tasksByToolCallId = new Map<
     string,
-    { readonly open: Map<string, TakomiSubagentTask>; readonly completed: Set<string> }
+    {
+      readonly open: Map<string, TakomiSubagentTask>;
+      readonly completed: Set<string>;
+      /** Last emitted snapshot per task, including settled members. */
+      readonly lastSeen: Map<string, TakomiSubagentTask>;
+    }
   >();
   const settledToolCallIds = new Set<string>();
   return {
@@ -979,12 +1249,27 @@ export function createTakomiSubagentTaskTracker(): TakomiSubagentTaskTracker {
       const state = tasksByToolCallId.get(toolCallId) ?? {
         open: new Map<string, TakomiSubagentTask>(),
         completed: new Set<string>(),
+        lastSeen: new Map<string, TakomiSubagentTask>(),
       };
       const events: TakomiSubagentTaskEvent[] = [];
       for (const task of tasks) {
-        // A terminal snapshot may be repeated before the tool itself ends.
-        // Never re-open a member that has already emitted task.completed.
-        if (state.completed.has(task.taskId)) continue;
+        // Already emitted task.completed: never re-open (no started) and
+        // never duplicate the terminal event — but DO forward changed
+        // snapshots as updated/progress. Native snapshots can report
+        // terminal-then-running (an early placeholder completion corrected
+        // by live frames, or the authoritative end frame with real totals);
+        // the fold freezes terminal status/timestamps while still
+        // max-merging usage, and genuinely resumed work reactivates through
+        // the normal path — so forwarding changed snapshots is safe.
+        if (state.completed.has(task.taskId)) {
+          const previous = state.lastSeen.get(task.taskId);
+          if (previous && taskFingerprint(previous) !== taskFingerprint(task)) {
+            events.push({ type: "updated", task });
+            events.push({ type: "progress", task });
+            state.lastSeen.set(task.taskId, task);
+          }
+          continue;
+        }
         const previous = state.open.get(task.taskId);
         const changed = !previous || taskFingerprint(previous) !== taskFingerprint(task);
         if (!previous) {
@@ -1003,8 +1288,10 @@ export function createTakomiSubagentTaskTracker(): TakomiSubagentTaskTracker {
           });
           state.open.delete(task.taskId);
           state.completed.add(task.taskId);
+          state.lastSeen.set(task.taskId, task);
         } else {
           state.open.set(task.taskId, task);
+          state.lastSeen.set(task.taskId, task);
         }
       }
       if (lifecycleStatus !== "inProgress") {
@@ -1012,6 +1299,7 @@ export function createTakomiSubagentTaskTracker(): TakomiSubagentTaskTracker {
         for (const task of state.open.values()) {
           events.push({ type: "completed", task, completionStatus });
           state.completed.add(task.taskId);
+          state.lastSeen.set(task.taskId, task);
         }
         tasksByToolCallId.delete(toolCallId);
         settledToolCallIds.add(toolCallId);
@@ -1058,17 +1346,17 @@ export function normalizeTakomiPresentation(input: {
     input.toolName === "todo" && Array.isArray(source.tasks)
       ? source.tasks.filter((task) => !isRecord(task) || task.status !== "deleted")
       : source.tasks;
-  const rawItems = normalizePresentationItems(
+  const presentationItemsSource =
     sourceTasks ??
-      takomiUx?.tasks ??
-      source.stages ??
-      source.agents ??
-      source.items ??
-      source.results ??
-      (source.task ? [source.task] : undefined),
-    // Todo is a durable task list, not a compact tool summary. Preserve the
-    // entire list so its count and the expanded chat card stay truthful.
-    input.toolName === "todo" ? Number.POSITIVE_INFINITY : PRESENTATION_ITEM_LIMIT,
+    takomiUx?.tasks ??
+    source.stages ??
+    source.agents ??
+    source.items ??
+    source.results ??
+    (source.task ? [source.task] : undefined);
+  const rawItems = normalizePresentationItems(
+    presentationItemsSource,
+    PRESENTATION_ITEM_LIMIT,
     input.toolName === "takomi_subagent" ? resolveTakomiChildIdentity : undefined,
   );
   const items =
@@ -1080,7 +1368,8 @@ export function normalizeTakomiPresentation(input: {
             : { ...item, status: input.lifecycleStatus };
         })
       : rawItems;
-  const artifactRefs = normalizeArtifactRefs(source.artifacts ?? source.files ?? source.assets);
+  const artifactSource = source.artifacts ?? source.files ?? source.assets;
+  const artifactRefs = normalizeArtifactRefs(artifactSource);
   const modeDetail =
     input.toolName === "takomi_mode" && readString(source.mode)
       ? [
@@ -1105,10 +1394,11 @@ export function normalizeTakomiPresentation(input: {
         extractText(input.partialResult));
   const detailText = boundedText(rawDetailText);
   const inspectorDetailText = boundedText(rawDetailText, PRESENTATION_INSPECTOR_DETAIL_LIMIT);
-  const activity =
+  const rawActivity =
     input.toolName === "takomi_subagent"
       ? normalizeSubagentActivity(source, input.lifecycleStatus)
       : [];
+  const activity = rawActivity.slice(-PRESENTATION_ACTIVITY_LIMIT);
   const action = boundedText(source.action ?? source.operation ?? source.phase, 120);
   const todoCompleted = items.filter((item) => item.status === "completed").length;
   const todoInProgress = items.some((item) => item.status === "in_progress");
@@ -1147,7 +1437,28 @@ export function normalizeTakomiPresentation(input: {
       ? todoCompleted
       : readFiniteCount(source.completed ?? source.completedCount);
   const total =
-    input.toolName === "todo" ? items.length : readFiniteCount(source.total ?? source.totalCount);
+    input.toolName === "todo"
+      ? Array.isArray(sourceTasks)
+        ? sourceTasks.length
+        : items.length
+      : readFiniteCount(source.total ?? source.totalCount);
+  const truncation = {
+    ...(Array.isArray(presentationItemsSource) &&
+    presentationItemsSource.length > PRESENTATION_ITEM_LIMIT
+      ? { items: true }
+      : {}),
+    ...(Array.isArray(artifactSource) && artifactSource.length > PRESENTATION_ARTIFACT_LIMIT
+      ? { artifactRefs: true }
+      : {}),
+    ...(typeof rawDetailText === "string" && rawDetailText.length > PRESENTATION_DETAIL_LIMIT
+      ? { detailText: true }
+      : {}),
+    ...(typeof rawDetailText === "string" &&
+    rawDetailText.length > PRESENTATION_INSPECTOR_DETAIL_LIMIT
+      ? { inspectorDetailText: true }
+      : {}),
+    ...(rawActivity.length > activity.length ? { activity: true } : {}),
+  };
   const summary = {
     ...(sessionId ? { sessionId } : {}),
     ...(runId ? { runId } : {}),
@@ -1170,11 +1481,72 @@ export function normalizeTakomiPresentation(input: {
     ...(detailText ? { detailText } : {}),
     ...(inspectorDetailText ? { inspectorDetailText } : {}),
     ...(activity.length > 0 ? { activity } : {}),
+    ...(rawActivity.length > activity.length ? { activityTruncated: true } : {}),
+    ...(Object.keys(truncation).length > 0 ? { truncation } : {}),
     ...(artifactRefs.length > 0 ? { artifactRefs } : {}),
     ...(input.isError
       ? { error: { severity: "error", message: errorMessage ?? "Tool call failed." } }
       : {}),
   };
+}
+
+export type TodoPlanStep = {
+  readonly step: string;
+  readonly status: "pending" | "inProgress" | "completed";
+};
+
+/**
+ * Map a Takomi `todo` tool's raw task list onto `turn.plan.updated` steps so
+ * Pi sessions reuse the composer tasks badge (the surface OpenCode drives via
+ * `todo.updated`). Operates on the full task array — unlike the presentation
+ * summary, which truncates items for the timeline card — so the drawer scrolls
+ * through every step with correct counts. Last-write-wins per turn applies
+ * downstream, matching the other adapters.
+ */
+export function planStepsFromTodoTasks(value: unknown): TodoPlanStep[] | null {
+  if (!Array.isArray(value)) return null;
+  const steps: TodoPlanStep[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const normalizedStatus = readString(entry.status ?? entry.state)
+      ?.toLowerCase()
+      .replaceAll("-", "_")
+      .replaceAll(" ", "_");
+    if (
+      normalizedStatus === "deleted" ||
+      normalizedStatus === "cancelled" ||
+      normalizedStatus === "canceled"
+    ) {
+      continue;
+    }
+    const step =
+      boundedText(
+        entry.label ??
+          entry.name ??
+          entry.subject ??
+          entry.title ??
+          entry.content ??
+          entry.text ??
+          entry.task,
+        160,
+      ) ?? "Task";
+    steps.push({
+      step,
+      status:
+        normalizedStatus === "completed" ||
+        normalizedStatus === "complete" ||
+        normalizedStatus === "success" ||
+        normalizedStatus === "succeeded" ||
+        normalizedStatus === "done"
+          ? "completed"
+          : normalizedStatus === "in_progress" ||
+              normalizedStatus === "running" ||
+              normalizedStatus === "active"
+            ? "inProgress"
+            : "pending",
+    });
+  }
+  return steps;
 }
 
 function extractText(value: unknown): string | undefined {
@@ -1216,6 +1588,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const serverConfig = yield* ServerConfig;
     const sessions = new Map<ThreadId, PiSessionContext>();
+    let nextSessionGeneration = 0;
     const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomId = crypto.randomUUIDv4.pipe(
@@ -1232,28 +1605,87 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
 
     const emit = (event: ProviderRuntimeEvent) =>
       Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
+    const isWritableContext = (context: PiSessionContext, generation: number) =>
+      !context.stopped &&
+      context.generation === generation &&
+      sessions.get(context.session.threadId) === context;
+    const isLiveContext = (context: PiSessionContext, generation: number) =>
+      !context.outputFenced && isWritableContext(context, generation);
     const stamp = () =>
       Effect.all({
         eventId: randomId.pipe(Effect.map(EventId.make)),
         createdAt: nowIso,
       });
+    // Pi may echo extension UI responses; neither the request nor that echo belongs in the native log.
+    const logNativePiRecord = Effect.fn("logNativePiRecord")(function* (
+      context: PiSessionContext,
+      record: PiRpcMessage,
+    ) {
+      if (
+        !options.nativeEventLogger ||
+        record.type === "takomi_vault_export" ||
+        (record.type === "extension_ui_request" &&
+          typeof record.title === "string" &&
+          (record.title.startsWith(VAULT_SECRET_TITLE_PREFIX) ||
+            record.title.startsWith(VAULT_ARCHIVE_TITLE_PREFIX))) ||
+        (record.type === "extension_ui_response_received" &&
+          typeof record.id === "string" &&
+          context.sensitiveUiIds.has(record.id))
+      )
+        return;
+      const observedAt = yield* nowIso;
+      yield* options.nativeEventLogger
+        .write(
+          {
+            observedAt,
+            event: {
+              kind: "notification",
+              provider: PROVIDER,
+              createdAt: observedAt,
+              method: record.type,
+              threadId: context.session.threadId,
+              generation: context.generation,
+              payload: record,
+            },
+          },
+          context.session.threadId,
+        )
+        .pipe(
+          Effect.catchCause(() =>
+            Effect.gen(function* () {
+              if (!isLiveContext(context, context.generation)) return;
+              yield* emit({
+                ...(yield* eventBase(context)),
+                type: "runtime.warning",
+                payload: {
+                  message: "Pi native event logging failed.",
+                  detail: { reason: "native-log-write-failed" },
+                },
+              });
+            }),
+          ),
+        );
+    });
     const eventBase = (context: PiSessionContext, message?: PiRpcMessage) =>
-      Effect.map(stamp(), (value) => ({
-        ...value,
-        provider: PROVIDER,
-        providerInstanceId: options.instanceId,
-        threadId: context.session.threadId,
-        ...(context.activeTurnId ? { turnId: context.activeTurnId } : {}),
-        ...(message
-          ? {
-              raw: {
-                source: "pi.eventmsg" as const,
-                ...(readString(message.type) ? { method: message.type } : {}),
-                payload: message,
-              },
-            }
-          : {}),
-      }));
+      Effect.map(stamp(), (value) => {
+        const payload = message ? boundedDynamicPayload(message) : undefined;
+        return {
+          ...value,
+          provider: PROVIDER,
+          providerInstanceId: options.instanceId,
+          threadId: context.session.threadId,
+          ...(context.activeTurnId ? { turnId: context.activeTurnId } : {}),
+          ...(message && payload
+            ? {
+                raw: {
+                  source: "pi.eventmsg" as const,
+                  ...(readString(message.type) ? { method: message.type } : {}),
+                  payload: payload.value,
+                },
+              }
+            : {}),
+        };
+      });
 
     const getReasoningBlock = (context: PiSessionContext, contentIndex: number) => {
       const existing = context.reasoningBlocks.get(contentIndex);
@@ -1308,6 +1740,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         result: message.result,
         partialResult: message.partialResult,
         lifecycleStatus,
+        ...((context.appliedModelSlug ?? context.defaultModelSlug)
+          ? { fallbackModel: (context.appliedModelSlug ?? context.defaultModelSlug)! }
+          : {}),
+        ...(context.appliedThinkingLevel ? { fallbackEffort: context.appliedThinkingLevel } : {}),
       });
       for (const event of context.takomiSubagentTaskTracker.observe({
         toolCallId,
@@ -1452,6 +1888,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         },
       });
       context.activeTurnId = undefined;
+      if (context.pendingVaultPrompt?.turnId === turnId) context.pendingVaultPrompt = undefined;
       context.reasoningBlocks.clear();
       context.turnFailure = undefined;
       const nextSession = {
@@ -1464,21 +1901,72 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       context.session = nextSession;
     });
 
+    const settlePendingUi = Effect.fn("settlePendingPiUi")(function* (
+      context: PiSessionContext,
+      requestId: RuntimeRequestId,
+      response:
+        | { readonly cancelled: true }
+        | { readonly confirmed: boolean }
+        | { readonly value: string },
+      decision: ProviderApprovalDecision | undefined,
+      answers: ProviderUserInputAnswers | undefined,
+    ) {
+      const pending = context.pendingUi.get(requestId);
+      if (!pending || pending.generation !== context.generation) return false;
+      // Delete before an effect can yield so every terminal path shares one winner.
+      context.pendingUi.delete(requestId);
+      context.settledUi.add(requestId);
+      if (pending.method === "confirm") {
+        yield* emit({
+          ...(yield* eventBase(context)),
+          type: "request.resolved",
+          requestId,
+          payload: { requestType: "dynamic_tool_call", decision: decision ?? "cancel" },
+        });
+      } else {
+        yield* emit({
+          ...(yield* eventBase(context)),
+          type: "user-input.resolved",
+          requestId,
+          payload: {
+            answers: answers ?? {},
+            ...(pending.sensitive && "value" in response && response.value.length > 0
+              ? { privateResponse: true }
+              : {}),
+          },
+        });
+      }
+      if (isWritableContext(context, pending.generation)) {
+        yield* sendRpc(context, {
+          type: "extension_ui_response",
+          id: pending.nativeRequestId,
+          ...response,
+        }).pipe(Effect.ignore);
+      }
+      return true;
+    });
+
     const handleUiRequest = Effect.fn("handlePiUiRequest")(function* (
       context: PiSessionContext,
       message: PiRpcMessage,
     ) {
-      const id = readString(message.id);
+      const id = validUiRequestId(message.id);
       const method = readString(message.method);
       if (!id || !method) return;
 
       if (method === "notify") {
-        const notification = readString(message.message);
+        const notification = validUiText(message.message, MAX_UI_MESSAGE_BYTES, true);
         if (notification) {
           yield* emit({
             ...(yield* eventBase(context, message)),
             type: "runtime.warning",
-            payload: { message: notification },
+            payload: {
+              message: notification,
+              ...(context.pendingVaultPrompt?.turnId === context.activeTurnId &&
+              context.pendingVaultPrompt?.generation === context.generation
+                ? { category: "vault-command" as const }
+                : {}),
+            },
           });
         }
         return;
@@ -1488,54 +1976,178 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         return;
       }
 
-      const requestId = ApprovalRequestId.make(id);
       const uiMethod = method as PiUiMethod;
-      context.pendingUi.set(requestId, { method: uiMethod, requestId });
+      const requestId = RuntimeRequestId.make(
+        `pi-ui-${context.generation}-${uiMethod}-${encodeURIComponent(id)}`,
+      );
+      if (context.pendingUi.has(requestId) || context.settledUi.has(requestId)) return;
+      const archive =
+        uiMethod === "input" &&
+        typeof message.title === "string" &&
+        message.title.startsWith(VAULT_ARCHIVE_TITLE_PREFIX) &&
+        context.pendingVaultPrompt?.commandName === "vault-import";
+      const sensitive =
+        uiMethod === "input" &&
+        typeof message.title === "string" &&
+        (message.title.startsWith(VAULT_SECRET_TITLE_PREFIX) || archive);
+      context.pendingUi.set(requestId, {
+        method: uiMethod,
+        nativeRequestId: id,
+        generation: context.generation,
+        sensitive,
+        archive,
+      });
+      if (sensitive) context.sensitiveUiIds.add(id);
+      const encoded = jsonString(message);
+      const title = validUiText(message.title, MAX_UI_TITLE_BYTES, true);
+      const timeoutMs =
+        typeof message.timeout === "number" &&
+        Number.isFinite(message.timeout) &&
+        message.timeout >= 0
+          ? Math.floor(message.timeout)
+          : undefined;
+      const rawOptions = Array.isArray(message.options) ? message.options : undefined;
+      const optionsAreValid =
+        rawOptions !== undefined &&
+        rawOptions.length <= MAX_UI_OPTIONS &&
+        rawOptions.every(
+          (option) => validUiText(option, MAX_UI_OPTION_BYTES, true) !== undefined,
+        ) &&
+        rawOptions.reduce((total, option) => total + utf8Bytes(option as string), 0) <=
+          MAX_UI_OPTIONS_BYTES;
+      const valid =
+        encoded !== undefined &&
+        utf8Bytes(encoded) <= MAX_UI_REQUEST_BYTES &&
+        title !== undefined &&
+        Array.from(title).length <= MAX_UI_TITLE_CODE_POINTS &&
+        (uiMethod !== "confirm" ||
+          validUiText(message.message, MAX_UI_MESSAGE_BYTES, true) !== undefined) &&
+        (uiMethod !== "select" || optionsAreValid) &&
+        (uiMethod !== "input" ||
+          message.placeholder === undefined ||
+          validUiText(message.placeholder, MAX_UI_PLACEHOLDER_BYTES) !== undefined) &&
+        (uiMethod !== "editor" ||
+          message.prefill === undefined ||
+          validUiText(message.prefill, MAX_UI_EDITOR_PREFILL_BYTES) !== undefined);
+      if (!valid) {
+        yield* settlePendingUi(context, requestId, { cancelled: true }, "cancel", undefined);
+        return;
+      }
+      const armUiTimeout = () =>
+        timeoutMs === undefined || uiMethod === "editor"
+          ? Effect.void
+          : Effect.sleep(`${timeoutMs} millis`).pipe(
+              Effect.andThen(
+                settlePendingUi(context, requestId, { cancelled: true }, "cancel", undefined),
+              ),
+              Effect.forkIn(context.scope),
+              Effect.asVoid,
+            );
       if (uiMethod === "confirm") {
         yield* emit({
           ...(yield* eventBase(context, message)),
           type: "request.opened",
-          requestId: RuntimeRequestId.make(id),
+          requestId,
           payload: {
             requestType: "dynamic_tool_call",
-            detail:
-              [readString(message.title), readString(message.message)].filter(Boolean).join("\n") ||
-              "Pi requested confirmation.",
-            args: message,
+            detail: `${title}\n${validUiText(message.message, MAX_UI_MESSAGE_BYTES, true)!}`,
+            ...(title === "Delete credential?" &&
+            context.pendingVaultPrompt?.commandName === "vault-delete"
+              ? {
+                  options: [
+                    { decision: "accept" as const, label: "Delete credential" },
+                    { decision: "decline" as const, label: "Cancel" },
+                  ],
+                }
+              : {}),
+            args: {
+              title,
+              message: validUiText(message.message, MAX_UI_MESSAGE_BYTES, true)!,
+              ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+            },
           },
         });
+        yield* armUiTimeout();
         return;
       }
 
-      const options = Array.isArray(message.options)
-        ? message.options
-            .filter((option): option is string => typeof option === "string" && option.length > 0)
-            .map((option) => ({ label: option, description: option }))
-        : [];
+      const options = (rawOptions ?? []).map((option) => ({
+        label: option as string,
+        description: option as string,
+      }));
+      const longTitle = !sensitive && Array.from(title).length > UI_HEADER_CODE_POINTS;
+      const header = longTitle
+        ? Array.from(title.split("\n", 1)[0] || title)
+            .slice(0, UI_HEADER_CODE_POINTS)
+            .join("")
+        : title;
       yield* emit({
-        ...(yield* eventBase(context, message)),
+        ...(yield* eventBase(context, sensitive ? undefined : message)),
         type: "user-input.requested",
-        requestId: RuntimeRequestId.make(id),
+        requestId,
         payload: {
           questions: [
             {
-              id,
-              header: readString(message.title) ?? "Pi input",
-              question:
-                readString(message.message) ??
-                readString(message.placeholder) ??
-                "Provide a response to continue.",
-              options,
+              id: requestId,
+              header: archive
+                ? "Vault archive"
+                : sensitive
+                  ? title.slice(VAULT_SECRET_TITLE_PREFIX.length) || "Vault secret"
+                  : header,
+              question: sensitive
+                ? archive
+                  ? "Choose an encrypted vault archive on this device."
+                  : "This value won't be saved in the thread."
+                : longTitle
+                  ? title
+                  : (validUiText(message.placeholder, MAX_UI_PLACEHOLDER_BYTES) ??
+                    validUiText(message.prefill, MAX_UI_EDITOR_PREFILL_BYTES) ??
+                    (uiMethod === "select" ? "Choose an option below." : "Enter a response.")),
+              options: sensitive ? [] : options,
+              ...(sensitive ? { sensitive: true } : {}),
+              ...(archive ? { fileInput: "vault-archive" as const } : {}),
             },
           ],
         },
       });
+      yield* armUiTimeout();
     });
 
     const handleMessage = Effect.fn("handlePiRpcMessage")(function* (
       context: PiSessionContext,
       message: PiRpcMessage,
     ) {
+      if (!isLiveContext(context, context.generation)) return;
+      if (message.type === "takomi_vault_export") {
+        const pending = context.pendingVaultPrompt;
+        if (
+          pending?.commandName !== "vault-export" ||
+          pending.generation !== context.generation ||
+          pending.turnId !== context.activeTurnId ||
+          typeof message.key !== "string" ||
+          !/^[a-f0-9]{64}$/.test(message.key) ||
+          typeof message.path !== "string" ||
+          !path.isAbsolute(message.path)
+        )
+          return;
+        const transferId = yield* randomId;
+        context.pendingVaultExport = {
+          id: transferId,
+          key: message.key,
+          path: message.path,
+          generation: context.generation,
+        };
+        yield* emit({
+          ...(yield* eventBase(context)),
+          type: "runtime.warning",
+          payload: {
+            message: "Encrypted vault ready to download.",
+            category: "vault-export-ready",
+            transferId,
+          },
+        });
+        return;
+      }
       if (message.type === "extension_ui_request") {
         yield* handleUiRequest(context, message);
         return;
@@ -1545,6 +2157,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         const responseId = readString(message.id);
         const pendingResponse = responseId ? context.pendingRpc.get(responseId) : undefined;
         const command = readString(message.command);
+        const pendingVaultPrompt = context.pendingVaultPrompt;
         if (command === "get_state" && message.success === true && isRecord(message.data)) {
           const sessionFile = readString(message.data.sessionFile);
           const sessionId = readString(message.data.sessionId);
@@ -1570,6 +2183,17 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
               payload: { providerThreadId: sessionId },
             });
           }
+        } else if (
+          command === "prompt" &&
+          message.success === true &&
+          pendingVaultPrompt &&
+          responseId === pendingVaultPrompt.id &&
+          pendingVaultPrompt.generation === context.generation &&
+          pendingVaultPrompt.turnId === context.activeTurnId
+        ) {
+          const failure = pendingVaultPrompt.error;
+          context.pendingVaultPrompt = undefined;
+          yield* completeTurn(context, failure ? "failed" : "completed", failure);
         } else if (command === "prompt" && message.success === false) {
           const error = readString(message.error) ?? "Pi rejected the prompt.";
           context.turnFailure = error;
@@ -1691,24 +2315,30 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
               },
             });
           }
+          const argsPayload = boundedDynamicPayload(message.args);
+          const resultPayload = boundedDynamicPayload(message.result);
+          const partialResultPayload = boundedDynamicPayload(message.partialResult);
           const rawDetail =
-            extractText(message.partialResult) ??
-            extractText(message.result) ??
-            (message.args === undefined ? undefined : jsonString(message.args));
+            extractText(partialResultPayload.value) ??
+            extractText(resultPayload.value) ??
+            (message.args === undefined ? undefined : jsonString(argsPayload.value));
           const isEnd = message.type === "tool_execution_end";
           const lifecycleStatus = isEnd
             ? message.isError === true
               ? ("failed" as const)
               : ("completed" as const)
             : ("inProgress" as const);
-          let presentation = normalizeTakomiPresentation({
+          const presentationCandidate = normalizeTakomiPresentation({
             toolName,
-            args: message.args,
-            result: message.result,
-            partialResult: message.partialResult,
+            args: argsPayload.value,
+            result: resultPayload.value,
+            partialResult: partialResultPayload.value,
             isError: message.isError === true,
             lifecycleStatus,
           });
+          let presentation = presentationCandidate
+            ? Option.getOrUndefined(decodeToolPresentationEnvelope(presentationCandidate))
+            : undefined;
           if (presentation && toolName.toLowerCase() === "takomi_subagent") {
             const mergedActivity = new Map<string, ToolPresentationActivity>();
             for (const activity of context.toolActivityByCallId.get(toolCallId) ?? []) {
@@ -1728,7 +2358,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 ...presentation,
                 activity,
                 ...(context.truncatedToolActivityCallIds.has(toolCallId)
-                  ? { activityTruncated: true }
+                  ? {
+                      activityTruncated: true,
+                      truncation: { ...presentation.truncation, activity: true },
+                    }
                   : {}),
               };
             }
@@ -1746,6 +2379,9 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             : normalizedDetail;
           const item = {
             ...normalizedWorkLog.data,
+            ...(argsPayload.truncated || resultPayload.truncated || partialResultPayload.truncated
+              ? { payloadTruncated: true }
+              : {}),
             ...(presentation ? { presentation } : {}),
           };
           if (toolName.toLowerCase() === "takomi_subagent") {
@@ -1769,6 +2405,29 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
               data: item,
             },
           });
+          // Mirror the todo list onto turn.plan.updated so Pi sessions drive
+          // the composer tasks badge (OpenCode's todo.updated equivalent).
+          // Timings come from successive plan activities downstream; the
+          // timeline card keeps its own truncated presentation.
+          if (toolName.toLowerCase() === "todo" && context.activeTurnId) {
+            const mergedArgs = firstRecord(argsPayload.value) ?? {};
+            const mergedResult = firstRecord(resultPayload.value, partialResultPayload.value) ?? {};
+            const mergedStructured =
+              firstRecord(mergedResult.structuredContent, mergedResult.details) ?? {};
+            const planSource: Record<string, unknown> = {
+              ...mergedArgs,
+              ...mergedResult,
+              ...mergedStructured,
+            };
+            const plan = planStepsFromTodoTasks(planSource.tasks);
+            if (plan !== null) {
+              yield* emit({
+                ...(yield* eventBase(context, message)),
+                type: "turn.plan.updated",
+                payload: { plan },
+              });
+            }
+          }
           if (isEnd) {
             context.toolActivityByCallId.delete(toolCallId);
             context.truncatedToolActivityCallIds.delete(toolCallId);
@@ -1808,10 +2467,38 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 : {}),
             },
           });
+          // Mirror Claude/Codex/OpenCode: a successful compaction also emits
+          // thread.state.changed so ingestion projects the shared
+          // "Compacted context X → Y tokens" timeline divider. Without this,
+          // Pi/Takomi compactions only emit item.completed with itemType
+          // context_compaction, which ingestion drops (not a tool lifecycle
+          // type), leaving no illustration at all.
+          if (!failed && message.aborted !== true && isRecord(message.result)) {
+            const beforeTokens = readFiniteCount(message.result.tokensBefore);
+            const afterTokens = readFiniteCount(message.result.estimatedTokensAfter);
+            yield* emit({
+              ...(yield* eventBase(context, message)),
+              type: "thread.state.changed",
+              payload: {
+                state: "compacted",
+                ...(beforeTokens !== undefined ? { beforeTokens } : {}),
+                ...(afterTokens !== undefined ? { afterTokens } : {}),
+                detail: message,
+              },
+            });
+          }
           break;
         }
         case "extension_error": {
           const error = readString(message.error) ?? "A Pi extension failed.";
+          const pending = context.pendingVaultPrompt;
+          if (
+            pending?.generation === context.generation &&
+            pending.turnId === context.activeTurnId &&
+            message.event === "command" &&
+            message.extensionPath === `command:${pending.commandName}`
+          )
+            pending.error = error;
           yield* emit({
             ...(yield* eventBase(context, message)),
             type: "runtime.error",
@@ -1843,24 +2530,9 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
     const resolvePendingUiAsCancelled = Effect.fn("resolvePendingPiUiAsCancelled")(function* (
       context: PiSessionContext,
     ) {
-      for (const [requestId, pending] of context.pendingUi) {
-        if (pending.method === "confirm") {
-          yield* emit({
-            ...(yield* eventBase(context)),
-            type: "request.resolved",
-            requestId: RuntimeRequestId.make(requestId),
-            payload: { requestType: "dynamic_tool_call", decision: "cancel" },
-          }).pipe(Effect.ignore);
-        } else {
-          yield* emit({
-            ...(yield* eventBase(context)),
-            type: "user-input.resolved",
-            requestId: RuntimeRequestId.make(requestId),
-            payload: { answers: {} },
-          }).pipe(Effect.ignore);
-        }
+      for (const requestId of context.pendingUi.keys()) {
+        yield* settlePendingUi(context, requestId, { cancelled: true }, "cancel", undefined);
       }
-      context.pendingUi.clear();
     });
 
     const stopContext = Effect.fn("stopPiContext")(function* (
@@ -1868,8 +2540,11 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       emitExit: boolean,
     ) {
       if (context.stopped) return;
+      yield* resolvePendingUiAsCancelled(context);
       context.stopped = true;
-      sessions.delete(context.session.threadId);
+      if (sessions.get(context.session.threadId) === context) {
+        sessions.delete(context.session.threadId);
+      }
       if (emitExit && context.activeTurnId) {
         context.abortingTurnId = undefined;
         yield* completeTurn(context, "interrupted");
@@ -1883,7 +2558,6 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         }).pipe(Effect.ignore);
       }
       context.pendingRpc.clear();
-      yield* resolvePendingUiAsCancelled(context);
       if (emitExit) {
         yield* emit({
           ...(yield* eventBase(context)),
@@ -1919,54 +2593,42 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       const cwd = input.cwd ?? serverConfig.cwd;
       const sessionScope = yield* Scope.make();
       const resumeFile = readPiResumeCursor(input.resumeCursor);
-      const takomiExtensionPaths = settings.suiteRoot
-        ? TAKOMI_EXTENSION_NAMES.map((name) =>
-            path.join(settings.suiteRoot, ".pi", "extensions", name, "index.ts"),
-          )
-        : [];
-      const takomiPromptPath = settings.suiteRoot
-        ? path.join(settings.suiteRoot, ".pi", "prompts")
-        : undefined;
-      if (settings.suiteRoot) {
-        const requiredPaths = [...takomiExtensionPaths, takomiPromptPath].filter(
-          (candidate): candidate is string => candidate !== undefined,
-        );
-        const missingPaths = yield* Effect.filter(requiredPaths, (candidate) =>
-          fileSystem.exists(candidate).pipe(
-            Effect.orElseSucceed(() => false),
-            Effect.map((exists) => !exists),
-          ),
-        );
-        if (missingPaths.length > 0) {
-          yield* Scope.close(sessionScope, Exit.void).pipe(Effect.ignore);
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "startSession",
-            issue: `Takomi suite root is missing required assets: ${missingPaths.join(", ")}`,
-          });
-        }
-      }
-      const companionExtensionPaths = settings.suiteRoot
-        ? yield* discoverPiCompanionExtensions({
-            fileSystem,
-            path,
-            environment: options.environment,
+      const launchArgs = tokenizeCliArgs(settings.launchArgs);
+      const trust = settings.suiteRoot
+        ? undefined
+        : yield* discoverPiProjectTrust({
             homePath: settings.homePath,
-          })
-        : [];
-      const takomiArgs = settings.suiteRoot
-        ? [
-            "--no-extensions",
-            ...[...companionExtensionPaths, ...takomiExtensionPaths].flatMap((extensionPath) => [
-              "--extension",
-              extensionPath,
-            ]),
-            ...(takomiPromptPath ? ["--prompt-template", takomiPromptPath] : []),
-          ]
-        : [];
+            cwd,
+            environment: options.environment,
+            launchArgs,
+            observedProjectResources: false,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          );
+      const resources = yield* resolvePiLaunchResources({
+        settings,
+        cwd,
+        environment: options.environment,
+        allowInferredSuite:
+          trust === "explicit-approved" ||
+          trust === "configured-saved-approved-partial" ||
+          trust === "configured-default-always-partial",
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
+      if (resources.missingPaths.length > 0) {
+        yield* Scope.close(sessionScope, Exit.void).pipe(Effect.ignore);
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "startSession",
+          issue: `Takomi suite root is missing required assets: ${resources.missingPaths.join(", ")}`,
+        });
+      }
       const args = [
-        ...tokenizeCliArgs(settings.launchArgs),
-        ...takomiArgs,
+        ...launchArgs,
+        ...resources.args,
         "--mode",
         "rpc",
         ...(resumeFile ? ["--session", resumeFile] : []),
@@ -1974,6 +2636,8 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       const environment: NodeJS.ProcessEnv = {
         ...options.environment,
         ...(settings.homePath ? { PI_CODING_AGENT_DIR: settings.homePath } : {}),
+        T3_TAKOMI_VAULT_SECRET_UI: "1",
+        T3_TAKOMI_VAULT_TRANSFER_UI: "1",
       };
       const spawnCommand = yield* resolveSpawnCommand(settings.binaryPath, args, {
         env: environment,
@@ -2017,10 +2681,17 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       const context: PiSessionContext = {
         session,
         scope: sessionScope,
+        generation: ++nextSessionGeneration,
         process,
         input: rpcInput,
         pendingUi: new Map(),
+        sensitiveUiIds: new Set(),
+        settledUi: new Set(),
         pendingRpc: new Map(),
+        skillNames: undefined,
+        vaultCommandNames: new Set(),
+        pendingVaultPrompt: undefined,
+        pendingVaultExport: undefined,
         toolActivityByCallId: new Map(),
         truncatedToolActivityCallIds: new Set(),
         takomiSubagentTaskTracker: createTakomiSubagentTaskTracker(),
@@ -2034,6 +2705,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         appliedModelSlug: undefined,
         appliedThinkingLevel: undefined,
         turnFailure: undefined,
+        outputFenced: false,
         stopped: false,
       };
       sessions.set(input.threadId, context);
@@ -2043,48 +2715,59 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         Effect.forkIn(sessionScope),
       );
 
-      const decoder = new TextDecoder();
-      let stdoutBuffer = "";
+      const stdoutDecoder = new PiJsonlDecoder();
+      const stdoutFinished = yield* Deferred.make<void>();
+      const sessionGeneration = context.generation;
+      const handleStdoutFrames = (frames: ReadonlyArray<PiJsonlFrame>) =>
+        Effect.forEach(
+          frames,
+          (frame) => {
+            if (frame.type === "record") {
+              return logNativePiRecord(context, frame.record as PiRpcMessage).pipe(
+                Effect.andThen(
+                  Effect.gen(function* () {
+                    // A replaced or stopped owner can still have buffered stdout.
+                    // Never normalize it into this thread's canonical event stream.
+                    if (!isLiveContext(context, sessionGeneration)) return;
+                    if (!readString(frame.record.type)) {
+                      yield* emit({
+                        ...(yield* eventBase(context)),
+                        type: "runtime.warning",
+                        payload: {
+                          message: "Pi emitted an invalid RPC record.",
+                          detail: { reason: "missing-type" },
+                        },
+                      });
+                      return;
+                    }
+                    yield* handleMessage(context, frame.record as PiRpcMessage);
+                  }),
+                ),
+              );
+            }
+            return Effect.gen(function* () {
+              if (!isLiveContext(context, sessionGeneration)) return;
+              yield* emit({
+                ...(yield* eventBase(context)),
+                type: "runtime.warning",
+                payload: {
+                  message: "Pi emitted an invalid RPC record.",
+                  detail: { reason: frame.reason },
+                },
+              });
+            });
+          },
+          { discard: true },
+        );
       yield* process.stdout.pipe(
-        Stream.runForEach((chunk) => {
-          stdoutBuffer += decoder.decode(chunk, { stream: true });
-          const lines: string[] = [];
-          while (true) {
-            const newline = stdoutBuffer.indexOf("\n");
-            if (newline < 0) break;
-            let line = stdoutBuffer.slice(0, newline);
-            stdoutBuffer = stdoutBuffer.slice(newline + 1);
-            if (line.endsWith("\r")) line = line.slice(0, -1);
-            if (line.trim().length > 0) lines.push(line);
-          }
-          return Effect.forEach(
-            lines,
-            (line) => {
-              const decoded = decodeJsonString(line);
-              if (
-                Exit.isFailure(decoded) ||
-                !isRecord(decoded.value) ||
-                !readString(decoded.value.type)
-              ) {
-                return emit({
-                  eventId: EventId.make(`pi-parse-${process.pid}`),
-                  provider: PROVIDER,
-                  providerInstanceId: options.instanceId,
-                  threadId: input.threadId,
-                  createdAt,
-                  type: "runtime.warning",
-                  payload: {
-                    message: "Pi emitted an invalid RPC record.",
-                    detail: { line },
-                  },
-                });
-              }
-              return handleMessage(context, decoded.value as PiRpcMessage);
-            },
-            { discard: true },
-          );
-        }),
-        Effect.catchCause((cause) =>
+        Stream.runForEach((chunk) => handleStdoutFrames(stdoutDecoder.push(chunk))),
+        Effect.ensuring(
+          Effect.suspend(() => handleStdoutFrames(stdoutDecoder.finish())).pipe(
+            Effect.ignore,
+            Effect.ensuring(Deferred.succeed(stdoutFinished, undefined).pipe(Effect.ignore)),
+          ),
+        ),
+        Effect.catchCause(() =>
           context.stopped
             ? Effect.void
             : emit({
@@ -2097,7 +2780,7 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
                 payload: {
                   message: "Pi RPC output stream failed.",
                   class: "transport_error",
-                  detail: Cause.pretty(cause),
+                  detail: { reason: "stdout-stream-failed" },
                 },
               }),
         ),
@@ -2110,8 +2793,11 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
           context.stopped
             ? Effect.void
             : Effect.gen(function* () {
+                // Drain and EOF-flush stdout before publishing termination. Closing
+                // the session scope first would race and discard the final frame.
+                yield* Deferred.await(stdoutFinished);
                 context.stopped = true;
-                sessions.delete(input.threadId);
+                if (sessions.get(input.threadId) === context) sessions.delete(input.threadId);
                 if (context.activeTurnId) {
                   context.abortingTurnId = undefined;
                   yield* completeTurn(
@@ -2163,6 +2849,29 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             "Pi started but did not provide a persistent session file for resumption.",
         });
       }
+      const commandsResponse = yield* requestRpc(context, { type: "get_commands" }).pipe(
+        Effect.timeoutOption(Duration.seconds(15)),
+        Effect.map(Option.getOrUndefined),
+        Effect.orElseSucceed(() => undefined),
+      );
+      if (commandsResponse?.success === true && isRecord(commandsResponse.data)) {
+        context.skillNames = new Set(
+          parsePiDiscoveredResources(commandsResponse.data).skills.map((skill) => skill.name),
+        );
+        const commands = commandsResponse.data.commands;
+        if (Array.isArray(commands)) {
+          context.vaultCommandNames = new Set(
+            commands.flatMap((command) =>
+              isRecord(command) &&
+              command.source === "extension" &&
+              typeof command.name === "string" &&
+              command.name.startsWith("vault-")
+                ? [command.name]
+                : [],
+            ),
+          );
+        }
+      }
       return context.session;
     });
 
@@ -2170,6 +2879,13 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       "sendPiTurn",
     )(function* (input: ProviderSendTurnInput) {
       const context = yield* ensureContext(input.threadId);
+      if (input.interactionMode === "plan") {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "sendTurn",
+          issue: "Pi/Takomi does not currently enforce T3 Plan mode.",
+        });
+      }
       if (!input.input && (!input.attachments || input.attachments.length === 0)) {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
@@ -2281,13 +2997,33 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         });
       }
 
+      const message =
+        context.skillNames === undefined || input.input === undefined
+          ? (input.input ?? "")
+          : expandPiSkillReferences(input.input, context.skillNames);
+      const promptId = `prompt-${yield* randomId}`;
+      const commandName = message.startsWith("/") ? message.slice(1).split(" ", 1)[0] : undefined;
+      if (!existingTurn && commandName && context.vaultCommandNames.has(commandName)) {
+        context.pendingVaultPrompt = {
+          id: promptId,
+          generation: context.generation,
+          turnId,
+          commandName,
+        };
+      }
       yield* sendRpc(context, {
-        id: `prompt-${yield* randomId}`,
+        id: promptId,
         type: "prompt",
-        message: input.input ?? "",
+        message,
         ...(images.length > 0 ? { images } : {}),
         ...(existingTurn ? { streamingBehavior: "steer" } : {}),
-      });
+      }).pipe(
+        Effect.onError(() =>
+          Effect.sync(() => {
+            if (context.pendingVaultPrompt?.id === promptId) context.pendingVaultPrompt = undefined;
+          }),
+        ),
+      );
       return {
         threadId: input.threadId,
         turnId,
@@ -2302,6 +3038,10 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
       const activeTurnId = context.activeTurnId;
       if (!activeTurnId || (turnId && turnId !== activeTurnId)) return;
       context.abortingTurnId = activeTurnId;
+      // Fence buffered stdout before asking Pi to abort: the acknowledgement may
+      // be followed by lifecycle records from a tool that was already stopping.
+      context.outputFenced = true;
+      yield* resolvePendingUiAsCancelled(context);
       yield* emit({
         ...(yield* eventBase(context)),
         type: "turn.aborted",
@@ -2334,7 +3074,8 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         decision: ProviderApprovalDecision,
       ) {
         const context = yield* ensureContext(threadId);
-        const pending = context.pendingUi.get(requestId);
+        const runtimeRequestId = RuntimeRequestId.make(requestId);
+        const pending = context.pendingUi.get(runtimeRequestId);
         if (!pending || pending.method !== "confirm") {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
@@ -2342,19 +3083,14 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
             issue: `Unknown Pi confirmation request '${requestId}'.`,
           });
         }
-        context.pendingUi.delete(requestId);
         const confirmed = decision === "accept" || decision === "acceptForSession";
-        yield* sendRpc(context, {
-          type: "extension_ui_response",
-          id: requestId,
-          ...(decision === "cancel" ? { cancelled: true } : { confirmed }),
-        });
-        yield* emit({
-          ...(yield* eventBase(context)),
-          type: "request.resolved",
-          requestId: RuntimeRequestId.make(requestId),
-          payload: { requestType: "dynamic_tool_call", decision },
-        });
+        yield* settlePendingUi(
+          context,
+          runtimeRequestId,
+          decision === "cancel" ? { cancelled: true } : { confirmed },
+          decision,
+          undefined,
+        );
       });
 
     const respondToUserInput: ProviderAdapterShape<ProviderAdapterError>["respondToUserInput"] =
@@ -2364,28 +3100,88 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
         answers: ProviderUserInputAnswers,
       ) {
         const context = yield* ensureContext(threadId);
-        const pending = context.pendingUi.get(requestId);
-        if (!pending || pending.method === "confirm") {
+        const runtimeRequestId = RuntimeRequestId.make(requestId);
+        const pending = context.pendingUi.get(runtimeRequestId);
+        if (!pending || pending.method === "confirm" || pending.sensitive) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
             operation: "respondToUserInput",
             issue: `Unknown Pi input request '${requestId}'.`,
           });
         }
-        context.pendingUi.delete(requestId);
         const answer = firstAnswer(answers, requestId);
-        yield* sendRpc(context, {
-          type: "extension_ui_response",
-          id: requestId,
-          value: Array.isArray(answer) ? answer.join(", ") : String(answer ?? ""),
-        });
-        yield* emit({
-          ...(yield* eventBase(context)),
-          type: "user-input.resolved",
-          requestId: RuntimeRequestId.make(requestId),
-          payload: { answers },
-        });
+        const value = Array.isArray(answer) ? answer.join(", ") : String(answer ?? "");
+        const responseLimit = pending.method === "editor" ? MAX_UI_EDITOR_PREFILL_BYTES : 64 * 1024;
+        if (utf8Bytes(value) > responseLimit) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "respondToUserInput",
+            issue: `Pi ${pending.method} response exceeds its ${responseLimit}-byte limit.`,
+          });
+        }
+        yield* settlePendingUi(context, runtimeRequestId, { value }, undefined, answers);
       });
+
+    const takePiVaultExport: NonNullable<
+      ProviderAdapterShape<ProviderAdapterError>["takePiVaultExport"]
+    > = Effect.fnUntraced(function* (threadId, transferId) {
+      const context = yield* ensureContext(threadId);
+      const pending = context.pendingVaultExport;
+      if (!pending || pending.id !== transferId || pending.generation !== context.generation) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "takePiVaultExport",
+          issue: "No pending vault export.",
+        });
+      }
+      const archive = yield* Effect.tryPromise({
+        try: () => readPiVaultExportArchive(pending.path),
+        catch: () =>
+          new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "takePiVaultExport",
+            detail: "Vault archive is unavailable.",
+          }),
+      });
+      if (context.pendingVaultExport !== pending || !isLiveContext(context, pending.generation)) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "takePiVaultExport",
+          issue: "Vault export expired.",
+        });
+      }
+      context.pendingVaultExport = undefined;
+      return { ...archive, key: pending.key };
+    });
+
+    const respondPiSecretInput: NonNullable<
+      ProviderAdapterShape<ProviderAdapterError>["respondPiSecretInput"]
+    > = Effect.fnUntraced(function* (threadId, requestId, value, cancelled) {
+      const context = yield* ensureContext(threadId);
+      const pending = context.pendingUi.get(RuntimeRequestId.make(requestId));
+      if (
+        !pending?.sensitive ||
+        pending.generation !== context.generation ||
+        cancelled === (value !== undefined) ||
+        (value !== undefined &&
+          (value.length === 0 ||
+            utf8Bytes(value) >
+              (pending.archive ? Math.ceil(PI_VAULT_ARCHIVE_MAX_BYTES / 3) * 4 : 16 * 1024)))
+      ) {
+        return yield* new ProviderAdapterValidationError({
+          provider: PROVIDER,
+          operation: "respondPiSecretInput",
+          issue: "No valid pending Pi secret request.",
+        });
+      }
+      yield* settlePendingUi(
+        context,
+        RuntimeRequestId.make(requestId),
+        cancelled ? { cancelled: true } : { value: value ?? "" },
+        undefined,
+        undefined,
+      );
+    });
 
     const readThread = (
       threadId: ThreadId,
@@ -2399,12 +3195,14 @@ export function makePiAdapter(settings: PiSettings, options: PiAdapterOptions) {
 
     const adapter: ProviderAdapterShape<ProviderAdapterError> = {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: { sessionModelSwitch: "in-session", supportsConversationRollback: false },
       startSession,
       sendTurn,
       interruptTurn,
       respondToRequest,
       respondToUserInput,
+      respondPiSecretInput,
+      takePiVaultExport,
       stopSession: (threadId) =>
         ensureContext(threadId).pipe(Effect.flatMap((context) => stopContext(context, true))),
       listSessions: () => Effect.succeed([...sessions.values()].map((context) => context.session)),

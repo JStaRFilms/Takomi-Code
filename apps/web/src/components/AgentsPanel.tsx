@@ -1,7 +1,6 @@
 /**
- * Agents right-panel surface: the fleet view over the native subagent fold,
- * and the ONLY place the roster renders (the chat carries one CTA row per
- * spawn batch).
+ * Agents right-panel surface: the fleet view over the native subagent fold.
+ * The chat carries one expandable row per spawn batch and links here.
  *
  * Visualization rules (from live-test feedback):
  * - Spawn order is stable. Activity and completion update rows in place.
@@ -20,6 +19,7 @@ import type {
 import {
   formatSubagentModelLabel,
   formatSubagentTokenCount,
+  settledAgentElapsedMs,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
@@ -87,7 +87,9 @@ function elapsedBetween(startedAt: string, endIso: string | null): string {
 function AgentElapsed({ agent }: { agent: RuntimeSubagent }) {
   const textRef = useRef<HTMLSpanElement>(null);
   const live = agent.status === "running" || agent.status === "waiting";
-  const startedAt = agent.startedAt;
+  // firstSeenAt always exists (roster order key); startedAt can be missing
+  // when the start row aged out, so fall back rather than showing nothing.
+  const startedAt = agent.startedAt ?? agent.firstSeenAt;
 
   useEffect(() => {
     if (!live || !startedAt) {
@@ -106,9 +108,21 @@ function AgentElapsed({ agent }: { agent: RuntimeSubagent }) {
   if (!startedAt) {
     return null;
   }
+  if (!live) {
+    // Settled rows freeze: prefer the provider-measured duration when wall
+    // clock collapsed (burst ingestion), else the wall time.
+    const settledMs = settledAgentElapsedMs(agent);
+    return (
+      <span ref={textRef} className="tabular-nums">
+        {settledMs !== null
+          ? formatElapsedSeconds(settledMs / 1000)
+          : elapsedBetween(startedAt, agent.completedAt)}
+      </span>
+    );
+  }
   return (
     <span ref={textRef} className="tabular-nums">
-      {elapsedBetween(startedAt, live ? null : agent.completedAt)}
+      {elapsedBetween(startedAt, null)}
     </span>
   );
 }
@@ -140,6 +154,8 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
 /** Flat, non-interactive agent status line. No unfold. */
 function AgentRow({ agent }: { agent: RuntimeSubagent }) {
   const visuals = STATUS_VISUALS[agent.status];
+  const statusLabel =
+    agent.kind === "subagent_batch" && agent.status === "idle" ? "Idle" : visuals.label;
   const activity = agentActivityText(agent);
   const modelLabel = formatSubagentModelLabel(agent.model, agent.effort);
   const role =
@@ -148,7 +164,12 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
       : agent.role;
   const metadata = [
     modelLabel,
-    agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok",
+    // A zero total means the provider never measured usage (Pi placeholder
+    // frames), not a genuine zero — read it as unknown so a completed worker
+    // never reports "0 tok" next to real tool counts.
+    agent.usage && agent.usage.totalTokens > 0
+      ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok`
+      : "— tok",
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
@@ -161,12 +182,12 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
       <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
         <span className="min-w-0 truncate text-sm font-medium">{agent.title}</span>
         {role ? (
-          <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
+          <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-3xs text-muted-foreground">
             {role}
           </span>
         ) : null}
       </span>
-      <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
+      <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-2xs text-muted-foreground/80">
         <span className="inline-flex items-center gap-1">
           <AgentElapsed agent={agent} />
           {agent.status === "completed" ? (
@@ -180,12 +201,12 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
           agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
         )}
       >
-        {activity ?? visuals.label}
+        {activity ?? statusLabel}
       </span>
-      <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
+      <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-2xs tabular-nums text-muted-foreground/70">
         {metadata.join(" · ")}
       </span>
-      <span className="sr-only">{visuals.label}</span>
+      <span className="sr-only">{statusLabel}</span>
     </div>
   );
 }
@@ -233,7 +254,7 @@ function PhaseRail({ group }: { group: AgentPanelWorkflowGroup }) {
           >
             <span
               className={cn(
-                "font-mono text-[.65rem]",
+                "font-mono text-3xs",
                 phase.state === "running"
                   ? "text-info-foreground"
                   : phase.state === "done"
@@ -246,7 +267,7 @@ function PhaseRail({ group }: { group: AgentPanelWorkflowGroup }) {
             </span>
             <span className="flex items-center gap-0.5">
               {phase.members.length === 0 ? (
-                <span className="font-mono text-[.6rem] text-muted-foreground/50">–</span>
+                <span className="font-mono text-3xs text-muted-foreground/50">–</span>
               ) : (
                 phase.members.map((member) => <StatusDot key={member.id} status={member.status} />)
               )}
@@ -280,7 +301,7 @@ function WorkflowScriptView({
     <div className="mx-1.5 mb-1 rounded-md border border-border/60 bg-background/60">
       <div className="flex items-center gap-2 border-b border-border/50 px-2 py-1">
         <Braces aria-hidden className="size-3 text-muted-foreground" />
-        <span className="truncate font-mono text-[.65rem] text-muted-foreground">
+        <span className="truncate font-mono text-3xs text-muted-foreground">
           {scriptPath.split("/").at(-1)}
         </span>
         <Button
@@ -295,7 +316,7 @@ function WorkflowScriptView({
       </div>
       <div className="max-h-72 overflow-auto p-2">
         {result._tag === "Success" ? (
-          <pre className="whitespace-pre-wrap break-words font-mono text-[.7rem] leading-relaxed text-foreground/90">
+          <pre className="whitespace-pre-wrap break-words font-mono text-2xs leading-relaxed text-foreground/90">
             {result.value.contents}
             {result.value.truncated ? "\n… (truncated)" : ""}
           </pre>
@@ -338,7 +359,7 @@ function PhaseSection({
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         className={cn(
-          "mt-2 flex w-full items-center gap-1.5 rounded-sm px-1.5 text-left text-[.65rem] font-medium uppercase tracking-wider hover:bg-accent/40",
+          "mt-2 flex w-full items-center gap-1.5 rounded-sm px-1.5 text-left text-3xs font-medium uppercase tracking-wider hover:bg-accent/40",
           phase.state === "done"
             ? "text-success-foreground"
             : phase.state === "running"
@@ -398,7 +419,7 @@ function ExpandedWorkflowSection({
   const canShowScript = scriptPath !== undefined && environmentId !== null && threadId !== null;
   return (
     <section className="rounded-lg border border-border/50 bg-card/30 p-1.5">
-      <div className="flex items-center gap-2 px-1.5 pt-0.5 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
+      <div className="flex items-center gap-2 px-1.5 pt-0.5 text-3xs font-medium uppercase tracking-wider text-muted-foreground">
         <StatusDot status={group.workflow.status} />
         <span className="min-w-0 truncate">
           {group.workflow.workflowName ?? group.workflow.title}
@@ -469,10 +490,12 @@ function CollapsedWorkflowSection({
     (sum, member) => sum + (member.usage?.totalTokens ?? 0),
     members.length === 0 ? (group.workflow.usage?.totalTokens ?? 0) : 0,
   );
-  const elapsed =
-    group.workflow.startedAt && group.workflow.completedAt
-      ? elapsedBetween(group.workflow.startedAt, group.workflow.completedAt)
-      : null;
+  const elapsedMs = settledAgentElapsedMs({
+    startedAt: group.workflow.startedAt,
+    completedAt: group.workflow.completedAt,
+    usage: group.workflow.usage,
+  });
+  const elapsed = elapsedMs !== null ? formatElapsedSeconds(elapsedMs / 1000) : null;
   return (
     <section>
       <button
@@ -485,7 +508,7 @@ function CollapsedWorkflowSection({
         <span className="truncate text-sm">
           {group.workflow.workflowName ?? group.workflow.title}
         </span>
-        <span className="ml-auto flex items-center gap-1.5 font-mono text-[.7rem] text-muted-foreground/80">
+        <span className="ml-auto flex items-center gap-1.5 font-mono text-2xs text-muted-foreground/80">
           {failed > 0 ? <span className="text-destructive-foreground">{failed} failed</span> : null}
           <span>{members.length} agents</span>
           <span className="tabular-nums">· {formatSubagentTokenCount(totalTokens)} tok</span>
@@ -556,7 +579,7 @@ export function AgentsPanel({
           ))}
           {model.directAgents.length > 0 ? (
             <section>
-              <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
+              <div className="px-1.5 pt-1 text-3xs font-medium uppercase tracking-wider text-muted-foreground">
                 Direct spawns
               </div>
               {model.directAgents.map((agent) => (
@@ -566,7 +589,7 @@ export function AgentsPanel({
           ) : null}
         </div>
       </ScrollArea>
-      <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
+      <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-2xs text-muted-foreground">
         <span className="flex items-center gap-2">
           {model.runningCount + model.waitingCount > 0 ? (
             <span className="text-info-foreground">

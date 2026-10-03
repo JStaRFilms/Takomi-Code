@@ -1,22 +1,33 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { AuthStandardClientScopes, EnvironmentId } from "@t3tools/contracts";
 import { RelayClientTracer } from "@t3tools/shared/relayTracing";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 
+import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
+import * as TokenStore from "../authorization/tokenStore.ts";
+import * as ClientCapabilities from "../platform/capabilities.ts";
+import {
+  ManagedRelayClient,
+  ManagedRelayDpopSigner,
+  ManagedRelayRequestTimeoutError,
+} from "../relay/managedRelay.ts";
+import { remoteHttpClientLayer } from "../rpc/http.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
+import { fetchEnvironmentSessionState } from "../state/session.ts";
 import type { ConnectionCatalogEntry } from "./catalog.ts";
 import * as Connectivity from "./connectivity.ts";
 import * as ConnectionDriver from "./driver.ts";
 import {
-  DPOP_ACCESS_TOKEN_REFRESH_SKEW_MS,
   ConnectionBlockedError,
   ConnectionTransientError,
   PrimaryConnectionTarget,
@@ -30,6 +41,7 @@ import {
 import * as RpcSession from "../rpc/session.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
+import { NETWORK_BLOCKING_HINT } from "../errors/network.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -46,11 +58,13 @@ const RELAY_TARGET = new RelayConnectionTarget({
 const TARGET_ENTRY: ConnectionCatalogEntry = {
   target: TARGET,
   profile: Option.none(),
+  enabled: true,
 };
 
 const RELAY_ENTRY: ConnectionCatalogEntry = {
   target: RELAY_TARGET,
   profile: Option.none(),
+  enabled: true,
 };
 
 const PREPARED_CONNECTION: PreparedConnection = {
@@ -122,6 +136,7 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
   );
   const prepareCount = yield* Ref.make(0);
   const sessionCount = yield* Ref.make(0);
+  const probeCount = yield* Ref.make(0);
   const releaseCount = yield* Ref.make(0);
   const wakeups = yield* SubscriptionRef.make<{
     readonly sequence: number;
@@ -166,7 +181,9 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
         initialConfig: Effect.die(new Error("Initial config is not used by supervisor tests.")),
         subscribeServerConfig: (input) => TEST_RPC_CLIENT.subscribeServerConfig(input),
         ready: options?.ready?.(attempt) ?? Effect.void,
-        probe: options?.probe?.(attempt) ?? Effect.void,
+        probe: Ref.update(probeCount, (count) => count + 1).pipe(
+          Effect.andThen(options?.probe?.(attempt) ?? Effect.void),
+        ),
         closed: Deferred.await(closed),
       } satisfies RpcSession.RpcSession),
       () => Ref.update(releaseCount, (count) => count + 1),
@@ -198,6 +215,7 @@ const makeHarness = Effect.fn("TestConnectionHarness.make")(function* (options?:
     dependencies,
     prepareCount,
     sessionCount,
+    probeCount,
     releaseCount,
     setNetworkStatus: (status: NetworkStatus) => SubscriptionRef.set(networkStatus, status),
     wake: (reason: ConnectionWakeups.ConnectionWakeup) =>
@@ -467,6 +485,35 @@ describe("EnvironmentSupervisor", () => {
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
+  it.effect(
+    "shows a network hint for a stalled relay connection and clears it after recovery",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({
+          prepare: (attempt) =>
+            attempt === 1 ? Effect.never : Effect.succeed(PREPARED_CONNECTION),
+        });
+        const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+          initiallyDesired: true,
+        }).pipe(Effect.provide(harness.dependencies));
+
+        yield* awaitState(supervisor.state, (state) => state.phase === "connecting");
+        yield* TestClock.adjust("15 seconds");
+        const failed = yield* awaitState(supervisor.state, (state) => state.phase === "backoff");
+        expect(failed.lastFailure?.message).toBe(
+          `Test environment did not respond during connection setup. ${NETWORK_BLOCKING_HINT}`,
+        );
+
+        yield* TestClock.adjust("3 seconds");
+        const recovered = yield* awaitState(
+          supervisor.state,
+          (state) => state.phase === "connected",
+        );
+        expect(recovered.lastFailure).toBeNull();
+        expect(yield* Ref.get(harness.prepareCount)).toBe(2);
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("converts unexpected driver defects into retryable failures", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({
@@ -475,7 +522,7 @@ describe("EnvironmentSupervisor", () => {
             ? Effect.die(new Error("Native transport defect."))
             : Effect.succeed(PREPARED_CONNECTION),
       });
-      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
         initiallyDesired: true,
       }).pipe(Effect.provide(harness.dependencies));
 
@@ -927,6 +974,71 @@ describe("EnvironmentSupervisor", () => {
     }),
   );
 
+  it.effect("deduplicates concurrent foreground wakes into one probe generation", () =>
+    Effect.gen(function* () {
+      const releaseProbe = yield* Deferred.make<void>();
+      const probeStarted = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        probe: () =>
+          Deferred.succeed(probeStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseProbe)),
+          ),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("application-active");
+      yield* harness.wake("application-active");
+      yield* Deferred.await(probeStarted);
+      expect(yield* Ref.get(harness.probeCount)).toBe(1);
+      const wakeGeneration = supervisor.wakeGeneration;
+      if (wakeGeneration === undefined) {
+        return yield* Effect.die(new Error("Expected wake generation support."));
+      }
+      const generationAdvanced = yield* SubscriptionRef.changes(wakeGeneration).pipe(
+        Stream.filter((generation) => generation === 1),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* Deferred.succeed(releaseProbe, undefined);
+      yield* Fiber.join(generationAdvanced);
+      expect(yield* Ref.get(harness.probeCount)).toBe(1);
+      expect(yield* SubscriptionRef.get(wakeGeneration)).toBe(1);
+    }),
+  );
+
+  it.effect("limits foreground subscription restoration setup to eight workers", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+      const semaphore = supervisor.restorationSemaphore;
+      if (semaphore === undefined) {
+        return yield* Effect.die(new Error("Expected a restoration semaphore."));
+      }
+      const started = yield* Queue.unbounded<number>();
+      const release = yield* Deferred.make<void>();
+      yield* Effect.forEach(
+        Array.from({ length: 9 }, (_, index) => index),
+        (index) =>
+          semaphore
+            .withPermits(1)(
+              Queue.offer(started, index).pipe(Effect.andThen(Deferred.await(release))),
+            )
+            .pipe(Effect.forkChild),
+        { discard: true },
+      );
+
+      expect(yield* Queue.takeN(started, 8)).toHaveLength(8);
+      expect(yield* Queue.size(started)).toBe(0);
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Queue.take(started)).toBeGreaterThanOrEqual(0);
+    }),
+  );
+
   it.effect("reconnects immediately when the foreground liveness probe fails", () =>
     Effect.gen(function* () {
       const allowReconnect = yield* Deferred.make<void>();
@@ -1097,9 +1209,8 @@ describe("EnvironmentSupervisor", () => {
     }),
   );
 
-  it.effect("renews a relay connection before its DPoP access token expires", () =>
+  it.effect("keeps a healthy relay session when its HTTP access token expires", () =>
     Effect.gen(function* () {
-      const tokenLifetimeMs = DPOP_ACCESS_TOKEN_REFRESH_SKEW_MS * 2;
       const harness = yield* makeHarness({
         prepare: (attempt) =>
           Effect.succeed({
@@ -1108,7 +1219,7 @@ describe("EnvironmentSupervisor", () => {
             httpAuthorization: {
               _tag: "Dpop",
               accessToken: `access-token-${attempt}`,
-              expiresAtEpochMs: tokenLifetimeMs * attempt,
+              expiresAtEpochMs: 3_600_000 * attempt,
             },
           }),
       });
@@ -1117,20 +1228,201 @@ describe("EnvironmentSupervisor", () => {
       }).pipe(Effect.provide(harness.dependencies));
 
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
-      yield* TestClock.adjust(DPOP_ACCESS_TOKEN_REFRESH_SKEW_MS - 1);
+      const session = Option.getOrThrow(yield* SubscriptionRef.get(supervisor.session));
+
+      yield* TestClock.adjust("2 hours");
+
       expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(0);
+      expect(Option.getOrThrow(yield* SubscriptionRef.get(supervisor.session))).toBe(session);
+      expect(yield* SubscriptionRef.get(supervisor.state)).toMatchObject({
+        phase: "connected",
+        generation: 1,
+      });
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
 
-      yield* TestClock.adjust(1);
-      yield* awaitState(
-        supervisor.state,
-        (state) => state.phase === "connected" && state.generation === 2,
+  it.effect("refreshes HTTP authorization without replacing the active relay session", () =>
+    Effect.gen(function* () {
+      const endpoint = {
+        httpBaseUrl: TARGET.httpBaseUrl,
+        wsBaseUrl: TARGET.wsBaseUrl,
+        providerKind: "cloudflare_tunnel" as const,
+      };
+      const token = yield* Ref.make(
+        Option.some(
+          new TokenStore.RemoteDpopAccessToken({
+            environmentId: TARGET.environmentId,
+            accountId: "test-account",
+            label: TARGET.label,
+            endpoint,
+            accessToken: "access-token-1",
+            expiresAtEpochMs: 3_600_000,
+            dpopThumbprint: "test-thumbprint",
+          }),
+        ),
       );
+      const bootstrapFails = yield* Ref.make(false);
+      const bootstrapCalls = yield* Ref.make(0);
+      const httpPaths: Array<string> = [];
+      const sessionAuthorizations: Array<string | null> = [];
+      const fetchFn = ((input, init) => {
+        const request = new Request(input, init);
+        const pathname = new URL(request.url).pathname;
+        httpPaths.push(pathname);
+        switch (pathname) {
+          case "/.well-known/t3/environment":
+            return Promise.resolve(
+              Response.json({
+                environmentId: TARGET.environmentId,
+                label: TARGET.label,
+                platform: { os: "linux", arch: "x64" },
+                serverVersion: "0.0.0-test",
+                capabilities: { repositoryIdentity: true },
+              }),
+            );
+          case "/oauth/token":
+            return Promise.resolve(
+              Response.json({
+                access_token: "access-token-2",
+                issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+                token_type: "DPoP",
+                expires_in: 3_600,
+                scope: AuthStandardClientScopes.join(" "),
+              }),
+            );
+          case "/api/auth/websocket-ticket":
+            return Promise.resolve(
+              Response.json({
+                ticket: "ws-ticket",
+                expiresAt: "2026-09-04T01:00:00.000Z",
+              }),
+            );
+          case "/api/auth/session": {
+            const authorization = request.headers.get("authorization");
+            sessionAuthorizations.push(authorization);
+            return Promise.resolve(
+              Response.json({
+                authenticated: authorization === "DPoP access-token-2",
+                auth: {
+                  policy: "loopback-browser",
+                  bootstrapMethods: ["one-time-token"],
+                  sessionMethods: ["dpop-access-token"],
+                  sessionCookieName: "t3_session_test",
+                },
+                scopes: AuthStandardClientScopes,
+              }),
+            );
+          }
+          default:
+            return Promise.reject(new Error(`Unexpected HTTP request to ${request.url}`));
+        }
+      }) satisfies typeof fetch;
+      const signer = ManagedRelayDpopSigner.of({
+        thumbprint: Effect.succeed("test-thumbprint"),
+        createProof: () => Effect.succeed("test-proof"),
+      });
+      const unused = () => Effect.die("Unexpected relay operation.");
+      const relay = ManagedRelayClient.of({
+        relayUrl: "https://relay.example.test",
+        listEnvironments: unused,
+        listDevices: unused,
+        createEnvironmentLinkChallenge: unused,
+        linkEnvironment: unused,
+        unlinkEnvironment: unused,
+        getEnvironmentStatus: unused,
+        connectEnvironment: Effect.fn("TestConnectionHttp.connectEnvironment")(function* () {
+          yield* Ref.update(bootstrapCalls, (count) => count + 1);
+          if (yield* Ref.get(bootstrapFails)) {
+            return yield* new ManagedRelayRequestTimeoutError({
+              activity: "Relay environment connection",
+              timeoutMs: 6_000,
+              traceId: null,
+            });
+          }
+          return {
+            environmentId: TARGET.environmentId,
+            endpoint,
+            credential: "relay-bootstrap",
+            expiresAt: "2026-09-04T01:00:00.000Z",
+          };
+        }),
+        registerDevice: unused,
+        unregisterDevice: unused,
+        registerLiveActivity: unused,
+        getAgentActivitySnapshot: unused,
+        resetTokenCache: Effect.void,
+      });
+      const httpLayer = remoteHttpClientLayer(fetchFn);
+      const remoteAuthorization = yield* RemoteEnvironmentAuthorization.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            httpLayer,
+            Layer.succeed(ManagedRelayDpopSigner, signer),
+            Layer.succeed(ManagedRelayClient, relay),
+            Layer.succeed(ClientCapabilities.CloudSession, {
+              identity: Effect.succeedSome({ accountId: "test-account" }),
+              clerkToken: Effect.succeed("clerk-token"),
+            }),
+            Layer.succeed(ClientCapabilities.RelayDeviceIdentity, {
+              deviceId: Effect.succeedNone,
+            }),
+            TokenStore.layer({
+              get: () => Ref.get(token),
+              put: (value) => Ref.set(token, Option.some(value)),
+              remove: () => Ref.set(token, Option.none()),
+            }),
+            Layer.succeed(ClientCapabilities.ClientPresentation, {
+              metadata: { label: "Test client", deviceType: "desktop" },
+              scopes: AuthStandardClientScopes,
+            }),
+          ),
+        ),
+      );
+      const harness = yield* makeHarness({
+        prepare: () =>
+          remoteAuthorization
+            .authorizeDpop({ expectedEnvironmentId: TARGET.environmentId })
+            .pipe(Effect.map((prepared) => ({ ...prepared, target: RELAY_TARGET }))),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      const session = Option.getOrThrow(yield* SubscriptionRef.get(supervisor.session));
+      const prepared = Option.getOrThrow(yield* SubscriptionRef.get(supervisor.prepared));
+      const readSession = fetchEnvironmentSessionState({
+        prepared,
+        signer: Option.some(signer),
+        remoteAuthorization: Option.some(remoteAuthorization),
+      }).pipe(Effect.provide(httpLayer));
 
-      expect(yield* Ref.get(harness.sessionCount)).toBe(2);
-      expect(yield* Ref.get(harness.releaseCount)).toBe(1);
-      expect(
-        Option.getOrThrow(yield* SubscriptionRef.get(supervisor.prepared)).httpAuthorization,
-      ).toMatchObject({ accessToken: "access-token-2" });
+      yield* TestClock.adjust("2 hours");
+      expect((yield* readSession).authenticated).toBe(true);
+      expect(sessionAuthorizations).toEqual(["DPoP access-token-2"]);
+      expect(yield* Ref.get(bootstrapCalls)).toBe(1);
+      expect(Option.getOrThrow(yield* SubscriptionRef.get(supervisor.session))).toBe(session);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(0);
+      expect(yield* SubscriptionRef.get(supervisor.state)).toMatchObject({
+        phase: "connected",
+        generation: 1,
+      });
+
+      yield* TestClock.adjust("2 hours");
+      yield* Ref.set(bootstrapFails, true);
+      const failure = yield* readSession.pipe(Effect.flip);
+      expect(failure._tag).toBe("RemoteEnvironmentAuthFetchError");
+      expect(yield* Ref.get(bootstrapCalls)).toBe(2);
+      expect(sessionAuthorizations).toEqual(["DPoP access-token-2"]);
+      expect(httpPaths.filter((path) => path === "/api/auth/websocket-ticket")).toHaveLength(1);
+      expect(httpPaths.filter((path) => path === "/oauth/token")).toHaveLength(1);
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(0);
+      expect(Option.getOrThrow(yield* SubscriptionRef.get(supervisor.session))).toBe(session);
+      expect(yield* SubscriptionRef.get(supervisor.state)).toMatchObject({
+        phase: "connected",
+        generation: 1,
+      });
     }).pipe(Effect.provide(TestClock.layer())),
   );
 

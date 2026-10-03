@@ -7,24 +7,31 @@
  */
 import {
   PiSettings,
+  PI_PROVIDER_IDENTITY,
   ProviderDriverKind,
   type ServerProvider,
   TextGenerationError,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makePiAdapter } from "../Layers/PiAdapter.ts";
-import { checkPiProviderStatus, makePendingPiProvider } from "../Layers/PiProvider.ts";
+import {
+  checkPiProviderStatus,
+  discoverPiResources,
+  makePendingPiProvider,
+  piResourceDiscoveryMessage,
+} from "../Layers/PiProvider.ts";
+import { piResourceFingerprint } from "../Layers/PiResources.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
@@ -34,11 +41,7 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
-import {
-  makeManualOnlyProviderMaintenanceCapabilities,
-  makeStaticProviderMaintenanceResolver,
-  resolveProviderMaintenanceCapabilitiesEffect,
-} from "../providerMaintenance.ts";
+import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import {
   haveProviderSnapshotSettingsChanged,
   makeProviderSnapshotSettingsSource,
@@ -49,22 +52,20 @@ import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
 
-const DRIVER_KIND = ProviderDriverKind.make("pi");
+const DRIVER_KIND = ProviderDriverKind.make(PI_PROVIDER_IDENTITY.driverKind);
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
+export const PI_WORKSPACE_RESOURCE_TTL = Duration.minutes(5);
 
-const UPDATE = makeStaticProviderMaintenanceResolver(
-  makeManualOnlyProviderMaintenanceCapabilities({
-    provider: DRIVER_KIND,
-    packageName: null,
-  }),
-);
+const MAINTENANCE_CAPABILITIES = makeManualOnlyProviderMaintenanceCapabilities({
+  provider: DRIVER_KIND,
+  packageName: null,
+});
 
 export type PiDriverEnv =
   | BackgroundPolicy.BackgroundPolicy
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
-  | HttpClient.HttpClient
   | Path.Path
   | ProviderEventLoggers
   | ServerConfig
@@ -89,7 +90,7 @@ const withInstanceIdentity =
 export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
   driverKind: DRIVER_KIND,
   metadata: {
-    displayName: "Takomi",
+    displayName: PI_PROVIDER_IDENTITY.displayName,
     supportsMultipleInstances: true,
   },
   configSchema: PiSettings,
@@ -98,8 +99,9 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
     Effect.gen(function* () {
       const crypto = yield* Crypto.Crypto;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const serverConfig = yield* ServerConfig;
-      const httpClient = yield* HttpClient.HttpClient;
       const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
@@ -114,10 +116,6 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const effectiveConfig = { ...config, enabled } satisfies PiSettings;
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-      });
 
       const adapter = yield* makePiAdapter(effectiveConfig, {
         instanceId,
@@ -132,21 +130,19 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
       ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
       );
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
       const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<PiSettings>>({
-        maintenanceCapabilities,
+        resolveMaintenance: () => Effect.succeed(MAINTENANCE_CAPABILITIES),
         getSettings: snapshotSettings.getSettings,
         streamSettings: snapshotSettings.streamSettings,
         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
         initialSnapshot: (settings) =>
           makePendingPiProvider(settings.provider.enabled).pipe(Effect.map(stampIdentity)),
         checkProvider,
-        enrichSnapshot: ({ snapshot: currentSnapshot, publishSnapshot }) =>
-          publishSnapshot(currentSnapshot).pipe(
-            Effect.provideService(HttpClient.HttpClient, httpClient),
-          ),
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(
         Effect.mapError(
@@ -174,6 +170,76 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         generateThreadTitle: () => unsupportedTextGeneration("generateThreadTitle"),
       };
 
+      const resourceSettingsFingerprint = [
+        effectiveConfig.binaryPath,
+        effectiveConfig.homePath,
+        effectiveConfig.suiteRoot,
+        effectiveConfig.launchArgs,
+        effectiveConfig.customModels.join("\u001f"),
+        String(effectiveConfig.enabled),
+      ].join("\u001f");
+      const workspaceResources = new Map<
+        string,
+        { readonly fingerprint: string; readonly expiresAtMs: number }
+      >();
+      const snapshotForCwd = (cwd: string) =>
+        !effectiveConfig.enabled
+          ? snapshot.getSnapshot
+          : Effect.all({
+              machineSnapshot: snapshot.getSnapshot,
+              discovery: discoverPiResources(effectiveConfig, cwd, processEnv),
+              now: DateTime.now,
+            }).pipe(
+              Effect.map(({ machineSnapshot, discovery, now }) => {
+                const checkedAt = DateTime.formatIso(now);
+                if (discovery.status === "unavailable") {
+                  workspaceResources.delete(cwd);
+                  return {
+                    ...machineSnapshot,
+                    status: "error" as const,
+                    checkedAt,
+                    slashCommands: [],
+                    skills: [],
+                    capabilities: {
+                      ...machineSnapshot.capabilities,
+                      commandDiscovery: "unavailable" as const,
+                      skillDiscovery: "unavailable" as const,
+                    },
+                    message:
+                      discovery.reason === "deadline"
+                        ? "Pi command and skill discovery exceeded its deadline."
+                        : "Pi command and skill discovery failed.",
+                  };
+                }
+                const resources = discovery.resources;
+                workspaceResources.set(cwd, {
+                  fingerprint: piResourceFingerprint({
+                    settings: resourceSettingsFingerprint,
+                    resources,
+                  }),
+                  expiresAtMs:
+                    DateTime.toEpochMillis(now) + Duration.toMillis(PI_WORKSPACE_RESOURCE_TTL),
+                });
+                return {
+                  ...machineSnapshot,
+                  checkedAt,
+                  slashCommands: resources.slashCommands,
+                  skills: resources.skills,
+                  message: piResourceDiscoveryMessage(resources),
+                };
+              }),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            );
+      const isWorkspaceSnapshotCurrent = (cwd: string) =>
+        DateTime.now.pipe(
+          Effect.map((now) => {
+            const cached = workspaceResources.get(cwd);
+            return cached !== undefined && cached.expiresAtMs > DateTime.toEpochMillis(now);
+          }),
+        );
+
       return {
         instanceId,
         driverKind: DRIVER_KIND,
@@ -182,6 +248,8 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
         accentColor,
         enabled,
         snapshot,
+        snapshotForCwd,
+        isWorkspaceSnapshotCurrent,
         adapter,
         textGeneration,
       } satisfies ProviderInstance;

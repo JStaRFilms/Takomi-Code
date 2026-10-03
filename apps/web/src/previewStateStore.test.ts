@@ -14,16 +14,16 @@ import {
   applyPreviewServerSnapshot,
   beginPreviewSessionClose,
   cancelPreviewSessionClose,
+  previewEventRequiresResnapshot,
   previewStateAtom,
   readThreadPreviewState,
   reconcilePreviewServerSessions,
   rememberPreviewUrl,
-  removePreviewThread,
   resetPreviewStateForTests,
-  subscribeThreadPreviewState,
   setActivePreviewTab,
   updatePreviewServerSnapshot,
 } from "./previewStateStore";
+import { appAtomRegistry } from "./rpc/atomRegistry";
 
 const environmentId = "env-1" as EnvironmentId;
 const ref = scopeThreadRef(environmentId, ThreadId.make("thread-1"));
@@ -62,6 +62,20 @@ beforeEach(() => {
 });
 
 describe("previewStateStore (single-tab)", () => {
+  it("detects revision gaps that require an authoritative preview resnapshot", () => {
+    expect(
+      previewEventRequiresResnapshot(
+        { serverEpoch: "server-a", serverRevision: 4 },
+        { serverEpoch: "server-a", revision: 6 },
+      ),
+    ).toBe(true);
+    expect(
+      previewEventRequiresResnapshot(
+        { serverEpoch: "server-a", serverRevision: 4 },
+        { serverEpoch: "server-a", revision: 5 },
+      ),
+    ).toBe(false);
+  });
   it("keeps independent state atoms for each thread", () => {
     expect(previewStateAtom(scopedThreadKey(ref))).toBe(previewStateAtom(scopedThreadKey(ref)));
     expect(previewStateAtom(scopedThreadKey(ref))).not.toBe(
@@ -353,7 +367,7 @@ describe("previewStateStore (single-tab)", () => {
       },
     };
     let updateCount = 0;
-    const unsubscribe = subscribeThreadPreviewState(ref, () => {
+    const unsubscribe = appAtomRegistry.subscribe(previewStateAtom(scopedThreadKey(ref)), () => {
       updateCount += 1;
     });
 
@@ -608,13 +622,5 @@ describe("previewStateStore (single-tab)", () => {
     expect(state.recentlySeenUrls[0]).toBe(
       `http://localhost:${5000 + __testing.RECENT_URL_LIMIT + 4}/`,
     );
-  });
-
-  it("removeThread strips the entry", () => {
-    const snapshot = makeSnapshot();
-    applyPreviewServerSnapshot(ref, snapshot);
-    removePreviewThread(ref);
-    const state = readThreadPreviewState(ref);
-    expect(state).toEqual(__testing.EMPTY_THREAD_PREVIEW_STATE);
   });
 });

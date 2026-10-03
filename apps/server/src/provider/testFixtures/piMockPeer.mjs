@@ -1,0 +1,402 @@
+import { appendFileSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const fixtureDirectory = dirname(fileURLToPath(import.meta.url));
+const fixture = JSON.parse(readFileSync(join(fixtureDirectory, "pi-v0.84.4-rpc.json"), "utf8"));
+const sessionRecords = readFileSync(join(fixtureDirectory, "pi-v0.84.4-session.v3.jsonl"), "utf8")
+  .trim()
+  .split("\n")
+  .map((line) => JSON.parse(line));
+const sessionEntries = sessionRecords.slice(1);
+const entriesByParent = new Map();
+for (const entry of sessionEntries) {
+  const children = entriesByParent.get(entry.parentId) ?? [];
+  children.push(entry);
+  entriesByParent.set(entry.parentId, children);
+}
+const sessionTree = (entriesByParent.get(null) ?? []).map(function node(entry) {
+  return { entry, children: (entriesByParent.get(entry.id) ?? []).map(node) };
+});
+const transcriptPath = process.env.T3_PI_CONFORMANCE_TRANSCRIPT;
+if (process.env.T3_PI_CONFORMANCE_LAUNCH_ARGS_PATH) {
+  appendFileSync(
+    process.env.T3_PI_CONFORMANCE_LAUNCH_ARGS_PATH,
+    JSON.stringify(process.argv.slice(2)),
+    "utf8",
+  );
+}
+let input = "";
+let stateRequest;
+let commandsRequest;
+let vaultPromptId;
+
+function emit(record, crlf = false) {
+  process.stdout.write(`${JSON.stringify(record)}${crlf ? "\r\n" : "\n"}`);
+}
+
+function recordInput(line) {
+  if (transcriptPath) appendFileSync(transcriptPath, `${line}\n`, "utf8");
+}
+
+function emitTimeoutRequest() {
+  emit({
+    type: "extension_ui_request",
+    id: "timeout-confirm",
+    method: "confirm",
+    title: "Immediate timeout",
+    message: "This must open before cancellation.",
+    timeout: 0,
+  });
+}
+
+function emitFixtureEvents() {
+  if (
+    process.env.T3_PI_CONFORMANCE_VAULT_SECRET === "1" &&
+    process.env.T3_TAKOMI_VAULT_SECRET_UI === "1"
+  ) {
+    emit({
+      type: "extension_ui_request",
+      id: "vault-secret",
+      method: "input",
+      title: "[takomi-vault-secret] API token",
+      placeholder: "Do not persist this hint",
+    });
+  }
+  if (process.env.T3_PI_CONFORMANCE_UI_TIMEOUT === "1") emitTimeoutRequest();
+  if (process.env.T3_PI_CONFORMANCE_LONG_UI_TITLE === "1") {
+    emit({
+      type: "extension_ui_request",
+      id: "long-select",
+      method: "select",
+      title: `Choose a deployment target\n${"Option preview text. ".repeat(140)}`,
+      options: ["staging", "production"],
+    });
+    emit({
+      type: "extension_ui_request",
+      id: "long-multi-select",
+      method: "input",
+      title: `Choose all applicable environments\n${"Environment preview text. ".repeat(130)}`,
+      placeholder: "Enter comma-separated selections",
+    });
+  }
+  if (process.env.T3_PI_CONFORMANCE_INVALID_UI_ID === "1") {
+    emit({
+      type: "extension_ui_request",
+      id: "x".repeat(513),
+      method: "confirm",
+      title: "Invalid request ID",
+      message: "This must not be persisted.",
+    });
+  }
+  if (process.env.T3_PI_CONFORMANCE_MALFORMED === "1") process.stdout.write("{invalid\n");
+  if (process.env.T3_PI_CONFORMANCE_OVERSIZED === "1") {
+    process.stdout.write(`${"x".repeat(1024 * 1024 + 1)}\n`);
+  }
+  const bytes = Buffer.from(
+    fixture.events
+      .map((event, index) => `${JSON.stringify(event)}${index === 0 ? "\r\n" : "\n"}`)
+      .join(""),
+    "utf8",
+  );
+  const cr = bytes.indexOf(0x0d);
+  const euro = bytes.indexOf(Buffer.from("€", "utf8"));
+  const cuts = [cr + 1, euro + 1, euro + 3, bytes.length]
+    .filter((cut, index, values) => cut > 0 && cut <= bytes.length && values.indexOf(cut) === index)
+    .sort((left, right) => left - right);
+  // Deliberately split the Euro sign and the first CRLF across writes while
+  // allowing the final chunk to contain many complete JSONL records.
+  let offset = 0;
+  for (const cut of cuts) {
+    process.stdout.write(bytes.subarray(offset, cut));
+    offset = cut;
+  }
+}
+
+function respondOutOfOrder() {
+  if (!stateRequest || !commandsRequest) return;
+  emit({
+    type: "response",
+    id: commandsRequest.id,
+    command: "get_commands",
+    success: true,
+    data: { commands: fixture.slashCommands },
+  });
+  emit({
+    type: "response",
+    id: stateRequest.id,
+    command: "get_state",
+    success: true,
+    data: fixture.state,
+  });
+  stateRequest = undefined;
+  commandsRequest = undefined;
+}
+
+function emitTodoFlow() {
+  emit({ type: "tool_execution_start", toolCallId: "todo-1", toolName: "todo", args: {} });
+  emit({
+    type: "tool_execution_update",
+    toolCallId: "todo-1",
+    toolName: "todo",
+    partialResult: {
+      tasks: [
+        { id: "task-1", title: "Read files", status: "completed" },
+        { id: "task-2", title: "Fix Pi todos", status: "in_progress" },
+      ],
+    },
+  });
+  emit({
+    type: "tool_execution_end",
+    toolCallId: "todo-1",
+    toolName: "todo",
+    result: {
+      tasks: [
+        { id: "task-1", title: "Read files", status: "completed" },
+        { id: "task-2", title: "Fix Pi todos", status: "in_progress" },
+        { id: "task-3", title: "Run tests", status: "pending" },
+        { id: "task-4", title: "Old task", status: "deleted" },
+      ],
+    },
+  });
+  emit({ type: "agent_settled" });
+}
+
+function handle(record) {
+  if (process.env.T3_PI_CONFORMANCE_EARLY_EXIT === "1") {
+    process.stderr.write("synthetic early exit\n");
+    process.exit(17);
+  }
+  switch (record.type) {
+    case "get_state":
+      if (process.env.T3_PI_CONFORMANCE_OUT_OF_ORDER === "1") {
+        stateRequest = record;
+        respondOutOfOrder();
+      } else {
+        emit({
+          type: "response",
+          id: record.id,
+          command: "get_state",
+          success: true,
+          data: fixture.state,
+        });
+      }
+      break;
+    case "get_commands":
+      if (process.env.T3_PI_DISCOVERY_HANG === "1") break;
+      if (process.env.T3_PI_CONFORMANCE_OUT_OF_ORDER === "1") {
+        commandsRequest = record;
+        respondOutOfOrder();
+      } else {
+        emit({
+          type: "response",
+          id: record.id,
+          command: "get_commands",
+          success: true,
+          data: {
+            commands:
+              process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1"
+                ? [
+                    ...fixture.slashCommands,
+                    { name: "vault-add", source: "extension" },
+                    { name: "vault-list", source: "extension" },
+                    { name: "vault-delete", source: "extension" },
+                    { name: "vault-export", source: "extension" },
+                    { name: "vault-import", source: "extension" },
+                  ]
+                : fixture.slashCommands,
+          },
+        });
+      }
+      break;
+    case "prompt":
+      if (
+        process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" &&
+        record.message === "/vault-export" &&
+        process.env.T3_PI_CONFORMANCE_EXPORT_ARCHIVE_PATH
+      ) {
+        emit({
+          type: "takomi_vault_export",
+          key: "a".repeat(64),
+          path: process.env.T3_PI_CONFORMANCE_EXPORT_ARCHIVE_PATH,
+        });
+        emit({ type: "response", id: record.id, command: "prompt", success: true });
+        break;
+      }
+      if (
+        process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" &&
+        record.message === "/vault-import"
+      ) {
+        vaultPromptId = record.id;
+        emit({
+          type: "extension_ui_request",
+          id: "vault-import-archive",
+          method: "input",
+          title: "[takomi-vault-archive] Select encrypted vault archive:",
+        });
+        break;
+      }
+      if (
+        process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" &&
+        record.message === "/vault-delete"
+      ) {
+        vaultPromptId = record.id;
+        emit({
+          type: "extension_ui_request",
+          id: "vault-delete-confirm",
+          method: "confirm",
+          title: "Delete credential?",
+          message: "Delete cred_ABC (Demo)? This revokes its grants.",
+        });
+        break;
+      }
+      if (process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" && record.message === "/vault-list") {
+        emit({
+          type: "extension_ui_request",
+          id: "vault-list-result",
+          method: "notify",
+          message: "Backend: local\n- cred_ABC | Demo | example.test",
+        });
+        emit({ type: "response", id: record.id, command: "prompt", success: true });
+        break;
+      }
+      if (
+        process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" &&
+        record.message === "/fixture-command"
+      ) {
+        emit({ type: "response", id: record.id, command: "prompt", success: true });
+        emit({
+          type: "extension_ui_request",
+          id: "extension-notify",
+          method: "notify",
+          message: "Extension prompt accepted.",
+        });
+        break;
+      }
+      if (
+        process.env.T3_PI_CONFORMANCE_VAULT_COMMAND === "1" &&
+        record.message.startsWith("/vault-add")
+      ) {
+        vaultPromptId = record.id;
+        emit({
+          type: "extension_ui_request",
+          id: "vault-secret",
+          method: "input",
+          title: "[takomi-vault-secret] API token",
+        });
+        break;
+      }
+      emit({ type: "response", id: record.id, command: "prompt", success: true });
+      if (process.env.T3_PI_CONFORMANCE_UNTERMINATED === "1") {
+        process.stdout.end(
+          `${JSON.stringify({ type: "extension_ui_request", id: "eof-confirm", method: "confirm", title: "EOF pending", message: "Cancel on EOF" })}\n{\"type\":\"partial\"`,
+          () => process.exit(18),
+        );
+      } else if (process.env.T3_PI_CONFORMANCE_UI_TIMEOUT_ONLY === "1") {
+        emitTimeoutRequest();
+      } else if (process.env.T3_PI_CONFORMANCE_TODO === "1") {
+        emitTodoFlow();
+      } else {
+        emitFixtureEvents();
+      }
+      break;
+    case "get_entries":
+      emit({
+        type: "response",
+        id: record.id,
+        command: "get_entries",
+        success: true,
+        data: { entries: sessionEntries, leafId: "active-label" },
+      });
+      break;
+    case "get_tree":
+      emit({
+        type: "response",
+        id: record.id,
+        command: "get_tree",
+        success: true,
+        data: { tree: sessionTree, leafId: "active-label" },
+      });
+      break;
+    case "extension_ui_response":
+      if (vaultPromptId && record.id === "vault-import-archive") {
+        emit({
+          type: "extension_ui_request",
+          id: "vault-import-key",
+          method: "input",
+          title: "[takomi-vault-secret] Transfer key:",
+        });
+      }
+      if (vaultPromptId && record.id === "vault-import-key") {
+        emit({
+          type: "extension_ui_request",
+          id: "vault-import-result",
+          method: "notify",
+          message: "Imported 1 credential(s). Grants were not imported.",
+        });
+        emit({ type: "response", id: vaultPromptId, command: "prompt", success: true });
+        vaultPromptId = undefined;
+      }
+      if (vaultPromptId && record.id === "vault-delete-confirm") {
+        emit({ type: "response", id: vaultPromptId, command: "prompt", success: true });
+        vaultPromptId = undefined;
+      }
+      if (vaultPromptId && record.id === "vault-secret") {
+        if (process.env.T3_PI_CONFORMANCE_VAULT_ERROR === "1") {
+          emit({
+            type: "extension_error",
+            extensionPath: "command:vault-add",
+            event: "command",
+            error: "Vault write failed.",
+          });
+        }
+        emit({ type: "response", id: vaultPromptId, command: "prompt", success: true });
+        emit({ type: "response", id: vaultPromptId, command: "prompt", success: true });
+        if (process.env.T3_PI_CONFORMANCE_VAULT_ERROR === "1") emit({ type: "agent_settled" });
+        vaultPromptId = undefined;
+      }
+      if (process.env.T3_PI_CONFORMANCE_CAPTURE_UI_RESPONSE === "1") {
+        emit({
+          type: "extension_ui_response_received",
+          id: record.id,
+          ...(record.cancelled === true ? { cancelled: true } : {}),
+          ...(typeof record.confirmed === "boolean" ? { confirmed: record.confirmed } : {}),
+          ...(typeof record.value === "string" ? { value: record.value } : {}),
+        });
+        emit({
+          type: "extension_ui_request",
+          id: `response-captured-${record.id}`,
+          method: "notify",
+          message: "Synthetic UI response captured.",
+        });
+      }
+      break;
+    case "abort":
+      emit({ type: "response", id: record.id, command: "abort", success: true });
+      // Pi can emit buffered lifecycle records after accepting abort.
+      emit({
+        type: "tool_execution_update",
+        toolCallId: "tool-late",
+        toolName: "bash",
+        args: { command: "echo synthetic" },
+        partialResult: { content: [{ type: "text", text: "late" }] },
+      });
+      emit({ type: "agent_settled" });
+      break;
+    default:
+      emit({ type: "response", id: record.id, command: record.type, success: true });
+  }
+}
+
+process.stdin.on("data", (chunk) => {
+  input += chunk;
+  while (true) {
+    const newline = input.indexOf("\n");
+    if (newline < 0) return;
+    const line = input.slice(0, newline).replace(/\r$/, "");
+    input = input.slice(newline + 1);
+    if (!line) continue;
+    recordInput(line);
+    handle(JSON.parse(line));
+  }
+});

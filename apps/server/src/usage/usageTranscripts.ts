@@ -12,14 +12,30 @@ export interface UsageRecord {
   readonly provider: UsageProviderKind;
   readonly timestampMs: number;
   readonly model: string;
+  /**
+   * Rate-table key when the provider's display name carries tiers the table
+   * does not know, such as Cursor's `claude-opus-5-5-high`. Defaults to `model`.
+   */
+  readonly rateModel?: string;
   readonly sessionId: string;
   readonly totals: UsageTokenTotals;
   readonly reportedCostUsd: number | null;
+  /**
+   * Whether the request ran in fast mode, which bills at a model-specific
+   * multiple of the standard rate. Only Claude Code records this.
+   */
+  readonly fast: boolean;
   /**
    * Key for cross-file de-duplication, or `null` when the record is inherently
    * unique and needs no dedup.
    */
   readonly dedupeKey: string | null;
+  /**
+   * Physical database the record was read from. Set by SQLite-backed sources
+   * (OpenCode) so buckets and source ownership can be attributed per
+   * database; transcript records leave it unset.
+   */
+  readonly sourcePath?: string;
 }
 
 const EMPTY_TOTALS: UsageTokenTotals = {
@@ -79,7 +95,7 @@ export function mightCarryUsage(line: string, provider: UsageProviderKind): bool
  */
 export const GROK_COST_USD_TICKS_PER_DOLLAR = 10_000_000_000;
 
-export function grokCostTicksToUsd(ticks: unknown): number | null {
+function grokCostTicksToUsd(ticks: unknown): number | null {
   if (typeof ticks !== "number" || !Number.isFinite(ticks) || ticks < 0) return null;
   return ticks / GROK_COST_USD_TICKS_PER_DOLLAR;
 }
@@ -103,6 +119,10 @@ export function parseClaudeLine(line: string): UsageRecord | null {
   } catch {
     return null;
   }
+  return parseClaudeRecord(parsed);
+}
+
+export function parseClaudeRecord(parsed: unknown): UsageRecord | null {
   if (typeof parsed !== "object" || parsed === null) return null;
 
   const record = parsed as Record<string, unknown>;
@@ -145,6 +165,7 @@ export function parseClaudeLine(line: string): UsageRecord | null {
       reasoningTokens: 0,
     },
     reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
+    fast: usageRecord["speed"] === "fast",
     dedupeKey,
   };
 }
@@ -217,6 +238,10 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
   } catch {
     return null;
   }
+  return parseCodexRecord(parsed, state);
+}
+
+export function parseCodexRecord(parsed: unknown, state: CodexScanState): UsageRecord | null {
   if (typeof parsed !== "object" || parsed === null) return null;
 
   const record = parsed as Record<string, unknown>;
@@ -304,6 +329,7 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     totals,
     // Codex does not report cost in the rollout.
     reportedCostUsd: null,
+    fast: false,
     // Events surviving the fork-copy suppression above are unique to this
     // rollout, so they need no global dedup.
     dedupeKey: null,
@@ -385,6 +411,10 @@ export function parseTakomiLine(line: string, state: TakomiScanState): UsageReco
   } catch {
     return null;
   }
+  return parseTakomiRecord(parsed, state);
+}
+
+export function parseTakomiRecord(parsed: unknown, state: TakomiScanState): UsageRecord | null {
   if (typeof parsed !== "object" || parsed === null) return null;
 
   const record = parsed as Record<string, unknown>;
@@ -456,6 +486,7 @@ export function parseTakomiLine(line: string, state: TakomiScanState): UsageReco
     sessionId: state.sessionId,
     totals,
     reportedCostUsd,
+    fast: false,
     dedupeKey: messageId === null ? null : `${state.sessionId}:${messageId}`,
   };
 }
@@ -480,6 +511,10 @@ export function parseGrokLine(line: string): readonly UsageRecord[] {
   } catch {
     return [];
   }
+  return parseGrokRecord(parsed);
+}
+
+export function parseGrokRecord(parsed: unknown): readonly UsageRecord[] {
   if (typeof parsed !== "object" || parsed === null) return [];
 
   const record = parsed as Record<string, unknown>;
@@ -540,6 +575,7 @@ export function parseGrokLine(line: string): readonly UsageRecord[] {
         sessionId,
         totals: grokTotalsToUsage(topLevel),
         reportedCostUsd: grokCostTicksToUsd(topLevel.costUsdTicks),
+        fast: false,
         // No prompt id means we cannot tell two same-second updates apart.
         dedupeKey: promptId === null ? null : `${sessionId}:${promptId}:grok`,
       },
@@ -586,6 +622,7 @@ export function parseGrokLine(line: string): readonly UsageRecord[] {
       sessionId,
       totals,
       reportedCostUsd,
+      fast: false,
       dedupeKey: promptId === null ? null : `${sessionId}:${promptId}:${entry.model}`,
     });
   }

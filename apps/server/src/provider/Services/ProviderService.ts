@@ -16,6 +16,9 @@ import type {
   ProviderInstanceId,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
+  ProviderRespondPiSecretInput,
+  ProviderTakePiVaultExportInput,
+  ProviderTakePiVaultExportResult,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
@@ -23,6 +26,7 @@ import type {
   ProviderStopSessionInput,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
+  MessageId,
   ThreadId,
   ProviderTurnStartResult,
 } from "@t3tools/contracts";
@@ -53,6 +57,12 @@ export interface ProviderServiceShape {
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
 
+  readonly compactThread: (
+    threadId: ThreadId,
+    modelSelection?: ProviderSendTurnInput["modelSelection"],
+    requestId?: MessageId,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
   /**
    * Interrupt a running provider turn.
    */
@@ -77,6 +87,15 @@ export interface ProviderServiceShape {
   /**
    * Stop a provider session.
    */
+  readonly respondPiSecretInput: (
+    input: ProviderRespondPiSecretInput,
+  ) => Effect.Effect<void, ProviderServiceError>;
+
+  /** Private one-time export delivery. Never publish its result as a thread activity. */
+  readonly takePiVaultExport?: (
+    input: ProviderTakePiVaultExportInput,
+  ) => Effect.Effect<ProviderTakePiVaultExportResult, ProviderServiceError>;
+
   readonly stopSession: (
     input: ProviderStopSessionInput,
   ) => Effect.Effect<void, ProviderServiceError>;
@@ -98,6 +117,13 @@ export interface ProviderServiceShape {
   readonly getInstanceInfo: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ProviderInstanceRoutingInfo, ProviderServiceError>;
+
+  /**
+   * Reject unsupported rewind before files change, without resuming the session.
+   */
+  readonly assertConversationRollbackSupported: (
+    threadId: ThreadId,
+  ) => Effect.Effect<void, ProviderServiceError>;
 
   /**
    * Roll back provider conversation state by a number of turns.

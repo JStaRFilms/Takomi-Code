@@ -1,11 +1,18 @@
 import {
   ProviderDriverKind,
+  ProviderInstanceId,
   type ModelCapabilities,
   type ServerProviderModel,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { getProviderModelCapabilities } from "./providerModels";
+import {
+  getProviderInteractionModeToggle,
+  getProviderModelCapabilities,
+  getProviderRuntimeModes,
+  normalizeProviderRuntimeMode,
+} from "./providerModels";
 
 const PROVIDER = ProviderDriverKind.make("claudeAgent");
 
@@ -29,6 +36,36 @@ function model(input: {
     capabilities: input.capabilities,
   };
 }
+
+describe("provider capability controls", () => {
+  const pi: ServerProvider = {
+    instanceId: ProviderInstanceId.make("pi"),
+    driver: ProviderDriverKind.make("pi"),
+    enabled: true,
+    installed: true,
+    version: "0.84.4",
+    status: "ready",
+    auth: { status: "unknown" },
+    checkedAt: "2026-01-01T00:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
+    capabilities: {
+      runtimeModes: ["full-access"],
+      interactionModes: ["default"],
+      conversationRollback: false,
+    },
+  };
+
+  it("hides unadvertised Pi safety and Plan modes while legacy snapshots retain defaults", () => {
+    expect(getProviderRuntimeModes([pi], pi.instanceId)).toEqual(["full-access"]);
+    expect(getProviderInteractionModeToggle([pi], pi.instanceId)).toBe(false);
+    expect(getProviderRuntimeModes([{ ...pi, capabilities: undefined }], pi.instanceId)).toContain(
+      "approval-required",
+    );
+    expect(normalizeProviderRuntimeMode("approval-required", ["full-access"])).toBe("full-access");
+  });
+});
 
 describe("getProviderModelCapabilities", () => {
   it("resolves model-declared aliases", () => {

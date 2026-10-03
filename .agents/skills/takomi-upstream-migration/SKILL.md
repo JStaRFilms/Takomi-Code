@@ -7,6 +7,12 @@ description: Safely migrate the Takomi-Code fork onto the latest upstream T3 Cod
 
 Run from the repository root. Preserve upstream architecture and stability fixes; reapply Takomi behavior as the narrowest provider- or brand-specific delta.
 
+## Branch model (read first)
+
+- `feat/pi-takomi-parity` — the live branch; all work converges here and upstream merges target it.
+- `feat/pi-debrand` (worktree `worktrees/pi-debrand`) — dormant stock-flavor branch for stock demos and the eventual upstream PR. Never merge it into `feat/pi-takomi-parity`; never rebase it as part of a migration. If it has drifted and the user asks for a stock build or the upstream PR, rebase it onto `feat/pi-takomi-parity` at that point only (its delta is intentional string swaps; resolve conflicts accordingly), then delete it after the PR ships.
+- `PI_PROVIDER_IDENTITY` in `packages/contracts/src/providerIdentity.ts` owns the Pi display name (`"Takomi"` on the live branch, `"Pi"` on `feat/pi-debrand`). See `docs/features/takomi-code-handoff.md` for the full branch rules.
+
 ## 1. Establish a recoverable starting point
 
 1. Inspect `git status --short --branch`, remotes, current HEAD, and `upstream/main`.
@@ -76,6 +82,7 @@ Pay special attention to:
 - provider runtime ingestion and generic provider semantics;
 - Pi driver environment requirements and Effect/Schema API changes;
 - mobile package IDs, schemes, Expo updates, Clerk configuration, and signing;
+- Pi's version-gated, read-only session catalog and its attach/clone/import limitations;
 - documentation links, versions, artifact names, branch names, and stale commit hashes.
 
 If Takomi behavior overrides upstream globally, either narrow it to Takomi/Pi or present the user with the tradeoff.
@@ -93,11 +100,11 @@ Do not run repository-wide checks by default.
 Typical package checks:
 
 ```bash
-pnpm --filter @t3tools/web typecheck
-pnpm --filter t3 typecheck
-pnpm --filter @t3tools/desktop typecheck
-pnpm --filter @t3tools/mobile typecheck
-pnpm exec vp test run <focused-test-files>
+vp run --filter @t3tools/web typecheck
+vp run --filter t3 typecheck
+vp run --filter @t3tools/desktop typecheck
+vp run --filter @t3tools/mobile typecheck
+vp test run <focused-test-files>
 ```
 
 ## 5. Keep documentation synchronized
@@ -109,6 +116,7 @@ Treat raw conversation transcripts and old implementation plans as historical. M
 Canonical maintained files include:
 
 - `README.md`
+- `release/README.md`
 - `docs/README.md`
 - `docs/internals/providers.md`
 - `docs/features/takomi-code-handoff.md`
@@ -116,45 +124,66 @@ Canonical maintained files include:
 - `docs/features/takomi-tool-call-ui-audit.md`
 - `docs/features/takomi-desktop-and-android.md`
 
-## 6. Build release artifacts
+## 6. Give the built web/server test commands
 
-### Windows x64 desktop
-
-```powershell
-pnpm dist:desktop:win:x64
-```
-
-Expected output:
-
-```text
-release\Takomi-Code-<version>-x64.exe
-```
-
-Report the warning if no WSL `node-pty` prebuild is supplied: normal Windows operation works, but the packaged WSL backend does not.
-
-### Standalone Android on the configured Windows machine
-
-The helper builds committed `HEAD`, not uncommitted changes. Commit the audited source first, then run:
+After the source audit, tell the user how to test the merged code without the dev runner. From the repository root, use the server's `build` task, not `build:bundle` on its own. The `build` task depends on the web build, packs the server, and copies the current web assets into `apps/server/dist/client`:
 
 ```powershell
-& "$env:USERPROFILE\Desktop\Build Takomi Android Standalone.cmd"
+vp run --filter t3 build
+node apps/server/dist/bin.mjs serve --base-dir .t3/production-test
 ```
 
-Expected output:
+Open the local URL or pairing link printed by `serve` yourself. `serve` runs headless and does not open a browser; leave the terminal open and stop it with Ctrl+C. The explicit data directory keeps this test server away from `~/.t3/userdata` and the checkout's existing `.t3` state. Check that the directory is not already in use before starting it. Do not start a server, open a browser, or mutate live state on the user's behalf without permission. Include these commands in the final report even when no build or server was run, and say which checks and artifacts actually exist.
+
+For a dedicated Mac host, build with the same `vp run --filter t3 build`, then run `node apps/server/dist/bin.mjs serve --tailscale-serve --no-browser` with the host's intended data directory. The machine-local `release/mac-server.md` runbook, when present, describes Mac pairing; it is ignored by Git and may not exist in other clones. Tailscale hosting and pairing are separate from local web testing; never add `--tailscale-serve` to a local test by default. The root CLI without `serve` opens a browser by default, so the launch commands are not interchangeable in presentation or data-directory effects.
+
+## 7. Build release artifacts
+
+Local release builds output to `release/` and are driven by repository scripts. These are optional for a merge unless the user requests artifacts. They do not replace the built web/server test commands above.
+
+### Build both applications
+
+From the repository root on Windows:
+
+```powershell
+vp run dist:local
+```
+
+### Windows x64 desktop only
+
+```powershell
+vp run dist:local:desktop
+```
+
+Read the desktop version from `apps/desktop/package.json` at build time. Expected output:
 
 ```text
-release\Takomi-Code-Standalone-<version>.apk
+release\Takomi-Code-<desktop-version>-x64.exe
 ```
 
-The helper uses the short `C:\ta` worktree and `C:\tp` pnpm store. If Gradle owns a locked build directory, use that worktree's `gradlew.bat --stop` when available; never kill Java or Gradle processes by broad name/path matching.
+Report the warning if no WSL `node-pty` prebuild is supplied: normal Windows operation works, but the packaged WSL backend does not. If the desktop build fails while probing temporary directories, set `$env:TEMP` / `$env:TMP` / `$env:TMPDIR` to `C:\t3code-tmp` as documented in `release/README.md`.
 
-## 7. Finish safely
+### Standalone Android preview APK only
+
+```powershell
+vp run dist:local:android
+```
+
+Read the mobile version from `apps/mobile/app.config.ts` at build time. Expected output:
+
+```text
+release\Takomi-Code-Preview-<mobile-version>-<sha>[-dirty].apk
+```
+
+Uncommitted tracked changes are included (the artifact name appends `-dirty`). The build uses the managed short worktree `C:\takomi-local-build` and `C:\tp` pnpm virtual store. The output is an internal, debug-signed preview APK and is not Play Store uploadable. If Gradle owns a locked build directory, stop the daemon cleanly via `C:\takomi-local-build\apps\mobile\android\gradlew.bat --stop`; never kill Java or Gradle processes by broad name/path matching.
+
+## 8. Finish safely
 
 Before reporting completion:
 
 1. Confirm the merge base of `HEAD` and `upstream/main` is exactly `upstream/main`.
 2. Confirm the working tree is clean.
 3. List the merge commit and any corrective commits created afterward.
-4. State focused checks and artifact paths truthfully.
+4. State focused checks and artifact paths truthfully. Give the built web/server build and launch commands from step 6, and distinguish those from any release build commands actually run.
 5. State unresolved limitations, especially WSL packaging and Android's upstream-compatible infrastructure identity.
 6. Do not push unless explicitly requested. A merge-based update uses a normal push; do not force-push for this workflow.

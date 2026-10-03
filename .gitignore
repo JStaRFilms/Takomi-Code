@@ -5,6 +5,7 @@ node_modules
 *.log
 *.tsbuildinfo
 apps/*/dist
+apps/*/dist-exe
 infra/*/dist
 .astro
 packages/*/dist
@@ -21,16 +22,20 @@ apps/web/.playwright
 apps/web/playwright-report
 apps/web/src/components/__screenshots__
 .vitest-*
+scripts/.knip-test-*/
 __screenshots__/
 .tanstack
 squashfs-root/
 .vercel
 .gstack/
 .plans/
+.pi/
 dist-electron/
 .electron-runtime/
 .showcase/
 apps/mobile/.showcase/
+apps/mobile/.generated/
+/.generated/
 artifacts/app-store/screenshots/
 .github/pr-assets/
 native/**/target/
@@ -39,3 +44,7 @@ node_modules/
 *.log
 .env*
 !.env.example
+
+# pnpm content-addressable store; never belongs in the repo.
+.pnpm-store/
+/worktrees/

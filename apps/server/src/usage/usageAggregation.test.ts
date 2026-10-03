@@ -12,6 +12,7 @@ const rates: RateTable = new Map([
       outputCostPerToken: 5e-5,
       cacheReadCostPerToken: 1e-6,
       cacheCreationCostPerToken: 1.25e-5,
+      fastMultiplier: 1,
     },
   ],
 ]);
@@ -31,6 +32,7 @@ function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
       reasoningTokens: 0,
     },
     reportedCostUsd: null,
+    fast: false,
     dedupeKey: null,
     ...overrides,
   };
@@ -200,5 +202,20 @@ describe("UsageAggregator", () => {
     ]);
 
     expect(result.buckets).toHaveLength(3);
+  });
+
+  it("isolates buckets by sourcePath so databases from different environments never merge", () => {
+    const result = aggregate([
+      record({ provider: "opencode", model: "glm-5.3", sourcePath: "/home/alice/opencode.db" }),
+      record({ provider: "opencode", model: "glm-5.3", sourcePath: "/home/bob/opencode.db" }),
+      record({ provider: "opencode", model: "glm-5.3" }),
+    ]);
+
+    expect(result.buckets).toHaveLength(3);
+    expect(result.buckets.map((b) => b.sourcePath).sort()).toEqual([
+      "/home/alice/opencode.db",
+      "/home/bob/opencode.db",
+      undefined,
+    ]);
   });
 });

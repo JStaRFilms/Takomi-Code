@@ -26,6 +26,8 @@ flowchart LR
 - **Web metadata:** `apps/web/src/components/settings/providerDriverMeta.ts`
 - **Web icon mapping:** `apps/web/src/components/chat/providerIconUtils.ts`
 - **Session logic:** `apps/web/src/session-logic.ts`
+- **Session catalog boundary:** `apps/server/src/provider/Layers/PiSessionCatalog.ts`
+- **Versioned host utilities:** `packages/takomi-pi-host/`
 
 The provider driver kind remains `pi` for compatibility, but its visible product/provider name is `Takomi`. Pi is treated as the internal runtime harness rather than a separate visible provider.
 
@@ -83,13 +85,17 @@ Pi `extension_ui_request` messages are mapped as follows:
 | `confirm` | `request.opened` approval UI | `extension_ui_response.confirmed` |
 | `notify`  | `runtime.warning`            | none                              |
 
-This is why Takomi's question-asking flow appears in the existing T3 question UI. It was implemented deliberately.
+This also carries Takomi's `ask_user_question` RPC fallback. It presents questions one at a time through Pi's `select` and `input` dialogs.
+
+Takomi Vault secret input is the exception. When the vault extension requests an `input` whose title starts with `[takomi-vault-secret] `, the adapter publishes only a pending question marked `sensitive`. Web, desktop, and mobile collect its value in a masked field and call `provider.respondPiSecretInput` directly on the owning environment. The authenticated server checks the live Pi request and sends a one-use `extension_ui_response` to that process. It records a resolution with empty answers and a `privateResponse` marker on successful entry, never the value. The work log distinguishes that from cancellation. Ordinary `thread.user-input.respond` commands cannot answer a sensitive question. Stopping or replacing the Pi process invalidates its pending request. The Pi host opts into this protocol through `T3_TAKOMI_VAULT_SECRET_UI`; other RPC hosts keep the vault's TUI-only secret entry.
+
+`T3_TAKOMI_VAULT_TRANSFER_UI` also enables GUI transfer. Import takes an encrypted file through a private one-use response, then asks for the key in a masked field. Export sends a private `takomi_vault_export` JSONL record that the adapter intercepts before native logging. The thread receives only a transfer ID; an authorized client retrieves the key and bounded archive once through `provider.takePiVaultExport`. Neither value enters the thread projector or RPC tracing. Replacing the Pi process invalidates the transfer. The environment host and its authorized connected clients can access the transfer; the key is not hidden from the server.
 
 Current fidelity limitations:
 
 - the adapter emits one T3 question per Pi UI request
 - option descriptions currently repeat the option label
-- rich previews are not carried through
+- preview text embedded in Pi dialog titles appears in the question body, without a side-by-side preview pane
 - multi-select metadata is not explicitly mapped
 - unsupported Pi extension UI methods are ignored
 
@@ -130,6 +136,34 @@ Suite mode also discovers globally installed Pi companion packages from Pi setti
 
 `Pi agent directory` sets `PI_CODING_AGENT_DIR`. Do not point it at the whole Takomi suite unless that directory is intentionally structured as a Pi agent home.
 
+## Commands, prompts, and skills
+
+The web and mobile command menus use Pi's `get_commands` response for the selected project. Extension commands, prompt templates, and skills are shown in Pi's first-wins order. Pi terminal-only built-ins are not shown because they cannot be invoked through RPC. Pi handles registered vault commands without starting an agent run, so the adapter settles those command-only turns when Pi acknowledges their `prompt` RPC. The adapter marks notifications from an active discovered vault command; both clients display their redacted metadata in a separate timeline row instead of hiding it in the work log. This row never becomes a Pi assistant message. Deletion uses a single "Delete credential" confirmation rather than a reusable approval. Other extension commands may start an agent run and still settle on its lifecycle event.
+
+Project resources follow Pi's project-trust decision. Explicit `--approve` and `--no-approve` launch arguments take precedence. In non-interactive RPC mode, the default `ask` behavior cannot display Pi's own trust prompt, so protected resources may remain unavailable until Pi has a saved decision or another supported trust policy applies. Extensions can also decide trust; when that effective result is not observable, Takomi Code reports the trust information as partial rather than claiming an approval or rejection.
+
+Resource snapshots are isolated by environment, provider instance, and exact project path. Pi advertises and refreshes them after five minutes and after provider settings change. Failed Pi discovery removes stale project resources and retries instead of falling back to resources discovered for the server or another project.
+
+## Session catalog
+
+For the supported Pi protocol boundary (verified releases: 0.84.4, 0.85.1, 0.87.1, 0.99.1), web and desktop can request a bounded, paginated list
+of Pi sessions for the selected provider instance and workspace. Catalog cursors are scoped to the
+environment, provider instance, exact workspace, server generation, and expiry. The server also
+rejects continuation when another active T3 thread already holds the same session file.
+For a new Pi release, follow the [compatibility check](../operations/pi-compatibility.md) before
+adding it to the supported list.
+
+This is discovery plus continuation. Catalog entries hydrate into T3 threads through
+`provider.attachPiSession` (bind the live CLI session file) and `provider.forkPiSession`
+(clone into a new file with the source recorded as parent, then bind the fork), both gated to
+fresh threads without turns or provider state. Provider capabilities report session attach and
+clone as available when the catalog boundary is supported. Continuing backfills visible CLI
+history (user/assistant text via `thread.history.import`, up to bounds); tool traffic stays
+model-only context without becoming visible messages. Open threads poll for CLI advances
+(`provider.checkPiSessionUpdates`) and offer one-click Sync above the composer
+(`provider.syncPiSessionUpdates`, appended via `thread.history.append` with the same
+import namespace, idempotent by content).
+
 ## Runtime constraints
 
 Only T3's `full-access` runtime mode is accepted. `approval-required` and `auto-accept-edits` are rejected because T3 does not yet enforce permissions around every Pi tool invocation.
@@ -151,18 +185,28 @@ pi --session "C:\path\to\session.jsonl"
 ```
 
 Do not open the same session file in terminal Pi while Takomi Code is actively writing it.
+Attached threads hold the live file: stop the thread's provider session (releasing it to the
+CLI) before working the same file in a terminal, then send the next T3 message to pick up the
+CLI's appended records through the normal session-recovery path.
 
-Automatic discovery/import of independently created terminal Pi sessions into Takomi Code is not implemented.
+Compatible terminal Pi sessions can be listed in the Pi session catalog and continued in
+Takomi Code: attach binds the live file, fork clones it first so the two sides diverge cleanly.
+Forks accept a record limit for point-splits (clone up to a chosen message). Message previews
+are read-only and bounded. All three require a fresh thread with no turns for the bind step;
+the next message continues with full CLI context.
 
 ## Known limitations
 
 - utility text generation (thread titles, branch names, commit messages, and PR text) is not implemented by the Pi driver
 - only `full-access` is supported
-- terminal-to-T3 Pi session import is not supported
+- Pi session attach, full-file fork, point-split fork, message preview, and visible CLI
+  history hydration are supported into fresh threads
+- session catalog listing is version-gated to verified Pi releases (0.84.4, 0.85.1, 0.87.1, 0.99.1)
 - unknown extension UI methods are ignored
+- plaintext reveal remains TUI-only; vault export and import use separate private GUI transfer handling
 - richer question metadata is reduced to T3's current canonical shape
-- Pi/Takomi slash-command discovery is not integrated into the command menu
 - Takomi runtime assets are not bundled into the desktop installer; global installation or a suite root is still required
+- the mobile client does not yet expose session discovery or continuation
 
 ## Verification history
 

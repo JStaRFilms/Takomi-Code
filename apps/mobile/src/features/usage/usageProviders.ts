@@ -1,23 +1,34 @@
-import type { UsageProviderKind } from "@t3tools/contracts";
+import { PI_PROVIDER_IDENTITY, type UsageProviderKind } from "@t3tools/contracts";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 
 /**
  * Series and table order. The chart stacks providers from the bottom in this
  * order, so it also fixes which band sits on top of the bars.
  */
-export const PROVIDER_ORDER: readonly UsageProviderKind[] = ["codex", "claude", "grok", "takomi"];
+export const PROVIDER_ORDER: readonly UsageProviderKind[] = [
+  "codex",
+  "claude",
+  "grok",
+  "takomi",
+  "cursor",
+  "opencode",
+  "antigravity",
+];
 
 export const PROVIDER_LABEL: Record<UsageProviderKind, string> = {
   claude: "Claude Code",
   codex: "Codex",
   grok: "Grok Build",
-  takomi: "Takomi",
+  takomi: PI_PROVIDER_IDENTITY.displayName,
+  cursor: "Cursor",
+  opencode: "OpenCode",
+  antigravity: "Antigravity",
 };
 
 /**
  * Claude's brand orange and Takomi's cyan hold in both themes; Codex and Grok
  * are neutrals and must flip with the theme or their bars vanish against the
- * matching background.
+ * matching background. OpenCode's violet holds in both.
  */
 export function useProviderColors(): Record<UsageProviderKind, string> {
   const { themeAppearance: scheme } = useAppearancePreferences();
@@ -26,5 +37,8 @@ export function useProviderColors(): Record<UsageProviderKind, string> {
     codex: scheme === "dark" ? "#e6e6e6" : "#3c3c43",
     grok: scheme === "dark" ? "#a1a1aa" : "#52525b",
     takomi: "#20c7d9",
+    cursor: "#8b8b8b",
+    opencode: "#5b9bbd",
+    antigravity: "#8c7bd1",
   };
 }

@@ -1,6 +1,6 @@
 # Takomi tool-call UI
 
-**Status:** Implemented on `Takomi-Code`
+**Status:** Implemented on `feat/pi-takomi-parity`
 
 ## Overview
 
@@ -135,7 +135,7 @@ This preserves tools such as `ask_user_question`, `todo`, browser/preview extens
 
 Focused verification includes:
 
-- `apps/server/test/ActivityPayloadProjection.test.ts`
+- `apps/server/src/orchestration/ActivityPayloadProjection.test.ts`
 - `apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.test.ts`
 - `apps/web/src/session-logic.test.ts`
 - contracts, server, and web typechecks
@@ -146,6 +146,7 @@ Manual smoke testing should use a fresh thread and cover a board session, Todo u
 
 - historical activities cannot recover structured content discarded before the presentation contract existed;
 - mobile has not yet implemented native semantic tool cards or the inspector;
-- Pi/Takomi slash-command discovery is deferred;
+- Pi slash commands, prompt templates, and skills are discoverable, but terminal-only built-ins are
+  intentionally omitted because RPC cannot invoke them;
 - model providers that hide reasoning cannot expose a thinking trace;
 - arbitrary Pi widgets, headers, footers, and terminal-rendered extension chrome are not streamed into Takomi Code.

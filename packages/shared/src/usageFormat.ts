@@ -6,6 +6,8 @@
  */
 import { UsageDay, type UsageResolution, type UsageSummaryInput } from "@t3tools/contracts";
 
+import type { DailyTotals, UsageContractMismatch } from "./usageMerge.ts";
+
 const CURRENCY = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -43,7 +45,19 @@ function trim(value: number): string {
 }
 
 export function formatPercent(share: number, digits = 1): string {
-  return `${(share * 100).toFixed(digits)}%`;
+  const percent = share * 100;
+  const smallest = 10 ** -digits;
+  if (percent > 0 && percent < smallest) return `<${smallest.toFixed(digits)}%`;
+  return `${percent.toFixed(digits)}%`;
+}
+
+export function formatUsageContractMismatch(
+  environmentLabel: string,
+  mismatch: Pick<UsageContractMismatch, "direction">,
+): string {
+  return mismatch.direction === "serverBehind"
+    ? `${environmentLabel} runs an older server version and is excluded from totals.`
+    : `This client is older than the server on ${environmentLabel}; its usage is excluded from totals.`;
 }
 
 /** `2026-08-07` to `Aug 7`. */
@@ -80,7 +94,65 @@ export function enumerateDays(sinceDay: string, untilDay: string): readonly stri
   return days;
 }
 
+export const ALL_TIME_START_DAY = UsageDay.make("1970-01-01");
+
+/** Monthly chart cells keep an all-time view from plotting thousands of daily points. */
+export function aggregateUsageMonths(daily: readonly DailyTotals[]): readonly DailyTotals[] {
+  const months = new Map<string, DailyTotals>();
+  for (const entry of daily) {
+    const day = `${entry.day.slice(0, 7)}-01`;
+    const previous = months.get(day);
+    const byProvider = new Map(previous?.byProvider);
+    for (const [provider, totals] of entry.byProvider) {
+      const old = byProvider.get(provider);
+      byProvider.set(provider, {
+        costUsd: (old?.costUsd ?? 0) + totals.costUsd,
+        totalTokens: (old?.totalTokens ?? 0) + totals.totalTokens,
+      });
+    }
+    months.set(day, {
+      day,
+      costUsd: (previous?.costUsd ?? 0) + entry.costUsd,
+      totalTokens: (previous?.totalTokens ?? 0) + entry.totalTokens,
+      byProvider,
+    });
+  }
+  return [...months.values()].sort((a, b) => a.day.localeCompare(b.day));
+}
+
+export function enumerateMonths(sinceDay: string, untilDay: string): readonly string[] {
+  const months: string[] = [];
+  const start = new Date(`${sinceDay.slice(0, 7)}-01T00:00:00Z`);
+  const end = `${untilDay.slice(0, 7)}-01`;
+  while (!Number.isNaN(start.getTime()) && start.toISOString().slice(0, 10) <= end) {
+    months.push(start.toISOString().slice(0, 10));
+    start.setUTCMonth(start.getUTCMonth() + 1);
+  }
+  return months;
+}
+
+export function formatMonthShort(day: string): string {
+  return `${formatDayShort(day).split(" ")[0]} ${day.slice(0, 4)}`;
+}
+
 const HOUR_MS = 60 * 60 * 1000;
+
+const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function dateTimeFormatter(
+  locale: string,
+  options: Intl.DateTimeFormatOptions,
+): Intl.DateTimeFormat {
+  if (options.timeZone === undefined) return new Intl.DateTimeFormat(locale, options);
+  const key = JSON.stringify([locale, options]);
+  let formatter = dateTimeFormatters.get(key);
+  if (formatter === undefined) {
+    formatter = new Intl.DateTimeFormat(locale, options);
+    if (dateTimeFormatters.size >= 16) dateTimeFormatters.clear();
+    dateTimeFormatters.set(key, formatter);
+  }
+  return formatter;
+}
 
 /** Every fixed-duration bucket start in an hourly rolling window. */
 export function enumerateHourStarts(sinceTime: string, untilTime: string): readonly string[] {
@@ -105,11 +177,11 @@ export function formatHourShort(hourStart: string, timeZone?: string): string {
   const instant = new Date(hourStart);
   if (Number.isNaN(instant.getTime())) return hourStart;
   const options = timeZone === undefined ? {} : { timeZone };
-  const hourFormat = new Intl.DateTimeFormat("en-US", {
+  const hourFormat = dateTimeFormatter("en-US", {
     ...options,
     hour: "numeric",
   });
-  const wallHourFormat = new Intl.DateTimeFormat("en-CA", {
+  const wallHourFormat = dateTimeFormatter("en-CA", {
     ...options,
     year: "numeric",
     month: "2-digit",
@@ -123,7 +195,7 @@ export function formatHourShort(hourStart: string, timeZone?: string): string {
   );
 
   if (!isRepeatedHour) return hourFormat.format(instant);
-  return new Intl.DateTimeFormat("en-US", {
+  return dateTimeFormatter("en-US", {
     ...(timeZone === undefined ? {} : { timeZone }),
     hour: "numeric",
     timeZoneName: "short",
@@ -134,7 +206,7 @@ export function formatHourShort(hourStart: string, timeZone?: string): string {
 export function formatDateTimeShort(instant: string, timeZone?: string): string {
   const date = new Date(instant);
   if (Number.isNaN(date.getTime())) return instant;
-  return new Intl.DateTimeFormat("en-US", {
+  return dateTimeFormatter("en-US", {
     ...(timeZone === undefined ? {} : { timeZone }),
     month: "short",
     day: "numeric",
@@ -154,7 +226,7 @@ export function formatRelativeHourShort(
     return formatDateTimeShort(hourStart, timeZone);
   }
 
-  const dayFormat = new Intl.DateTimeFormat("en-CA", {
+  const dayFormat = dateTimeFormatter("en-CA", {
     ...(timeZone === undefined ? {} : { timeZone }),
     year: "numeric",
     month: "2-digit",
@@ -172,7 +244,7 @@ export function formatRelativeHourShort(
 
 /**
  * The window the page requests, expressed in the viewer's own time zone so days
- * line up with what they actually experienced.
+ * line up with what they actually experienced. Zero days requests all available history.
  */
 export function makeWindow(
   days: number,
@@ -214,6 +286,14 @@ export function makeWindow(
       resolution,
       sinceTime: sinceTime.toISOString(),
       untilTime: untilTime.toISOString(),
+    };
+  }
+  if (days === 0) {
+    return {
+      sinceDay: ALL_TIME_START_DAY,
+      untilDay: UsageDay.make(untilDay),
+      timeZone,
+      resolution,
     };
   }
   // Subtracting fixed milliseconds from `now` lands on the wrong calendar day

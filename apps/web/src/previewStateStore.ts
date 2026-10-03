@@ -173,17 +173,15 @@ export function readThreadPreviewState(ref: ScopedThreadRef): ThreadPreviewState
   return appAtomRegistry.get(previewStateAtom(scopedThreadKey(ref)));
 }
 
-export function subscribeThreadPreviewState(
-  ref: ScopedThreadRef,
-  listener: (state: ThreadPreviewState, previous: ThreadPreviewState) => void,
-): () => void {
-  const atom = previewStateAtom(scopedThreadKey(ref));
-  let previous = appAtomRegistry.get(atom);
-  return appAtomRegistry.subscribe(atom, (state) => {
-    const prior = previous;
-    previous = state;
-    listener(state, prior);
-  });
+/** Refresh the authoritative list when an event stream skips a revision. */
+export function previewEventRequiresResnapshot(
+  current: Pick<ThreadPreviewState, "serverEpoch" | "serverRevision">,
+  event: Pick<PreviewEvent, "serverEpoch" | "revision">,
+): boolean {
+  return (
+    (current.serverEpoch !== null && current.serverEpoch !== event.serverEpoch) ||
+    (current.serverEpoch === event.serverEpoch && event.revision > current.serverRevision + 1)
+  );
 }
 
 export function applyPreviewServerEvent(ref: ScopedThreadRef, event: PreviewEvent): void {
@@ -470,13 +468,6 @@ export function rememberPreviewUrl(ref: ScopedThreadRef, url: string): void {
     ...current,
     recentlySeenUrls: dedupeRecentUrls(current.recentlySeenUrls, url),
   }));
-}
-
-export function removePreviewThread(ref: ScopedThreadRef): void {
-  const threadKey = scopedThreadKey(ref);
-  appAtomRegistry.set(previewStateAtom(threadKey), EMPTY_THREAD_PREVIEW_STATE);
-  syncActivePreviewThread(threadKey, EMPTY_THREAD_PREVIEW_STATE);
-  changedPreviewThreadKeys.delete(threadKey);
 }
 
 export function isPreviewSupportedInRuntime(): boolean {

@@ -5,6 +5,7 @@ import {
   ProviderDriverKind,
   type ModelCapabilities,
   type ProviderInstanceId,
+  type RuntimeMode,
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
@@ -30,20 +31,51 @@ export function getProviderModels(
   return getProviderSnapshot(providers, provider)?.models ?? [];
 }
 
-export function getProviderSnapshot(
+function getProviderSnapshot(
   providers: ReadonlyArray<ServerProvider>,
-  provider: ProviderDriverKind,
+  provider: ProviderDriverKind | ProviderInstanceId,
 ): ServerProvider | undefined {
-  const defaultInstanceId = defaultInstanceIdForDriver(provider);
+  const byInstance = providers.find((candidate) => candidate.instanceId === provider);
+  if (byInstance) return byInstance;
+  const defaultInstanceId = defaultInstanceIdForDriver(provider as ProviderDriverKind);
   return providers.find((candidate) => candidate.instanceId === defaultInstanceId);
 }
 
+// Pi reports its supported modes per instance. Keep these selectors data-driven
+// so an unavailable or future provider does not inherit Pi's restrictions.
 export function getProviderInteractionModeToggle(
   providers: ReadonlyArray<ServerProvider>,
-  provider: ProviderDriverKind,
+  provider: ProviderDriverKind | ProviderInstanceId,
 ): boolean {
-  return getProviderSnapshot(providers, provider)?.showInteractionModeToggle ?? true;
+  const snapshot = getProviderSnapshot(providers, provider);
+  if (snapshot?.capabilities) {
+    return snapshot.capabilities.interactionModes?.includes("plan") === true;
+  }
+  return snapshot?.showInteractionModeToggle ?? true;
 }
+
+export function getProviderRuntimeModes(
+  providers: ReadonlyArray<ServerProvider>,
+  provider: ProviderDriverKind | ProviderInstanceId,
+): ReadonlyArray<RuntimeMode> {
+  const snapshot = getProviderSnapshot(providers, provider);
+  return snapshot?.capabilities ? (snapshot.capabilities.runtimeModes ?? []) : runtimeModeFallback;
+}
+
+/** A persisted draft must not claim a mode its selected provider cannot run. */
+export function normalizeProviderRuntimeMode(
+  runtimeMode: RuntimeMode,
+  supportedModes: ReadonlyArray<RuntimeMode>,
+): RuntimeMode {
+  return supportedModes.includes(runtimeMode) ? runtimeMode : (supportedModes[0] ?? runtimeMode);
+}
+
+const runtimeModeFallback: ReadonlyArray<RuntimeMode> = [
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+];
 
 // Resolve an instance selection to the correlated live driver. If the
 // instance is absent, fall back to a live enabled provider instead of

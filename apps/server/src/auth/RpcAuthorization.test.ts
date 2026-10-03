@@ -8,7 +8,11 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
-import { RPC_REQUIRED_SCOPES, requiredScopeForRpcMethod } from "./RpcAuthorization.ts";
+import {
+  RPC_REQUIRED_SCOPES,
+  requiredScopeForRpcMethod,
+  requiredScopeForDeviceList,
+} from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
   it("declares exactly one scope for every RPC in the server group", () => {
@@ -38,7 +42,55 @@ describe("RPC authorization scopes", () => {
   });
 
   it("requires permission to operate on a thread before uploading feedback", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerRespondPiSecretInput)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerTakePiVaultExport)).toBe(
+      AuthOrchestrationOperateScope,
+    );
     expect(requiredScopeForRpcMethod(WS_METHODS.providerUploadFeedback)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
+  it("requires write access to import agent session history", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.agentSessionsScan)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.agentSessionsImport)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
+  it("treats Pi catalog and cloned-child ownership diagnostics as scoped reads", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerListPiSessions)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerGetPiChildLeaseDiagnostics)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
+  it("requires operate scope to attach or fork a Pi session into a thread", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerAttachPiSession)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerForkPiSession)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
+  it("treats Pi message previews as scoped reads", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerListPiSessionMessages)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
+  it("checks Pi updates as a read and syncs them as an operate", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerCheckPiSessionUpdates)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerSyncPiSessionUpdates)).toBe(
       AuthOrchestrationOperateScope,
     );
   });
@@ -61,4 +113,18 @@ describe("RPC authorization scopes", () => {
       );
     }
   });
+});
+
+it("requires operate permission for host retry while preserving read-only listing", () => {
+  expect(requiredScopeForDeviceList({})).toBe(AuthOrchestrationReadScope);
+  expect(requiredScopeForDeviceList({ retryHostId: "remote-host" })).toBe(
+    AuthOrchestrationOperateScope,
+  );
+});
+
+it("requires operate permission for tool updates even alongside a read-only check", () => {
+  expect(requiredScopeForDeviceList({ updateTool: "agent", inspectOnly: true })).toBe(
+    AuthOrchestrationOperateScope,
+  );
+  expect(requiredScopeForDeviceList({ updateTool: "hub" })).toBe(AuthOrchestrationOperateScope);
 });
