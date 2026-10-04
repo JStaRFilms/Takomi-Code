@@ -6,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
   NodeId,
+  OrchestrationV2TurnItem,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
@@ -54,6 +55,7 @@ const testLayer = Layer.mergeAll(NodeServices.layer, IdAllocator.layer, serverCo
 
 const decodeJsonLine = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 const encodeJsonLine = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeTurnItem = Schema.encodeEffect(OrchestrationV2TurnItem);
 
 const PI_INSTANCE_ID = ProviderInstanceId.make("pi");
 const THREAD_ID = ThreadId.make("thread-pi-test");
@@ -1421,38 +1423,173 @@ describe("PiAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  it.effect("offers an explicit empty value for extension input dialogs", () =>
+  it.effect(
+    "offers free-text extension input without synthetic options and accepts an empty value",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* fake.emit({
+          type: "extension_ui_request",
+          id: "ui-input",
+          method: "input",
+          title: "Optional value",
+        });
+        const event = yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+        );
+        assert.isTrue(
+          event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+        );
+        if (event.type !== "turn_item.updated" || event.turnItem.type !== "user_input_request")
+          return;
+        assert.deepEqual(event.turnItem.questions[0]?.options, []);
+        yield* runtime.respondToRuntimeRequest({
+          requestId: event.turnItem.requestId,
+          answers: { "ui-input": "" },
+        });
+        const response = yield* fake.takeRequest("extension_ui_response");
+        assert.equal(response["value"], "");
+        assert.isUndefined(response["cancelled"]);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps the custom-answer follow-up valid when Pi sends an empty placeholder", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi;
       const { runtime, takeEvent } = yield* openRuntime(fake);
-      yield* runtime.ensureThread({
+      const providerThread = yield* runtime.ensureThread({
         threadId: THREAD_ID,
         modelSelection: modelSelection("default"),
         runtimePolicy,
       });
+      yield* startTurn(runtime, providerThread);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
       yield* fake.emit({
         type: "extension_ui_request",
-        id: "ui-input",
-        method: "input",
-        title: "Optional value",
+        id: "ui-choice",
+        method: "select",
+        title: "[Task] What should I do?",
+        options: ["1. First", "2. Type something."],
       });
-      const event = yield* takeEvent(
+      const choice = yield* takeEvent(
         (event) =>
           event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
       );
-      assert.isTrue(
-        event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
-      );
-      if (event.type !== "turn_item.updated" || event.turnItem.type !== "user_input_request")
-        return;
-      assert.equal(event.turnItem.questions[0]?.options[0]?.value, "");
+      if (choice.type !== "turn_item.updated" || choice.turnItem.type !== "user_input_request")
+        throw new Error("Expected choice request");
       yield* runtime.respondToRuntimeRequest({
-        requestId: event.turnItem.requestId,
-        answers: { "ui-input": "" },
+        requestId: choice.turnItem.requestId,
+        answers: { "ui-choice": "2. Type something." },
+      });
+      assert.equal(
+        (yield* fake.takeRequest("extension_ui_response"))["value"],
+        "2. Type something.",
+      );
+      const title = "[Task] What should I do?\n\nType your answer:";
+      yield* fake.emit({
+        type: "extension_ui_request",
+        id: "ui-custom",
+        method: "input",
+        title,
+        placeholder: "",
+      });
+      const custom = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "user_input_request" &&
+          event.turnItem.nativeItemRef?.nativeId === "ui-custom",
+      );
+      if (custom.type !== "turn_item.updated" || custom.turnItem.type !== "user_input_request")
+        throw new Error("Expected custom input request");
+      // Ingestion encodes this contract before committing the item to the thread.
+      yield* encodeTurnItem(custom.turnItem);
+      assert.equal(custom.turnItem.questions[0]?.question, title);
+      assert.deepEqual(custom.turnItem.questions[0]?.options, []);
+      yield* runtime.respondToRuntimeRequest({
+        requestId: custom.turnItem.requestId,
+        answers: { "ui-custom": "My own answer" },
       });
       const response = yield* fake.takeRequest("extension_ui_response");
-      assert.equal(response["value"], "");
-      assert.isUndefined(response["cancelled"]);
+      assert.equal(response["id"], "ui-custom");
+      assert.equal(response["value"], "My own answer");
+      yield* fake.emit({ type: "agent_end", messages: [], willRetry: false });
+      yield* fake.emit({ type: "agent_settled" });
+      const customRequestId = custom.turnItem.requestId;
+      const afterAnswer: ProviderAdapterV2Event[] = [];
+      const terminal = yield* takeEvent((event) => {
+        afterAnswer.push(event);
+        return event.type === "turn.terminal";
+      });
+      // The app has already committed the answer history. Pi must not replace it
+      // with its original unanswered request or timeline item after delivery.
+      assert.isFalse(
+        afterAnswer.some(
+          (event) =>
+            (event.type === "runtime_request.updated" &&
+              event.runtimeRequest.id === customRequestId) ||
+            (event.type === "turn_item.updated" && event.turnItem.id === custom.turnItem.id),
+        ),
+      );
+      assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
+      yield* startTurn(runtime, providerThread);
+      assert.equal((yield* fake.takeRequest("prompt"))["type"], "prompt");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("sends a typed answer through Pi's select-then-input custom option", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, providerThread);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({ type: "agent_start" });
+      yield* fake.emit({
+        type: "extension_ui_request",
+        id: "ui-choice",
+        method: "select",
+        title: "[Answer path] Which way?",
+        options: ["1. First — Use the default", "2. Type something."],
+      });
+      const choice = yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+      );
+      if (choice.type !== "turn_item.updated" || choice.turnItem.type !== "user_input_request")
+        throw new Error("Expected choice request");
+      yield* runtime.respondToRuntimeRequest({
+        requestId: choice.turnItem.requestId,
+        answers: { "ui-choice": "My own answer" },
+      });
+      assert.equal(
+        (yield* fake.takeRequest("extension_ui_response"))["value"],
+        "2. Type something.",
+      );
+      yield* fake.emit({
+        type: "extension_ui_request",
+        id: "ui-custom",
+        method: "input",
+        title: "[Answer path] Which way?\n\nType your answer:",
+      });
+      assert.equal((yield* fake.takeRequest("extension_ui_response"))["value"], "My own answer");
+      yield* fake.emit({ type: "agent_end", messages: [], willRetry: false });
+      yield* fake.emit({ type: "agent_settled" });
+      const terminal = yield* takeEvent((event) => event.type === "turn.terminal");
+      assert.isTrue(terminal.type === "turn.terminal" && terminal.status === "completed");
+      yield* startTurn(runtime, providerThread);
+      assert.equal((yield* fake.takeRequest("prompt"))["type"], "prompt");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

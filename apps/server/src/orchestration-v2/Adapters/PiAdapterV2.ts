@@ -484,6 +484,7 @@ export function makePiAdapterV2(
         ProviderAdapter.ProviderAdapterV2Error | Cause.Done
       >();
       const pendingPrompts = new Map<string, PendingPiPrompt>();
+      let customSelectReply: { title: string; value: string; turnId: string | null } | null = null;
       let pendingVaultCommand: { turnId: string; name: string } | null = null;
       let pendingVaultExport: { id: string; key: string; path: string } | null = null;
       let sessionAlive = true;
@@ -1233,6 +1234,7 @@ export function makePiAdapterV2(
         Effect.gen(function* () {
           const pending = Array.from(pendingPrompts.values());
           pendingPrompts.clear();
+          customSelectReply = null;
           yield* Effect.forEach(pending, (prompt) => cancelPrompt(prompt, resolvedAt), {
             discard: true,
           });
@@ -1280,6 +1282,23 @@ export function makePiAdapterV2(
         }
         if (nativeRequestId === undefined) return;
         const approvalTitle = recordString(event, "title") ?? "";
+        if (customSelectReply !== null) {
+          const reply = customSelectReply;
+          customSelectReply = null;
+          if (
+            method === "input" &&
+            (threadState?.activeTurn?.providerTurn.id ?? null) === reply.turnId &&
+            approvalTitle.startsWith(`${reply.title}\n\n`) &&
+            approvalTitle.endsWith("Type your answer:")
+          ) {
+            yield* connection.send({
+              type: "extension_ui_response",
+              id: nativeRequestId,
+              value: reply.value,
+            });
+            return;
+          }
+        }
         const approvalKey = `${approvalTitle.length}:${approvalTitle}${recordString(event, "message") ?? ""}`;
         if (method === "confirm" && sessionApprovals.has(approvalKey)) {
           yield* connection.send({
@@ -2688,17 +2707,44 @@ export function makePiAdapterV2(
               );
             }
             const response = piUiResponse(pending, requestInput.decision, requestInput.answers);
+            const answer = requestInput.answers?.[pending.questionId];
+            const question =
+              pending.method === "select" && pending.turnItem.type === "user_input_request"
+                ? pending.turnItem.questions[0]
+                : undefined;
+            const options = question?.options ?? [];
+            // The questionnaire RPC fallback expects the sentinel choice first, then ui.input.
+            // T3's composer can submit the custom text in the first dialog instead.
+            const lastOption = options.at(-1)?.value;
+            const customAnswer =
+              typeof answer === "string" &&
+              answer.length > 0 &&
+              typeof lastOption === "string" &&
+              /^\d+\. Type something\.$/.test(lastOption) &&
+              !options.some((option) => (option.value ?? option.label) === answer)
+                ? answer
+                : null;
             yield* connection.send({
               type: "extension_ui_response",
               id: pending.nativeRequestId,
-              ...response,
+              ...(customAnswer === null ? response : { value: lastOption }),
             });
+            if (customAnswer !== null) {
+              customSelectReply = {
+                title: (pending.turnItem.title ?? "").split("\n\n")[0] ?? "",
+                value: customAnswer,
+                turnId: pending.node.providerTurnId,
+              };
+            }
             // Dropped only once Pi has the answer, so a failed send leaves the
             // request retryable and still cancellable during teardown.
             pendingPrompts.delete(String(requestInput.requestId));
             if (pending.method === "confirm" && requestInput.decision === "acceptForSession") {
               sessionApprovals.add(pending.approvalKey);
             }
+            // V2 commits the answer and attachments before calling the adapter.
+            // Re-emitting the original input request would erase that history.
+            if (pending.method !== "confirm") return;
             const resolvedAt = yield* DateTime.now;
             pending.runtimeRequest = {
               ...pending.runtimeRequest,
@@ -3152,18 +3198,14 @@ function piQuestion(
       ? event["options"]
           .filter((option): option is string => typeof option === "string")
           .map((option) => ({ label: option || "Empty value", description: option, value: option }))
-      : [
-          {
-            label: "Submit empty value",
-            description: "Send an empty string to the extension.",
-            value: "",
-          },
-        ];
+      : [];
   // The user-input contract has no prefill field, so an editor dialog's
   // prefill is surfaced inside the question text; without it the user would
   // edit blind against content they cannot see.
   const prefill = method === "editor" ? recordString(event, "prefill") : undefined;
-  const question = recordString(event, "message") ?? recordString(event, "placeholder") ?? title;
+  // Pi's custom-answer input sends an empty placeholder, not question text.
+  const question =
+    recordString(event, "message")?.trim() || recordString(event, "placeholder")?.trim() || title;
   return {
     id: questionId,
     header: title,
