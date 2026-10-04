@@ -1579,6 +1579,60 @@ describe("DesktopWindow", () => {
     }),
   );
 
+  it.effect("shows the startup splash while the backend is still cold-booting", () =>
+    Effect.gen(function* () {
+      const splash = makeFakeBrowserWindow();
+      const scenario = yield* makeSplashScenario([splash.window]);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+
+        yield* desktopWindow.showStartupSplash;
+
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+        assert.equal(splash.loadURL.mock.calls.length, 1);
+        const loadCalls = splash.loadURL.mock.calls as unknown as unknown[][];
+        const loadedUrl = decodeURIComponent(String(loadCalls[0]?.[0] ?? ""));
+        assert.isTrue(loadedUrl.includes("Starting"));
+        assert.isFalse(loadedUrl.includes("WSL"));
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect("startup splash is a no-op once the backend is ready", () =>
+    Effect.gen(function* () {
+      const main = makeFakeBrowserWindow();
+      const scenario = yield* makeSplashScenario([main.window]);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+
+        yield* desktopWindow.showStartupSplash;
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
+  it.effect("startup splash does not duplicate an existing splash", () =>
+    Effect.gen(function* () {
+      const splash = makeFakeBrowserWindow();
+      const scenario = yield* makeSplashScenario([splash.window]);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+
+        yield* desktopWindow.showConnectingSplash;
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+
+        yield* desktopWindow.showStartupSplash;
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
   it.effect("does not reopen a closed main window for a completed capture", () =>
     Effect.gen(function* () {
       const fakeWindow = makeFakeBrowserWindow();

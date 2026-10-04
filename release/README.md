@@ -93,12 +93,44 @@ Android only:
 vp run dist:local:android
 ```
 
-The Android build requires Java and the Android SDK. It uses the managed short paths
-`C:\takomi-local-build` and `C:\tp` to avoid Windows React Native/CMake path failures. The output is
-a standalone arm64 preview APK, signed with the generated debug key for direct installation. It
-does not require Metro. If Gradle owns a locked generated directory, stop its daemon with
-`C:\takomi-local-build\apps\mobile\android\gradlew.bat --stop`; do not kill Java or Gradle by broad
-process matching.
+The Android build requires Java and the Android SDK (`ANDROID_HOME` or
+`%LOCALAPPDATA%\Android\Sdk`). It uses the managed worktree `C:\takomi-local-build` and the
+`C:\tp` pnpm virtual store. The script **resets and cleans that worktree**, then copies tracked
+files and root `.env` files from this checkout. Before running it, inspect both
+`git status --short` here and `git -C C:\takomi-local-build status --short` if that worktree
+exists. Back up any work in the managed worktree first; a dirty build worktree is not safe to
+reuse without deciding what to discard. The output is a standalone arm64 preview APK, signed
+with the generated debug key for direct installation. It does not require Metro.
+
+### Android build failures on Windows
+
+The `2.0.0` preview APK in this directory needed a **one-off build at `C:\b`** after the standard
+script hit Windows CMake object-path limits. That build also used a local Expo Widgets patch.
+Neither the shorter path nor that patch is in `scripts/local-build.ts`. **Do not assume
+`vp run dist:local:android` reproduces that APK**; the script still uses
+`C:\takomi-local-build`. A future release should put a reproducible fix in the build script,
+not silently reuse an untracked patch or call the old APK a successful standard build.
+
+If Gradle reports `File path too long`, `Filename longer than 260 characters`, or an object-file
+path under a React Native native module, check that the generated source and CMake build paths
+are short. The `C:\tp` virtual store shortens dependency paths, but does not shorten the worktree
+part of `C:\takomi-local-build\apps\mobile\android\...`. Moving only the APK output or raising
+`CMAKE_OBJECT_PATH_MAX` does not make Windows accept an already overlong object path. Stop and
+fix the build at a shorter checkout path; don't patch installed dependencies in the main checkout
+and don't report a successful release until the fix can be repeated from clean source.
+
+If Gradle cannot clean a generated directory because a daemon has it open, stop the daemon from
+the managed worktree, then retry only after checking what the script will reset:
+
+```powershell
+& C:\takomi-local-build\apps\mobile\android\gradlew.bat --stop
+```
+
+Do not kill Java or Gradle by broad process matching. Once the build succeeds, check that the APK
+exists at the filename printed by `[local-build]` and verify its signature with the Android SDK's
+`apksigner verify --verbose --print-certs <path-to-apk>`. A successful Gradle exit without a copied
+APK is not a finished build; neither a debug signature nor an APK file proves the app runs on a
+device.
 
 ## Windows desktop build troubleshooting
 

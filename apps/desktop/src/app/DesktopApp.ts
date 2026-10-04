@@ -36,6 +36,10 @@ import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
 const DEFAULT_DESKTOP_BACKEND_PORT = 3773;
 const MAX_TCP_PORT = 65_535;
 const DESKTOP_BACKEND_PORT_PROBE_HOSTS = ["127.0.0.1", "0.0.0.0", "::"] as const;
+// Grace period before the startup splash appears while the primary backend is
+// still cold-booting. Healthy starts (even cold ones) report ready well inside
+// it; a backend stuck in migration or on slow I/O blows past it.
+const STARTUP_SPLASH_GRACE_PERIOD = Duration.seconds(8);
 
 const makeDesktopRunId = Crypto.Crypto.pipe(
   Effect.flatMap((crypto) => crypto.randomUUIDv4),
@@ -245,6 +249,16 @@ const bootstrap = Effect.gen(function* () {
     }
     yield* primaryBackend.start;
     yield* logBootstrapInfo("bootstrap backend start requested");
+    // A sick backend (cold migration, slow disk) can take minutes to report
+    // ready while the app sits headless — indistinguishable from a dead app.
+    // Show the startup splash if readiness still hasn't arrived after a short
+    // grace period. showStartupSplash no-ops once the backend is ready or any
+    // window exists, so healthy fast starts never flash it.
+    yield* Effect.forkScoped(
+      Effect.sleep(STARTUP_SPLASH_GRACE_PERIOD).pipe(
+        Effect.andThen(desktopWindow.showStartupSplash),
+      ),
+    );
     yield* appActivation.start.pipe(
       Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
       Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
