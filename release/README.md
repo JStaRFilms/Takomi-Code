@@ -53,15 +53,15 @@ builds manually.
      Replace `1.2.4` with the intended new version. Do not reuse a published version for a
      materially different public build.
 
-   - **Mobile:** update `version` in `apps/mobile/app.config.ts`, for example from `1.3.1` to
-     `1.3.2`. The local APK uses that value in its filename. Do not manually change Android
+   - **Mobile:** update `version` in `apps/mobile/app.config.ts` when preparing a new release.
+     The local APK uses that value in its filename. Do not manually change Android
      `versionCode` or iOS `buildNumber` for EAS production builds: EAS owns those remote build
      numbers and increments them through `apps/mobile/eas.json`.
 
 4. Review public configuration in the repository-root `.env` or `.env.local` when the build needs
    T3 Connect, Clerk, or relay configuration. Never commit secrets.
 
-Current source versions match upstream: desktop `0.0.44` and mobile `1.3.1`.
+Current source versions match the pinned upstream merge: desktop `0.0.45` and mobile `2.0.0`.
 Desktop builds replace the previous fork-only `1.2.4` numbering. Install this build manually;
 a version-based updater would treat it as a downgrade.
 

@@ -1,4 +1,4 @@
-import { PI_VAULT_ARCHIVE_MAX_BYTES, type ApprovalRequestId } from "@t3tools/contracts";
+import { PI_VAULT_ARCHIVE_MAX_BYTES, type RuntimeRequestId } from "@t3tools/contracts";
 import { beginForegroundHandoff } from "../../lib/foreground-handoff";
 import { useRef, useState } from "react";
 import { View } from "react-native";
@@ -7,14 +7,14 @@ import { AppText as Text, AppTextInput as TextInput } from "../../components/App
 import { RequestActionButton } from "./RequestActionButton";
 
 interface PiSecretInputCardProps {
-  requestId: ApprovalRequestId;
+  requestId: RuntimeRequestId;
   header: string;
   question: string;
   fileInput?: boolean;
   unavailable: boolean;
   onInputFocusChange?: (focused: boolean) => void;
   onRespond: (
-    requestId: ApprovalRequestId,
+    requestId: RuntimeRequestId,
     response: { value: string } | { cancelled: true },
   ) => Promise<boolean>;
 }

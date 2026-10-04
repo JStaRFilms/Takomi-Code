@@ -48,11 +48,37 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
 
     const resolved = yield* registry.resolve(token);
     expect(resolved?.threadId).toBe(threadId);
+    expect(resolved?.capabilities).toEqual(
+      new Set(["preview", "orchestration", "worktree", "pull-requests"]),
+    );
 
     yield* registry.revokeThread(threadId);
     expect(yield* registry.resolve(token)).toBeUndefined();
 
     timestamp += 2_000;
+  }),
+);
+
+it.effect("rejects another server's token even when both serve MCP", () =>
+  Effect.gen(function* () {
+    const takomi = yield* makeRegistry(() => 1_000, makeFakeHttpServer("127.0.0.1", 43124));
+    const t3 = yield* makeRegistry(() => 1_000, makeFakeHttpServer("127.0.0.1", 43123));
+    const takomiSession = yield* takomi.issue({
+      threadId: ThreadId.make("takomi-thread"),
+      providerInstanceId: ProviderInstanceId.make("pi"),
+    });
+    const t3Session = yield* t3.issue({
+      threadId: ThreadId.make("t3-thread"),
+      providerInstanceId: ProviderInstanceId.make("pi"),
+    });
+    const takomiToken = takomiSession.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const t3Token = t3Session.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+    expect(takomiSession.config.endpoint).toBe("http://127.0.0.1:43124/mcp");
+    expect(t3Session.config.endpoint).toBe("http://127.0.0.1:43123/mcp");
+    expect(yield* takomi.resolve(takomiToken)).toBeDefined();
+    expect(yield* t3.resolve(takomiToken)).toBeUndefined();
+    expect(yield* takomi.resolve(t3Token)).toBeUndefined();
   }),
 );
 
@@ -79,9 +105,23 @@ it.effect("always grants pull-requests and gates browser and device access indep
         .resolve(issued.config.authorizationHeader.replace(/^Bearer\s+/, ""))
         .pipe(Effect.map((scope) => [...(scope?.capabilities ?? [])].sort()));
 
-    expect(yield* capabilitiesOf(withPreview)).toEqual(["preview", "pull-requests"]);
-    expect(yield* capabilitiesOf(withoutPreview)).toEqual(["pull-requests"]);
-    expect(yield* capabilitiesOf(withDevice)).toEqual(["device", "pull-requests"]);
+    expect(yield* capabilitiesOf(withPreview)).toEqual([
+      "orchestration",
+      "preview",
+      "pull-requests",
+      "worktree",
+    ]);
+    expect(yield* capabilitiesOf(withoutPreview)).toEqual([
+      "orchestration",
+      "pull-requests",
+      "worktree",
+    ]);
+    expect(yield* capabilitiesOf(withDevice)).toEqual([
+      "device",
+      "orchestration",
+      "pull-requests",
+      "worktree",
+    ]);
   }),
 );
 

@@ -29,7 +29,7 @@ flowchart LR
 - **Session catalog boundary:** `apps/server/src/provider/Layers/PiSessionCatalog.ts`
 - **Versioned host utilities:** `packages/takomi-pi-host/`
 
-The provider driver kind remains `pi` for compatibility, but its visible product/provider name is `Takomi`. Pi is treated as the internal runtime harness rather than a separate visible provider.
+The provider driver kind remains `pi` for compatibility. New and existing environments receive an enabled `takomi` instance with display name `Takomi` once; the legacy `pi` instance remains opt-in. Both use the Pi RPC executable and retain distinct instance IDs for thread bindings. A persisted migration marker preserves later explicit disables and removals. Add provider offers separate Takomi and Pi choices backed by the same driver. By default the instances share Pi home, and Vault stores credentials under the OS user's `~/.pi/agent/takomi-vault` even when Takomi Code uses a separate app data directory.
 
 ## Data flow
 

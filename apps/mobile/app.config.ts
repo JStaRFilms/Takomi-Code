@@ -15,6 +15,10 @@ const runtimeVersionPolicy =
   (APP_VARIANT === "development" ? "appVersion" : "fingerprint");
 
 const personalTeamBundleIdentifier = repoEnv.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
+const expoProjectId = repoEnv.TAKOMI_EXPO_PROJECT_ID?.trim();
+const expoOwner = repoEnv.TAKOMI_EXPO_OWNER?.trim();
+const iosAppleTeamId = repoEnv.TAKOMI_IOS_APPLE_TEAM_ID?.trim();
+const clerkRelyingParty = repoEnv.TAKOMI_CLERK_RELYING_PARTY?.trim();
 const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
 
 const fromRepoRoot = (relativePath: string) => `../../${relativePath}`;
@@ -74,26 +78,23 @@ const RELEASE_ASSETS = {
 const VARIANT_CONFIG = {
   development: {
     appName: "Takomi Code Dev",
-    scheme: "t3code-dev",
-    iosBundleIdentifier: "com.t3tools.t3code.dev",
-    androidPackage: "com.t3tools.t3code.dev",
-    relyingParty: "clerk.t3.codes",
+    scheme: "takomi-code-dev",
+    iosBundleIdentifier: "com.jstarstudios.takomicode.dev",
+    androidPackage: "com.jstarstudios.takomicode.dev",
     assets: DEVELOPMENT_ASSETS,
   },
   preview: {
     appName: "Takomi Code Preview",
-    scheme: "t3code-preview",
-    iosBundleIdentifier: "com.t3tools.t3code.preview",
-    androidPackage: "com.t3tools.t3code.preview",
-    relyingParty: "clerk.t3.codes",
+    scheme: "takomi-code-preview",
+    iosBundleIdentifier: "com.jstarstudios.takomicode.preview",
+    androidPackage: "com.jstarstudios.takomicode.preview",
     assets: PREVIEW_ASSETS,
   },
   production: {
     appName: "Takomi Code",
-    scheme: "t3code",
-    iosBundleIdentifier: "com.t3tools.t3code",
-    androidPackage: "com.t3tools.t3code",
-    relyingParty: "clerk.t3.codes",
+    scheme: "takomi-code",
+    iosBundleIdentifier: "com.jstarstudios.takomicode",
+    androidPackage: "com.jstarstudios.takomicode",
     assets: RELEASE_ASSETS,
   },
 } as const;
@@ -129,51 +130,66 @@ const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
     // Agent activity can update many times an hour; without the
     // frequent-updates entitlement iOS throttles the update budget sooner.
     frequentUpdates: true,
+    enableAndroid: true,
     widgets: [
       {
         name: "SubscriptionUsage",
         displayName: "Subscription usage",
         description: "Subscription quotas from your connected T3 Code environments.",
-        configuration: {
-          title: "Subscription usage",
-          description:
-            "Both shows Session and Weekly when available. The Lock Screen shows the tightest selected limit.",
-          parameters: {
-            codexPeriod: {
-              title: "Codex limits",
-              type: "enum",
-              default: "auto",
-              values: [
-                { name: "Both", value: "auto" },
-                { name: "Session", value: "session" },
-                { name: "Weekly", value: "weekly" },
-              ],
-            },
-            claudePeriod: {
-              title: "Claude limits",
-              type: "enum",
-              default: "auto",
-              values: [
-                { name: "Both", value: "auto" },
-                { name: "Session", value: "session" },
-                { name: "Weekly", value: "weekly" },
-              ],
+        ios: {
+          configuration: {
+            title: "Subscription usage",
+            description:
+              "Both shows Session and Weekly when available. The Lock Screen shows the tightest selected limit.",
+            parameters: {
+              codexPeriod: {
+                title: "Codex limits",
+                type: "enum",
+                default: "auto",
+                values: [
+                  { name: "Both", value: "auto" },
+                  { name: "Session", value: "session" },
+                  { name: "Weekly", value: "weekly" },
+                ],
+              },
+              claudePeriod: {
+                title: "Claude limits",
+                type: "enum",
+                default: "auto",
+                values: [
+                  { name: "Both", value: "auto" },
+                  { name: "Session", value: "session" },
+                  { name: "Weekly", value: "weekly" },
+                ],
+              },
             },
           },
+          supportedFamilies: [
+            "systemSmall",
+            "systemMedium",
+            "systemLarge",
+            "systemExtraLarge",
+            "accessoryRectangular",
+          ],
         },
-        supportedFamilies: [
-          "systemSmall",
-          "systemMedium",
-          "systemLarge",
-          "systemExtraLarge",
-          "accessoryRectangular",
-        ],
+        android: {
+          minWidth: 250,
+          minHeight: 180,
+          targetCellWidth: 4,
+          targetCellHeight: 3,
+          resizeMode: "both",
+          // Embeds the layout in the APK so the widget renders before the app
+          // has run once; the app replaces it with stored props on publish.
+          initialLayout: "./src/widgets/SubscriptionUsage.android.tsx",
+        },
       },
       {
         name: "AgentActivity",
         displayName: "Agent Activity",
         description: "Shows the current state of active Takomi Code agents.",
-        supportedFamilies: ["systemSmall", "systemMedium", "accessoryRectangular"],
+        // Live Activity companion; there is no Android presentation for it.
+        android: null,
+        ios: { supportedFamilies: ["systemSmall", "systemMedium", "accessoryRectangular"] },
       },
     ],
   },
@@ -211,10 +227,10 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
 
 const config: ExpoConfig = {
   name: variant.appName,
-  slug: "t3-code",
+  slug: "takomi-code",
   platforms: ["ios", "android"],
   scheme: variant.scheme,
-  version: "1.3.1",
+  version: "2.0.0",
   runtimeVersion: {
     // Development manifests resolve on every launch, so avoid fingerprint's
     // expensive native-project calculation there. Preview and production stay
@@ -225,8 +241,8 @@ const config: ExpoConfig = {
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+    enabled: Boolean(expoProjectId) && repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
+    ...(expoProjectId ? { url: `https://u.expo.dev/${expoProjectId}` } : {}),
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },
@@ -238,14 +254,15 @@ const config: ExpoConfig = {
     requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
     bundleIdentifier: iosBundleIdentifier,
     buildNumber: "2",
-    // Pin code signing to the T3 Tools team so non-interactive `expo run:ios`
-    // does not fall back to a personal team (which cannot sign app groups,
-    // Sign in with Apple, or push notification entitlements).
-    appleTeamId: "ARK85ZXQ4Z",
-    associatedDomains: [
-      `applinks:${variant.relyingParty}`,
-      `webcredentials:${variant.relyingParty}`,
-    ],
+    ...(iosAppleTeamId ? { appleTeamId: iosAppleTeamId } : {}),
+    ...(clerkRelyingParty
+      ? {
+          associatedDomains: [
+            `applinks:${clerkRelyingParty}`,
+            `webcredentials:${clerkRelyingParty}`,
+          ],
+        }
+      : {}),
     entitlements: {
       "keychain-access-groups": [`$(AppIdentifierPrefix)${variant.iosBundleIdentifier}`],
     },
@@ -410,6 +427,9 @@ const config: ExpoConfig = {
         android: {
           // Keep the supported floor explicit and covered by native notification tests.
           minSdkVersion: 24,
+          // kotlinx-io uses Kotlin 2.3's return-value checker annotation, while
+          // SDK 58 builds with Kotlin 2.2. It has no runtime behavior.
+          extraProguardRules: "-dontwarn kotlin.MustUseReturnValues",
         },
         ios: {
           deploymentTarget: "18.0",
@@ -428,7 +448,6 @@ const config: ExpoConfig = {
     // would delete the asset catalog) and its xcodeproj mod creates the widget
     // target (which must exist before the compile phase can be attached).
     ...(!isIosPersonalTeamBuild ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
-    "./plugins/withIosSceneLifecycle.cjs",
     "./plugins/withAndroidCleartextTraffic.cjs",
     "./plugins/withAndroidGradleHeap.cjs",
     "./plugins/withAndroidInputBackground.cjs",
@@ -462,11 +481,9 @@ const config: ExpoConfig = {
       tracesDataset: repoEnv.EXPO_PUBLIC_OTLP_TRACES_DATASET ?? null,
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
-    eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
-    },
+    ...(expoProjectId ? { eas: { projectId: expoProjectId } } : {}),
   },
-  owner: "pingdotgg",
+  ...(expoOwner ? { owner: expoOwner } : {}),
 };
 
 export default config;

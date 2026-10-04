@@ -63,14 +63,11 @@
     "v2-preview": {
       "extends": "production",
       "android": {
-        "track": "alpha",
+        "track": "v2",
         "releaseStatus": "completed"
       }
     },
     "production": {
-      "ios": {
-        "ascAppId": "6787819824"
-      },
       "android": {
         "track": "internal"
       }

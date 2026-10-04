@@ -1,13 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { reconcileTakomiLivenessStatus, subagentPresentationIdentity } from "./TakomiInspector";
-
-describe("subagentPresentationIdentity", () => {
-  it("prefers Pi's native presentation ID and only falls back to result-N", () => {
-    expect(subagentPresentationIdentity("child-native", 0)).toBe("child-native");
-    expect(subagentPresentationIdentity("", 2)).toBe("result-2");
-  });
-});
+import { reconcileTakomiLivenessStatus } from "./TakomiInspector";
 
 describe("reconcileTakomiLivenessStatus", () => {
   it("interrupts stale active statuses after the Pi session disconnects", () => {

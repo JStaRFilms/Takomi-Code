@@ -67,29 +67,29 @@ vi.mock("./use-thread-selection", () => ({
   }),
 }));
 vi.mock("./use-thread-detail", () => ({
-  useSelectedThreadDetail: () => ({
-    activities: [
+  useSelectedThreadPendingRequests: () => ({
+    approvals: [],
+    userInputs: [
       {
-        id: "request-activity",
-        kind: "user-input.requested",
+        requestId: "request-1",
         createdAt: "2026-09-08T00:00:00Z",
-        payload: {
-          requestId: "request-1",
-          questions: ["first", "second"].map((id) => ({
-            id,
-            header: id,
-            question: `Attach ${id} file`,
-            options: [],
-            allowCustomAnswer: true,
-            ...(fixture.sensitive ? { sensitive: true } : {}),
-          })),
-        },
+        responseCapability: "live",
+        dismissible: false,
+        questions: ["first", "second"].map((id) => ({
+          id,
+          header: id,
+          question: `Attach ${id} file`,
+          options: [],
+          allowCustomAnswer: true,
+          multiSelect: false,
+          ...(fixture.sensitive ? { sensitive: true } : {}),
+        })),
       },
     ],
   }),
 }));
 
-import { ApprovalRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { ApprovalRequestId, EnvironmentId, RuntimeRequestId, ThreadId } from "@t3tools/contracts";
 import { questionAttachmentDraftKey } from "./question-attachments";
 import { useSelectedThreadRequests } from "./use-selected-thread-requests";
 
@@ -109,7 +109,7 @@ const key = (question: string) =>
   questionAttachmentDraftKey(
     environmentId,
     ThreadId.make("thread-1"),
-    ApprovalRequestId.make("request-1"),
+    RuntimeRequestId.make("request-1"),
     question,
   );
 function submitButtonMarkup() {
@@ -148,9 +148,9 @@ describe("sensitive user input", () => {
     const requests = handlers();
     const question = requests.activePendingUserInput?.questions[0];
     if (!question) throw new Error("Expected a pending question");
-    requests.onSelectUserInputOption(ApprovalRequestId.make("request-1"), question, "option");
+    requests.onSelectUserInputOption(RuntimeRequestId.make("request-1"), question, "option");
     requests.onChangeUserInputCustomAnswer(
-      ApprovalRequestId.make("request-1"),
+      RuntimeRequestId.make("request-1"),
       "first",
       "credential",
     );
@@ -158,7 +158,7 @@ describe("sensitive user input", () => {
     await requests.onDismissUserInput();
     expect(fixture.commands).toEqual([]);
     expect(
-      await requests.onRespondPiSecret(ApprovalRequestId.make("request-1"), {
+      await requests.onRespondPiSecret(RuntimeRequestId.make("request-1"), {
         value: "credential",
       }),
     ).toBe(true);
@@ -176,9 +176,9 @@ describe("sensitive user input", () => {
       },
     ]);
     fixture.commands = [];
-    await requests.onRespondPiSecret(ApprovalRequestId.make("other"), { cancelled: true });
+    await requests.onRespondPiSecret(RuntimeRequestId.make("other"), { cancelled: true });
     expect(fixture.commands).toEqual([]);
-    await requests.onRespondPiSecret(ApprovalRequestId.make("request-1"), { cancelled: true });
+    await requests.onRespondPiSecret(RuntimeRequestId.make("request-1"), { cancelled: true });
     expect(fixture.commands).toEqual([
       {
         command: fixture.activeCommand,

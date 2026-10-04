@@ -101,13 +101,17 @@ The preview APK:
 - connects to a reachable Takomi Code server over LAN, Tailscale, or another configured route;
 - uses server provider snapshots, models, questions, and runtime events;
 - is an arm64 standalone release build with an embedded JavaScript bundle;
-- uses the preview application identity `com.t3tools.t3code.preview`;
+- uses the preview application identity `com.jstarstudios.takomicode.preview`;
 - is signed with a generated debug key for direct installation only.
 
 Visible app names are `Takomi Code Dev`, `Takomi Code Preview`, and `Takomi Code` by channel.
-Package IDs, URL schemes, Expo owner/project/update settings, and Clerk relying-party configuration
-remain upstream-compatible. They must move to Takomi-owned infrastructure before public store
-release.
+Package IDs use the `com.jstarstudios.takomicode` namespace and URL schemes use `takomi-code`.
+Expo updates are disabled until `TAKOMI_EXPO_PROJECT_ID` is supplied; `TAKOMI_EXPO_OWNER`,
+`TAKOMI_IOS_APPLE_TEAM_ID`, and `TAKOMI_CLERK_RELYING_PARTY` are optional configuration. No
+upstream Expo account, Apple team, store app ID, or Clerk relying party is embedded. EAS workflows
+also require `TAKOMI_MOBILE_RELEASE_ENABLED=true`, repository variable `TAKOMI_EXPO_PROJECT_ID`,
+and secret `TAKOMI_EXPO_TOKEN`; setting these up is a separate release decision. Changing the public
+website later does not require changing the mobile package IDs.
 
 ## Managed Android build workspace
 
@@ -151,8 +155,7 @@ Metro.
 
 Before distributing the Android app publicly:
 
-- migrate package IDs and URL schemes to Takomi-owned values;
-- create a Takomi Expo owner/project and update URL;
+- create a Takomi Expo owner/project and enable updates with its project ID;
 - configure Takomi-owned Clerk/OAuth infrastructure or define a local-only path;
 - create and protect release-signing credentials;
 - verify pairing, Pi provider selection, questions, images, tools, and interruption on a device.

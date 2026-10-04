@@ -35,7 +35,12 @@ void SplashScreen.preventAutoHideAsync().catch(() => {
 });
 
 const appLinking = {
-  prefixes: [Linking.createURL("/"), "t3code://", "t3code-dev://", "t3code-preview://"],
+  prefixes: [
+    Linking.createURL("/"),
+    "takomi-code://",
+    "takomi-code-dev://",
+    "takomi-code-preview://",
+  ],
   // Keep the compact thread list available beneath a directly opened thread.
   config: { initialRouteName: "Home" },
   filter: shouldHandleAppLink,
@@ -76,10 +81,7 @@ function AppContent() {
       <GestureHandlerRootView className="flex-1">
         <KeyboardProvider statusBarTranslucent>
           <SafeAreaProvider>
-            <StatusBar
-              barStyle={themeAppearance === "dark" ? "light-content" : "dark-content"}
-              translucent
-            />
+            <StatusBar barStyle={themeAppearance === "dark" ? "light-content" : "dark-content"} />
             {/* The navigation theme drives the NATIVE header appearance: native-stack
                 forwards `dark` as the nav bar's overrideUserInterfaceStyle. Without
                 this, React Navigation defaults to its light theme and every native

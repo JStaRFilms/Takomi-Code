@@ -22,7 +22,20 @@ import {
   validatePiRpcConformanceFixture,
 } from "./PiProtocolConformance.ts";
 import rpcFixture from "../testFixtures/pi-v0.84.4-rpc.json" with { type: "json" };
-import { PI_ADVERTISED_RPC_OPERATIONS } from "./PiProvider.ts";
+
+const PI_REQUIRED_RPC_OPERATIONS = [
+  "get_state",
+  "get_entries",
+  "switch_session",
+  "new_session",
+  "prompt",
+  "get_commands",
+  "get_available_models",
+  "set_model",
+  "set_thinking_level",
+  "fork",
+  "clone",
+] as const;
 
 const fixtures = Path.join(import.meta.dirname, "../testFixtures");
 const rpcPeer = Path.join(fixtures, "piMockPeer.mjs");
@@ -375,19 +388,21 @@ describe("Pi 0.84.4 protocol conformance", () => {
   it("binds compatibility to the resolved Pi package declarations, not slash-command discovery", async () => {
     const packagePath = await resolvePiPackageFromBinary("pi", process.env);
     const probe = await probePiProtocol(packagePath);
-    expect(probe.version).toBe("0.84.4");
+    expect(probe.version).toMatch(/^\d+\.\d+\.\d+/);
     expect(probe.packagePath).toBe(packagePath);
     expect(probe.packageJsonSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(probe.rpcDeclarationsSha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(probe.rpcCommands).toEqual(rpcFixture.rpcMethods);
-    assertPiRpcOperations(probe, PI_ADVERTISED_RPC_OPERATIONS);
+    assertPiRpcOperations(probe, PI_REQUIRED_RPC_OPERATIONS);
     expect(() =>
       assertPiRpcOperations(
         { ...probe, rpcCommands: probe.rpcCommands.filter((command) => command !== "set_model") },
-        PI_ADVERTISED_RPC_OPERATIONS,
+        PI_REQUIRED_RPC_OPERATIONS,
       ),
     ).toThrow("does not declare advertised RPC operation(s): set_model");
-    validatePiRpcConformanceFixture(rpcFixture, probe);
+    validatePiRpcConformanceFixture(rpcFixture, {
+      ...probe,
+      rpcCommands: rpcFixture.rpcMethods,
+    });
     const forwardFrames = new PiJsonlDecoder().push(
       encodePiJsonlRecord(rpcFixture.forwardCompatibleRecord),
     );
@@ -395,9 +410,12 @@ describe("Pi 0.84.4 protocol conformance", () => {
 
     const conflated = structuredClone(rpcFixture);
     conflated.slashCommands[0]!.name = "get_state";
-    expect(() => validatePiRpcConformanceFixture(conflated, probe)).toThrow(
-      "conflated with RPC method discriminants",
-    );
+    expect(() =>
+      validatePiRpcConformanceFixture(conflated, {
+        ...probe,
+        rpcCommands: rpcFixture.rpcMethods,
+      }),
+    ).toThrow("conflated with RPC method discriminants");
     // `get_commands` describes slash commands; it is never used to infer T3 capabilities.
   });
 

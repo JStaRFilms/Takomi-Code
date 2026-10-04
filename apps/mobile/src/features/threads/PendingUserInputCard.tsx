@@ -1,7 +1,8 @@
 import { RequestActionButton } from "./RequestActionButton";
 import { PiSecretInputCard } from "./PiSecretInputCard";
 import { QuestionAttachments } from "./QuestionAttachments";
-import type { ApprovalRequestId, UserInputQuestion } from "@t3tools/contracts";
+import type { RuntimeRequestId } from "@t3tools/contracts";
+import type { ThreadUserInputQuestion } from "@t3tools/client-runtime/state/thread-requests";
 import { useCallback, useRef } from "react";
 import { Platform, Pressable, ScrollView, View, type LayoutChangeEvent } from "react-native";
 import Animated, {
@@ -57,21 +58,21 @@ export interface PendingUserInputCardProps {
   readonly onInputFocusChange?: (focused: boolean) => void;
   readonly drafts: Record<string, PendingUserInputDraftAnswer>;
   readonly answers: Record<string, string | ReadonlyArray<string>> | null;
-  readonly respondingUserInputId: ApprovalRequestId | null;
+  readonly respondingUserInputId: RuntimeRequestId | null;
   readonly onSelectOption: (
-    requestId: ApprovalRequestId,
-    question: UserInputQuestion,
+    requestId: RuntimeRequestId,
+    question: ThreadUserInputQuestion,
     value: string,
   ) => void;
   readonly onChangeCustomAnswer: (
-    requestId: ApprovalRequestId,
+    requestId: RuntimeRequestId,
     questionId: string,
     customAnswer: string,
   ) => void;
   readonly secretScope: string;
   readonly unavailable: boolean;
   readonly onRespondPiSecret: (
-    requestId: ApprovalRequestId,
+    requestId: RuntimeRequestId,
     response: { value: string } | { cancelled: true },
   ) => Promise<boolean>;
   readonly onSubmit: () => Promise<unknown>;
@@ -101,6 +102,10 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
   const secretQuestion = props.pendingUserInput.questions.find(
     (question) => question.sensitive === true,
   );
+  // Message responses start a new run and remain available after the provider exits.
+  const canRespond = props.pendingUserInput.responseCapability !== "not_resumable";
+  const isResponding = props.respondingUserInputId === props.pendingUserInput.requestId;
+  const responseDisabled = !canRespond || isResponding;
 
   const cardCoverage = props.cardCoverage;
   const barHeightRef = useRef(0);
@@ -267,6 +272,12 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
         showsVerticalScrollIndicator
         style={{ flexShrink: 1 }}
       >
+        {!canRespond ? (
+          <Text className="font-sans text-sm leading-5 text-adaptive-neutral-600-400">
+            The provider process for this request is no longer available. Interrupt or restart the
+            run to continue.
+          </Text>
+        ) : null}
         {secretQuestion ? (
           <PiSecretInputCard
             key={JSON.stringify([
@@ -278,7 +289,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
             header={secretQuestion.header}
             question={secretQuestion.question}
             fileInput={secretQuestion.fileInput === "vault-archive"}
-            unavailable={props.unavailable}
+            unavailable={props.unavailable || !canRespond}
             onInputFocusChange={props.onInputFocusChange}
             onRespond={props.onRespondPiSecret}
           />
@@ -302,6 +313,9 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                     return (
                       <Pressable
                         key={optionValue}
+                        accessibilityRole={question.multiSelect ? "checkbox" : "radio"}
+                        accessibilityState={{ checked: selected, disabled: responseDisabled }}
+                        disabled={responseDisabled}
                         className={cn(
                           "min-h-12 w-full rounded-2xl border px-3.5 py-3",
                           selected ? "border-primary bg-primary/10" : "border-border bg-input",
@@ -333,17 +347,23 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                     );
                   })}
                 </View>
-                <QuestionAttachments
-                  requestId={props.pendingUserInput.requestId}
-                  question={question}
-                  questions={props.pendingUserInput.questions}
-                  disabled={props.respondingUserInputId === props.pendingUserInput.requestId}
-                  value={draft?.customAnswer ?? ""}
-                  onChangeText={(value) =>
-                    props.onChangeCustomAnswer(props.pendingUserInput.requestId, question.id, value)
-                  }
-                  onInputFocusChange={props.onInputFocusChange}
-                />
+                {question.allowCustomAnswer !== false ? (
+                  <QuestionAttachments
+                    requestId={props.pendingUserInput.requestId}
+                    question={question}
+                    questions={props.pendingUserInput.questions}
+                    disabled={responseDisabled}
+                    value={draft?.customAnswer ?? ""}
+                    onChangeText={(value) =>
+                      props.onChangeCustomAnswer(
+                        props.pendingUserInput.requestId,
+                        question.id,
+                        value,
+                      )
+                    }
+                    onInputFocusChange={props.onInputFocusChange}
+                  />
+                ) : null}
               </View>
             );
           })
@@ -354,10 +374,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           label="Submit answers"
           size="large"
           tone={props.answers ? "primary" : "secondary"}
-          disabled={
-            props.answers === null ||
-            props.respondingUserInputId === props.pendingUserInput.requestId
-          }
+          disabled={responseDisabled || props.answers === null}
           onPress={() => void props.onSubmit()}
         />
       ) : null}
@@ -365,7 +382,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
         <Pressable
           accessibilityRole="button"
           className="items-center justify-center rounded-2xl px-4 py-2.5 active:opacity-70"
-          disabled={props.respondingUserInputId === props.pendingUserInput.requestId}
+          disabled={isResponding}
           onPress={() => void props.onDismiss()}
         >
           <Text className="font-t3-bold text-sm text-foreground-muted">

@@ -1,5 +1,5 @@
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
-import { scopeProjectRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -8,15 +8,10 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
-import { useAtomValue } from "@effect/atom-react";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 
 import { resolveSnoozePresets } from "../components/Sidebar.snooze";
-import {
-  canReleasePiSession as canReleasePiSessionFor,
-  isPiModelSelection,
-} from "../components/piContinue/piContinue.logic";
 import {
   buildThreadActionMenuItems,
   type ThreadActionMenuId,
@@ -33,8 +28,7 @@ import {
   readThreadShell,
   useProjects,
 } from "../state/entities";
-import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
-import { primaryServerProvidersAtom } from "../state/server";
+import { usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -42,7 +36,7 @@ import {
   selectProjectGroupingSettings,
 } from "../logicalProject";
 import { buildPhysicalToLogicalProjectKeyMap } from "../sidebarProjectGrouping";
-import { useUiStateStore } from "../uiStateStore";
+import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
@@ -77,9 +71,7 @@ export function useThreadActionMenu(input: {
   const { threadRef, projectCwd, onStartRename } = input;
   const router = useRouter();
   const projects = useProjects();
-  const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const primaryProviders = useAtomValue(primaryServerProvidersAtom);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const logicalProjectKeyByPhysicalKey = useMemo(
     () =>
@@ -100,6 +92,7 @@ export function useThreadActionMenu(input: {
     setThreadAutoSettle,
     archiveThread,
     deleteThread,
+    markThreadUnread,
   } = useThreadActions();
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
@@ -108,7 +101,6 @@ export function useThreadActionMenu(input: {
     reportFailure: false,
   });
   const handleNewThread = useNewThreadHandler();
-  const markThreadUnread = useUiStateStore((s) => s.markThreadUnread);
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
@@ -152,16 +144,8 @@ export function useThreadActionMenu(input: {
         };
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const snoozePresets = resolveSnoozePresets(now, timestampFormat);
-        const menuEnvironment = environments.find(
-          (candidate) => candidate.environmentId === threadRef.environmentId,
-        );
-        const menuProviders =
-          menuEnvironment?.serverConfig?.providers ??
-          (threadRef.environmentId === primaryEnvironmentId ? primaryProviders : []);
         const items = buildThreadActionMenuItems({
           branch: thread.branch ?? null,
-          // The chat header has no project-scoped thread list behind the
-          // menu, so the "Filter by project" affordance is sidebar-only.
           projectFilter: null,
           isPinned: thread.pinnedAt != null,
           isSettled: supports.settlement && thread.settledOverride === "settled",
@@ -169,11 +153,9 @@ export function useThreadActionMenu(input: {
           isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
-          isRunning: thread.session?.status === "running" && thread.session.activeTurnId != null,
-          canReleasePiSession: canReleasePiSessionFor({
-            isPiThread: isPiModelSelection(menuProviders, thread.modelSelection),
-            sessionStatus: thread.session?.status ?? null,
-          }),
+          isRunning: !threadRuntimeCanArchive(thread.runtime),
+          // The V2 shell does not expose whether Pi still owns its session file.
+          canReleasePiSession: false,
           supports,
           snoozePresets,
         });
@@ -290,7 +272,7 @@ export function useThreadActionMenu(input: {
             );
             return;
           case "mark-unread":
-            markThreadUnread(scopedThreadKey(threadRef), thread.latestTurn?.completedAt);
+            markThreadUnread(threadRef);
             return;
           case "copy-path": {
             const workspacePath = thread.worktreePath ?? projectCwd;
@@ -376,14 +358,12 @@ export function useThreadActionMenu(input: {
       copyPathToClipboard,
       copyThreadIdToClipboard,
       deleteThread,
-      environments,
       handleNewThread,
       logicalProjectKeyByPhysicalKey,
       markThreadUnread,
       onStartRename,
       pinThread,
       primaryEnvironmentId,
-      primaryProviders,
       projectCwd,
       projectGroupingSettings,
       projects,

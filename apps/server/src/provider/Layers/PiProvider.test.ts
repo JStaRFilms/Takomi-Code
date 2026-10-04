@@ -1,219 +1,287 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Resolves the checked-in subprocess fixture.
-import * as NodeAssert from "node:assert/strict";
-import * as NodeFSP from "node:fs/promises";
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
-import * as NodeURL from "node:url";
-
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { describe, it } from "@effect/vitest";
-
-import * as Clock from "effect/Clock";
+import { assert, describe, it } from "@effect/vitest";
+import { PI_PROVIDER_IDENTITY } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { checkPiProviderStatus, discoverPiResources, MINIMUM_PI_VERSION } from "./PiProvider.ts";
 import { resolvePiLaunchResources } from "./PiLaunchResources.ts";
-import {
-  discoverPiResources,
-  makePendingPiProvider,
-  piSessionCatalogSupported,
-  piMachineProbeLaunchArgs,
-  serverModelsFromPiModels,
-} from "./PiProvider.ts";
+import { piRecordString } from "../../orchestration-v2/Adapters/PiRpc.ts";
 
-const fixturePath = NodePath.join(
-  NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
-  "../testFixtures/piMockPeer.mjs",
-);
+const encoder = new TextEncoder();
+const decodeJson = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 
-describe("Pi provider snapshot", () => {
-  it("removes trust flags only before positional arguments", () => {
-    NodeAssert.deepEqual(
-      piMachineProbeLaunchArgs("--approve --extension global.ts -na -- --no-approve positional"),
-      [
-        "--no-approve",
-        "--extension",
-        "global.ts",
-        "--mode",
-        "rpc",
-        "--no-session",
-        "--",
-        "--no-approve",
-        "positional",
-      ],
+function normalizeArgs(args: ReadonlyArray<string>): ReadonlyArray<string> {
+  return args.map((arg) =>
+    arg.startsWith('^"') && arg.endsWith('^"') ? arg.slice(2, -2).replace(/\^(.)/g, "$1") : arg,
+  );
+}
+
+function processHandle(input: {
+  readonly stdout?: string;
+  readonly stderr?: string;
+  readonly exitCode?: number;
+}) {
+  const bytes = (value: string | undefined) =>
+    value === undefined || value.length === 0
+      ? Stream.empty
+      : Stream.succeed(encoder.encode(value));
+  return ChildProcessSpawner.makeHandle({
+    pid: ChildProcessSpawner.ProcessId(900_000_001),
+    exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(input.exitCode ?? 0)),
+    isRunning: Effect.succeed(false),
+    kill: () => Effect.void,
+    unref: Effect.succeed(Effect.void),
+    stdin: Sink.drain,
+    stdout: bytes(input.stdout),
+    stderr: bytes(input.stderr),
+    all: Stream.empty,
+    getInputFd: () => Sink.drain,
+    getOutputFd: () => Stream.empty,
+  });
+}
+
+function piProbeSpawner(version: string) {
+  return ChildProcessSpawner.make((command) => {
+    const args = ChildProcess.isStandardCommand(command) ? normalizeArgs(command.args) : [];
+    return Effect.succeed(
+      args.includes("--version")
+        ? processHandle({ stdout: `pi ${version}\n` })
+        : processHandle({ stderr: "RPC startup failed", exitCode: 1 }),
     );
   });
+}
 
-  it.effect("advertises only Pi runtime and rollback capabilities it enforces", () =>
-    Effect.gen(function* () {
-      const provider = yield* makePendingPiProvider();
+const settings = {
+  enabled: true,
+  binaryPath: "pi",
+  homePath: "",
+  suiteRoot: "",
+  launchArgs: "",
+  customModels: [],
+} as const;
 
-      NodeAssert.deepEqual(provider.capabilities, {
-        runtimeModes: ["full-access"],
-        interactionModes: ["default"],
-        modelSwitching: true,
-        conversationRollback: false,
-        commandDiscovery: "unavailable",
-        skillDiscovery: "unavailable",
-        workspaceSnapshotFreshness: true,
-        sessions: {
-          list: false,
-          clone: false,
-          attach: false,
-        },
-      });
-      NodeAssert.equal(provider.showInteractionModeToggle, false);
-      NodeAssert.equal(provider.supportsConversationRollback, false);
-      NodeAssert.equal(piSessionCatalogSupported("0.84.4"), true);
-      NodeAssert.equal(piSessionCatalogSupported("0.85.1"), true);
-      NodeAssert.equal(piSessionCatalogSupported("0.87.1"), true);
-      NodeAssert.equal(piSessionCatalogSupported("0.99.1"), true);
-      NodeAssert.equal(piSessionCatalogSupported("0.84.5"), false);
-      NodeAssert.equal(piSessionCatalogSupported("0.85.0"), false);
-      NodeAssert.equal(piSessionCatalogSupported("0.98.0"), false);
-    }),
-  );
+const makeRpcProbe = Effect.gen(function* () {
+  const stdout = yield* Queue.unbounded<Uint8Array, Cause.Done>();
+  const commandsRequested = yield* Deferred.make<void>();
+  const spawned: ChildProcess.StandardCommand[] = [];
+  let hangCommands = false;
+  const spawner = ChildProcessSpawner.make((command) => {
+    if (!ChildProcess.isStandardCommand(command)) return Effect.die("Unexpected pipeline");
+    spawned.push(command);
+    if (normalizeArgs(command.args).includes("--version")) {
+      return Effect.succeed(processHandle({ stdout: "pi 0.84.3\n" }));
+    }
+    return Effect.succeed(
+      ChildProcessSpawner.makeHandle({
+        pid: ChildProcessSpawner.ProcessId(900_000_001),
+        exitCode: Effect.never,
+        isRunning: Effect.succeed(true),
+        kill: () => Effect.void,
+        unref: Effect.succeed(Effect.void),
+        stdin: Sink.forEach((chunk: Uint8Array) =>
+          Effect.gen(function* () {
+            const record = decodeJson(new TextDecoder().decode(chunk).trim());
+            const type = piRecordString(record, "type");
+            if (type === "get_commands") {
+              yield* Deferred.succeed(commandsRequested, undefined);
+              if (hangCommands) return;
+            }
+            const data =
+              type === "get_state"
+                ? { thinkingLevel: "high" }
+                : type === "get_available_models"
+                  ? {
+                      models: [
+                        { provider: "custom", id: "model", name: "Custom model", reasoning: true },
+                      ],
+                    }
+                  : {
+                      commands: [
+                        { name: "task", source: "extension", description: "Run a task" },
+                        {
+                          name: "skill:review",
+                          source: "skill",
+                          path: "/private/skills/review/SKILL.md",
+                          sourceInfo: { scope: "project" },
+                        },
+                      ],
+                    };
+            yield* Queue.offer(
+              stdout,
+              encoder.encode(
+                `${JSON.stringify({
+                  type: "response",
+                  id: piRecordString(record, "id"),
+                  command: type,
+                  success: true,
+                  data,
+                })}\n`,
+              ),
+            );
+          }),
+        ),
+        stdout: Stream.fromQueue(stdout),
+        stderr: Stream.empty,
+        all: Stream.empty,
+        getInputFd: () => Sink.drain,
+        getOutputFd: () => Stream.empty,
+      }),
+    );
+  });
+  return {
+    spawner,
+    spawned,
+    commandsRequested,
+    hang: () => {
+      hangCommands = true;
+    },
+  };
 });
 
-describe("Pi scoped resource probe", () => {
-  it.live("uses local Takomi extensions instead of duplicate global copies", () =>
+describe("PiProvider", () => {
+  it.effect("requires the first published Pi version with entries and settlement hooks", () =>
     Effect.gen(function* () {
-      const root = yield* Effect.promise(() =>
-        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "pi-launch-")),
+      const snapshot = yield* checkPiProviderStatus(settings).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, piProbeSpawner("0.80.3")),
       );
-      const cwd = NodePath.join(root, "project");
-      const homePath = NodePath.join(root, "agent");
-      try {
-        yield* Effect.promise(async () => {
-          await NodeFSP.mkdir(NodePath.join(cwd, ".pi", "prompts"), { recursive: true });
-          await NodeFSP.mkdir(NodePath.join(homePath, "extensions", "takomi-runtime"), {
-            recursive: true,
-          });
-          await NodeFSP.writeFile(NodePath.join(cwd, "package.json"), '{"name":"takomi"}');
-          await NodeFSP.writeFile(
-            NodePath.join(homePath, "extensions", "takomi-runtime", "index.ts"),
-            "",
-          );
-          const packageDir = NodePath.join(homePath, "npm", "node_modules", "pi-web-ui");
-          await NodeFSP.mkdir(NodePath.join(packageDir, "extensions"), { recursive: true });
-          await NodeFSP.writeFile(
-            NodePath.join(packageDir, "package.json"),
-            '{"pi":{"extensions":["./extensions"]}}',
-          );
-          await NodeFSP.writeFile(NodePath.join(packageDir, "extensions", "webui.ts"), "");
-          await NodeFSP.writeFile(
-            NodePath.join(homePath, "settings.json"),
-            '{"packages":["npm:pi-web-ui"]}',
-          );
-          for (const name of [
-            "takomi-runtime",
-            "takomi-subagents",
-            "oauth-router",
-            "takomi-context-manager",
-            "notify-sound",
-            "antigravity-provider",
-          ]) {
-            const directory = NodePath.join(cwd, ".pi", "extensions", name);
-            await NodeFSP.mkdir(directory, { recursive: true });
-            await NodeFSP.writeFile(NodePath.join(directory, "index.ts"), "");
-          }
-        });
-        const settings = {
-          enabled: true,
-          binaryPath: process.execPath,
-          homePath,
-          suiteRoot: "",
-          launchArgs: `"${fixturePath}"`,
-          customModels: [],
-        };
-        const resources = yield* resolvePiLaunchResources({
-          settings,
-          cwd,
-          environment: process.env,
-        });
-        NodeAssert.deepEqual(resources.missingPaths, []);
-        NodeAssert.equal(resources.args[0], "--no-extensions");
-        NodeAssert.ok(
-          resources.args.includes(
-            NodePath.join(cwd, ".pi", "extensions", "takomi-runtime", "index.ts"),
-          ),
-        );
-        NodeAssert.ok(
-          !resources.args.includes(
-            NodePath.join(homePath, "extensions", "takomi-runtime", "index.ts"),
-          ),
-        );
-        NodeAssert.ok(
-          resources.args.includes(
-            NodePath.join(homePath, "npm", "node_modules", "pi-web-ui", "extensions", "webui.ts"),
-          ),
-        );
-        NodeAssert.ok(
-          !resources.args.includes(
-            NodePath.join(homePath, "npm", "node_modules", "pi-web-ui", "extensions"),
-          ),
-        );
-        const untrusted = yield* resolvePiLaunchResources({
-          settings,
-          cwd,
-          environment: process.env,
-          allowInferredSuite: false,
-        });
-        NodeAssert.deepEqual(untrusted.args, ["--no-extensions"]);
-        const discovery = yield* discoverPiResources(settings, cwd, process.env);
-        NodeAssert.equal(discovery.status, "available");
-      } finally {
-        yield* Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true }));
-      }
+      assert.equal(snapshot.status, "error");
+      assert.equal(snapshot.version, "0.80.3");
+      assert.include(snapshot.message ?? "", `Pi ${MINIMUM_PI_VERSION} or newer`);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.live("applies one deadline and tears down a non-responsive peer", () =>
+  it.effect("keeps compatible Pi selectable when optional discovery fails", () =>
     Effect.gen(function* () {
-      const startedAt = yield* Clock.currentTimeMillis;
-      const result = yield* discoverPiResources(
+      const snapshot = yield* checkPiProviderStatus(settings).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, piProbeSpawner("0.84.3")),
+      );
+      assert.equal(snapshot.status, "ready");
+      assert.equal(snapshot.auth.status, "unknown");
+      assert.deepEqual(
+        snapshot.models.map((model) => model.slug),
+        ["default"],
+      );
+      assert.include(snapshot.message ?? "", "could not refresh its models and commands");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps Takomi identity, V2 permission modes, and configured credentials", () =>
+    Effect.gen(function* () {
+      const probe = yield* makeRpcProbe;
+      const snapshot = yield* checkPiProviderStatus(
         {
-          enabled: true,
-          binaryPath: process.execPath,
-          homePath: "",
-          suiteRoot: "",
-          launchArgs: `"${fixturePath}"`,
-          customModels: [],
+          ...settings,
+          homePath: "/custom/agent",
+          launchArgs: "--approve",
         },
-        process.cwd(),
-        { ...process.env, T3_PI_DISCOVERY_HANG: "1" },
-        { deadline: "100 millis" },
+        {},
+      ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, probe.spawner));
+      assert.equal(snapshot.displayName, PI_PROVIDER_IDENTITY.displayName);
+      assert.deepEqual(snapshot.supportedRuntimeModes, [
+        "approval-required",
+        "auto-accept-edits",
+        "full-access",
+      ]);
+      assert.equal(snapshot.auth.status, "authenticated");
+      assert.deepEqual(
+        snapshot.models.map((model) => model.slug),
+        ["default", "custom/model"],
       );
-      NodeAssert.deepEqual(result, { status: "unavailable", reason: "deadline" });
-      NodeAssert.ok((yield* Clock.currentTimeMillis) - startedAt < 2_000);
+      assert.isUndefined(snapshot.models[0]?.subProvider);
+      assert.equal(snapshot.models[1]?.subProvider, "custom");
+      const launch = probe.spawned[1];
+      assert.equal(launch?.options.env?.PI_CODING_AGENT_DIR, "/custom/agent");
+      assert.include(normalizeArgs(launch?.args ?? []), "--no-approve");
+      assert.notInclude(normalizeArgs(launch?.args ?? []), "--approve");
     }).pipe(Effect.provide(NodeServices.layer)),
   );
-});
 
-describe("serverModelsFromPiModels", () => {
-  it("maps discovered Pi models and their thinking levels", () => {
-    const models = serverModelsFromPiModels([
-      {
-        provider: "openai-codex",
-        id: "gpt-5.4",
-        name: "GPT-5.4",
-        reasoning: true,
-        thinkingLevelMap: { xhigh: "xhigh", max: null },
-      },
-      {
-        provider: "lmstudio",
-        id: "gemma",
-        name: "Gemma",
-        reasoning: false,
-      },
-    ]);
+  it.effect("discovers cwd resources without exposing host paths", () =>
+    Effect.gen(function* () {
+      const probe = yield* makeRpcProbe;
+      const discovery = yield* discoverPiResources(settings, "/workspace", {}).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, probe.spawner),
+      );
+      assert.equal(discovery.status, "available");
+      if (discovery.status !== "available") return;
+      assert.deepEqual(
+        discovery.resources.slashCommands.map((command) => command.name),
+        ["task"],
+      );
+      assert.equal(discovery.resources.skills[0]?.path, "pi-resource:1");
+      assert.equal(probe.spawned[0]?.options.cwd, "/workspace");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 
-    NodeAssert.equal(models[0]?.slug, "openai-codex/gpt-5.4");
-    NodeAssert.equal(models[0]?.subProvider, "openai-codex");
-    const thinking = models[0]?.capabilities?.optionDescriptors?.[0];
-    NodeAssert.deepEqual(
-      thinking?.type === "select" ? thinking.options.map((option) => option.id) : [],
-      ["off", "minimal", "low", "medium", "high", "xhigh"],
-    );
-    NodeAssert.deepEqual(models[1]?.capabilities?.optionDescriptors, []);
-  });
+  it.effect("bounds a non-responsive resource probe", () =>
+    Effect.gen(function* () {
+      const probe = yield* makeRpcProbe;
+      probe.hang();
+      const fiber = yield* discoverPiResources(
+        settings,
+        "/workspace",
+        {},
+        { deadline: "100 millis" },
+      ).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, probe.spawner),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(probe.commandsRequested);
+      yield* TestClock.adjust("100 millis");
+      assert.deepEqual(yield* Fiber.join(fiber), { status: "unavailable", reason: "deadline" });
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "loads suite resources and companion extensions without duplicate global Takomi copies",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped();
+        const homePath = path.join(root, "agent");
+        yield* fs.makeDirectory(path.join(root, ".pi", "prompts"), { recursive: true });
+        for (const name of [
+          "takomi-runtime",
+          "takomi-subagents",
+          "oauth-router",
+          "takomi-context-manager",
+          "notify-sound",
+          "antigravity-provider",
+        ]) {
+          const directory = path.join(root, ".pi", "extensions", name);
+          yield* fs.makeDirectory(directory, { recursive: true });
+          yield* fs.writeFileString(path.join(directory, "index.ts"), "");
+        }
+        const globalDirectory = path.join(homePath, "extensions", "takomi-runtime");
+        yield* fs.makeDirectory(globalDirectory, { recursive: true });
+        yield* fs.writeFileString(path.join(globalDirectory, "index.ts"), "");
+        const companion = path.join(homePath, "extensions", "companion.ts");
+        yield* fs.writeFileString(companion, "");
+        const resources = yield* resolvePiLaunchResources({
+          settings: { ...settings, homePath, suiteRoot: root },
+          cwd: "/workspace",
+          environment: {},
+        });
+        assert.deepEqual(resources.missingPaths, []);
+        assert.include(
+          resources.args,
+          path.join(root, ".pi", "extensions", "takomi-runtime", "index.ts"),
+        );
+        assert.include(resources.args, companion);
+        assert.notInclude(resources.args, path.join(globalDirectory, "index.ts"));
+        assert.include(resources.args, path.join(root, ".pi", "prompts"));
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });

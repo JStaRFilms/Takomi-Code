@@ -15,7 +15,7 @@ import {
 } from "./baseSchemas.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 import { ProviderUsageLimitsUpdate } from "./providerUsageLimits.ts";
-import { ProviderApprovalOption } from "./orchestration.ts";
+import { ProviderApprovalOption } from "./providerPolicy.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -278,6 +278,12 @@ export const ThreadTokenUsageSnapshot = Schema.Struct({
   durationMs: Schema.optional(NonNegativeInt),
   compactsAutomatically: Schema.optional(Schema.Boolean),
   autoCompactThreshold: Schema.optional(PositiveInt),
+  cost: Schema.optional(
+    Schema.Struct({
+      amount: Schema.Number.check(Schema.isFinite()),
+      currency: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(32)),
+    }),
+  ),
 });
 export type ThreadTokenUsageSnapshot = typeof ThreadTokenUsageSnapshot.Type;
 
@@ -660,7 +666,7 @@ const taskAgentLinkageFields = {
    * every row so folds can classify without the start row. */
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
   /**
-   * Server-stamped classification (classifyTaskAgentKind at ingestion).
+   * Server-stamped classification, set at ingestion.
    * Clients trust this stamp outright; rows without it (legacy, pre-stamp)
    * fall back to client-side heuristics.
    */

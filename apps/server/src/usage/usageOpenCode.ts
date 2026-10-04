@@ -184,7 +184,7 @@ export function parseOpenCodeUsageRow(row: OpenCodeUsageRow): UsageRecord | null
     sessionId: typeof row.sessionId === "string" ? row.sessionId : "",
     totals,
     reportedCostUsd,
-    fast: false,
+    speed: "standard",
     // OpenCode message ids are unique per database, so the key only has to
     // stay stable within one scan. It exists for migrated rows that appear
     // in both tables.

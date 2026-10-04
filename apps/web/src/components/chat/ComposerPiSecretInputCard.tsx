@@ -1,15 +1,15 @@
-import { PI_VAULT_ARCHIVE_MAX_BYTES, type ApprovalRequestId } from "@t3tools/contracts";
+import { PI_VAULT_ARCHIVE_MAX_BYTES, type RuntimeRequestId } from "@t3tools/contracts";
 import { useRef, useState } from "react";
 import { Button } from "../ui/button";
 
 interface ComposerPiSecretInputCardProps {
-  requestId: ApprovalRequestId;
+  requestId: RuntimeRequestId;
   header: string;
   question: string;
   fileInput?: boolean;
   unavailable: boolean;
   onRespond: (
-    requestId: ApprovalRequestId,
+    requestId: RuntimeRequestId,
     response: { value: string } | { cancelled: true },
   ) => Promise<boolean>;
 }

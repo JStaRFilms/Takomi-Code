@@ -30,6 +30,7 @@ squashfs-root/
 .gstack/
 .plans/
 .pi/
+/audits/
 dist-electron/
 .electron-runtime/
 .showcase/

@@ -1,11 +1,79 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { classifyTaskAgentKind, ProviderRuntimeEvent } from "./providerRuntime.ts";
+import {
+  classifyTaskAgentKind,
+  ProviderRuntimeEvent,
+  ToolPresentationEnvelope,
+} from "./providerRuntime.ts";
 
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
+const decodeToolPresentation = Schema.decodeUnknownSync(ToolPresentationEnvelope);
 
 describe("ProviderRuntimeEvent", () => {
+  it("preserves vault input metadata and private response markers", () => {
+    const base = {
+      provider: "takomi",
+      threadId: "thread-vault",
+      requestId: "vault-request",
+      createdAt: "2026-10-03T00:00:00.000Z",
+    };
+    const requested = decodeRuntimeEvent({
+      ...base,
+      eventId: "vault-requested",
+      type: "user-input.requested",
+      payload: {
+        questions: [
+          {
+            id: "archive",
+            header: "Vault",
+            question: "Choose an archive",
+            options: [],
+            sensitive: true,
+            fileInput: "vault-archive",
+          },
+        ],
+      },
+    });
+    if (requested.type !== "user-input.requested") {
+      throw new Error("expected user-input.requested");
+    }
+    expect(requested.payload.questions[0]).toMatchObject({
+      sensitive: true,
+      fileInput: "vault-archive",
+    });
+
+    const resolved = decodeRuntimeEvent({
+      ...base,
+      eventId: "vault-resolved",
+      type: "user-input.resolved",
+      payload: { answers: {}, privateResponse: true },
+    });
+    expect(resolved.payload).toEqual({ answers: {}, privateResponse: true });
+  });
+
+  it("preserves vault transfer notices and Pi raw event sources", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "runtime.warning",
+      eventId: "vault-export",
+      provider: "takomi",
+      threadId: "thread-vault",
+      createdAt: "2026-10-03T00:00:00.000Z",
+      raw: { source: "pi.eventmsg", payload: {} },
+      payload: {
+        message: "Vault archive ready",
+        category: "vault-export-ready",
+        transferId: "transfer-1",
+      },
+    });
+    expect(parsed.raw?.source).toBe("pi.eventmsg");
+    expect(parsed.payload).toEqual({
+      message: "Vault archive ready",
+      category: "vault-export-ready",
+      transferId: "transfer-1",
+    });
+  });
+
   it("requires input and output totals for complete turn usage", () => {
     const completeEvent = {
       type: "turn.completed",
@@ -226,6 +294,23 @@ describe("ProviderRuntimeEvent", () => {
     }
     expect(parsed.payload.usage.maxTokens).toBe(200000);
     expect(parsed.payload.usage.usedTokens).toBe(31251);
+  });
+});
+
+describe("ToolPresentationEnvelope", () => {
+  it("retains summary, agent activity, artifacts, and truncation metadata", () => {
+    const envelope = {
+      schemaVersion: 1,
+      namespace: "takomi",
+      toolName: "run",
+      family: "execution",
+      summary: { runId: "run-1", completed: 1, total: 2 },
+      inspectorDetailText: "Task output",
+      activity: [{ id: "activity-1", agentId: "agent-1", kind: "tool", label: "Read file" }],
+      artifactRefs: [{ kind: "report", path: "report.md" }],
+      truncation: { activity: true },
+    };
+    expect(decodeToolPresentation(envelope)).toEqual(envelope);
   });
 });
 

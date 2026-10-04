@@ -1,14 +1,15 @@
-import { ApprovalRequestId } from "@t3tools/contracts";
+import { RuntimeRequestId } from "@t3tools/contracts";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 
-const requestId = ApprovalRequestId.make("secret-request");
+const requestId = RuntimeRequestId.make("secret-request");
 const prompt = {
   requestId,
   createdAt: "2026-08-15T00:00:00.000Z",
   dismissible: false,
+  responseCapability: "live" as const,
   questions: [
     {
       id: "secret",

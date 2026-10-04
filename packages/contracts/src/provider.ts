@@ -5,14 +5,17 @@ import {
   EventId,
   IsoDateTime,
   ProviderItemId,
+  RuntimeRequestId,
   ThreadId,
   TurnId,
 } from "./baseSchemas.ts";
 import {
-  ChatAttachment,
-  ModelSelection,
   getProviderAttachmentLimitError,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  ChatAttachment,
+} from "./chatAttachment.ts";
+import { ModelSelection } from "./modelSelection.ts";
+import {
   ProviderApprovalDecision,
   ProviderApprovalPolicy,
   ProviderInteractionMode,
@@ -21,7 +24,7 @@ import {
   ProviderUserInputAnswers,
   UserInputAttachments,
   RuntimeMode,
-} from "./orchestration.ts";
+} from "./providerPolicy.ts";
 import { ProviderInstanceId, ProviderDriverKind } from "./providerInstance.ts";
 
 const ProviderSessionStatus = Schema.Literals([
@@ -119,7 +122,7 @@ export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputI
 
 export const ProviderRespondPiSecretInput = Schema.Struct({
   threadId: ThreadId,
-  requestId: ApprovalRequestId,
+  requestId: RuntimeRequestId,
   value: Schema.optional(Schema.String),
   cancelled: Schema.optional(Schema.Boolean),
 });
