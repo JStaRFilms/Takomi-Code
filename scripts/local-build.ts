@@ -22,6 +22,38 @@ interface OwnershipMarker {
   readonly repositoryGitDir: string;
 }
 
+interface LocalBuildOutput {
+  readonly directory: string;
+  readonly stamp: string;
+}
+
+/** Reserve a different output directory for every attempt, including retries on the same day. */
+export function localBuildOutput(
+  root: string,
+  dryRun: boolean,
+  now = new Date(),
+): LocalBuildOutput {
+  const releaseDir = Path.join(root, "release");
+  const date = now.toISOString().slice(0, 10).replaceAll("-", "");
+  let runNumber = now.getTime();
+  if (!dryRun) FS.mkdirSync(releaseDir, { recursive: true });
+  while (true) {
+    const stamp = `${date}.${runNumber}`;
+    const directory = Path.join(releaseDir, `local-${stamp}`);
+    if (dryRun) return { directory, stamp };
+    try {
+      FS.mkdirSync(directory);
+      return { directory, stamp };
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EEXIST") {
+        runNumber += 1;
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
 function log(message: string): void {
   process.stdout.write(`${message}\n`);
 }
@@ -286,6 +318,21 @@ function writeAndroidLocalProperties(worktree: string): void {
   );
 }
 
+function readDesktopVersion(root: string): string {
+  const metadata: unknown = JSON.parse(
+    FS.readFileSync(Path.join(root, "apps/desktop/package.json"), "utf8"),
+  );
+  if (typeof metadata !== "object" || metadata === null || !("version" in metadata)) {
+    throw new Error("Could not read the desktop version from apps/desktop/package.json.");
+  }
+  const version = metadata.version;
+  const match = typeof version === "string" ? /^(\d+\.\d+\.\d+)(?:[-+].*)?$/u.exec(version) : null;
+  if (!match?.[1]) {
+    throw new Error("Could not read the desktop version from apps/desktop/package.json.");
+  }
+  return match[1];
+}
+
 function readMobileVersion(root: string): string {
   const config = FS.readFileSync(Path.join(root, "apps/mobile/app.config.ts"), "utf8");
   const match = /^\s+version:\s*"([^"]+)"/mu.exec(config);
@@ -296,20 +343,22 @@ function readMobileVersion(root: string): string {
   return version;
 }
 
-function buildDesktop(root: string, dryRun: boolean): void {
-  const outputDir = Path.join(root, "release");
+function buildDesktop(root: string, dryRun: boolean, output: LocalBuildOutput): void {
+  const version = `${readDesktopVersion(root)}-preview.${output.stamp}`;
   const args = [
     "scripts/build-desktop-artifact.ts",
     "--platform",
     "win",
     "--target",
     "nsis",
+    "--build-version",
+    version,
     "--output-dir",
-    outputDir,
+    output.directory,
   ];
-  log(`[local-build] Desktop artifacts: ${outputDir}`);
+  log(`[local-build] Desktop preview version: ${version}`);
+  log(`[local-build] Desktop artifacts: ${output.directory}`);
   if (!dryRun) {
-    FS.mkdirSync(outputDir, { recursive: true });
     const cachedMonitor = Path.join(
       root,
       "native/resource-monitor/target/x86_64-pc-windows-msvc/release/t3-resource-monitor.exe",
@@ -333,12 +382,11 @@ function buildDesktop(root: string, dryRun: boolean): void {
   }
 }
 
-function buildAndroid(root: string, dryRun: boolean): void {
+function buildAndroid(root: string, dryRun: boolean, output: LocalBuildOutput): void {
   const sha = git(root, ["rev-parse", "--short=8", "HEAD"]);
   const dirty = git(root, ["status", "--porcelain", "--untracked-files=no"]).length > 0;
   const version = readMobileVersion(root);
-  const outputDir = Path.join(root, "release");
-  const artifactName = `Takomi-Code-Preview-${version}-${sha}${dirty ? "-dirty" : ""}.apk`;
+  const artifactName = `Takomi-Code-Preview-${version}-${sha}-${output.stamp}${dirty ? "-dirty" : ""}.apk`;
   const apkPath = Path.join(
     localWorktree,
     "apps",
@@ -353,7 +401,7 @@ function buildAndroid(root: string, dryRun: boolean): void {
   );
 
   log(`[local-build] Android worktree: ${localWorktree}`);
-  log(`[local-build] Android artifact: ${Path.join(outputDir, artifactName)}`);
+  log(`[local-build] Android artifact: ${Path.join(output.directory, artifactName)}`);
   log(
     "[local-build] This is an internal, debug-signed preview APK; it is not Play Store uploadable.",
   );
@@ -415,8 +463,7 @@ function buildAndroid(root: string, dryRun: boolean): void {
   if (!FS.existsSync(apkPath)) {
     throw new Error(`Gradle completed but did not produce ${apkPath}.`);
   }
-  FS.mkdirSync(outputDir, { recursive: true });
-  FS.copyFileSync(apkPath, Path.join(outputDir, artifactName));
+  FS.copyFileSync(apkPath, Path.join(output.directory, artifactName), FS.constants.COPYFILE_EXCL);
 }
 
 function main(): void {
@@ -429,13 +476,17 @@ function main(): void {
   }
 
   const root = sourceRoot();
-  if (options.desktop) buildDesktop(root, options.dryRun);
-  if (options.android) buildAndroid(root, options.dryRun);
+  const output = localBuildOutput(root, options.dryRun);
+  log(`[local-build] This attempt's output: ${output.directory}`);
+  if (options.desktop) buildDesktop(root, options.dryRun, output);
+  if (options.android) buildAndroid(root, options.dryRun, output);
 }
 
-try {
-  main();
-} catch (error) {
-  logError(error instanceof Error ? `[local-build] ${error.message}` : String(error));
-  process.exitCode = 1;
+if (import.meta.main) {
+  try {
+    main();
+  } catch (error) {
+    logError(error instanceof Error ? `[local-build] ${error.message}` : String(error));
+    process.exitCode = 1;
+  }
 }

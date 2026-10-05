@@ -1,7 +1,9 @@
 # Local Takomi releases
 
-The `release/` directory holds locally built installers and APKs. Generated artifacts stay out of
-Git. Upload the selected files to the [Takomi Code releases](https://github.com/JStaRFilms/Takomi-Code/releases).
+The `release/` directory holds locally built installers and APKs. Each local build reserves its
+own `release/local-<UTC-date>.<build-number>/` directory, so retrying never overwrites a working
+build. Generated artifacts stay out of Git. Upload selected files to the
+[Takomi Code releases](https://github.com/JStaRFilms/Takomi-Code/releases).
 
 ## Current release notes
 
@@ -29,7 +31,8 @@ builds manually.
    git status --short
    ```
 
-   Uncommitted tracked changes are included. The artifact name ends in `-dirty` when they exist.
+   Uncommitted tracked changes are included. The Android filename ends in `-dirty` when they
+   exist; the desktop installer does not mark dirty source, so check Git status yourself.
 
 2. Compare this checkout with both the Takomi fork and upstream T3 Code:
 
@@ -73,11 +76,16 @@ From the repository root on Windows:
 vp run dist:local
 ```
 
-This produces:
+This prints a unique output directory and produces:
 
-- `release/Takomi-Code-<desktop-version>-x64.exe`
-- the matching desktop blockmap/update metadata
-- `release/Takomi-Code-Preview-<mobile-version>-<sha>[-dirty].apk`
+- `release/local-<UTC-date>.<build-number>/Takomi-Code-<desktop-version>-preview.<UTC-date>.<build-number>-x64.exe`
+- `release/local-<UTC-date>.<build-number>/Takomi-Code-Preview-<mobile-version>-<sha>-<UTC-date>.<build-number>[-dirty].apk`
+
+The desktop version follows upstream's dated preview format, using a local timestamp as the
+numeric build number. It is embedded in the installer; the source package versions do not change.
+Local previews have no auto-update feed. A new attempt, even in the same millisecond, reserves a
+new output directory before building. Keep published versions and update metadata on the normal
+release workflow; do not treat these preview files as stable update assets.
 
 ## Build one application
 
@@ -176,9 +184,13 @@ is not needed to upload local builds.
    $buildCommit = "23c210b12f72330d9be8b98393b0c4c8b5e536de"
    $notes = [regex]::Match((Get-Content release/README.md -Raw), '(?ms)^## Current release notes\r?\n.*?(?=^## Before building)').Value.Trim()
    if (-not $notes) { throw "Missing current release notes" }
+   $buildDir = "release/local-<date>.<build-number>" # use the path printed by the build
+   $desktop = (Get-ChildItem "$buildDir/Takomi-Code-*-x64.exe").FullName
+   $android = (Get-ChildItem "$buildDir/Takomi-Code-Preview-*.apk").FullName
+   if (-not $desktop -or -not $android) { throw "Missing local build artifact" }
    gh release create $tag `
-     release/Takomi-Code-0.0.42-x64.exe `
-     release/Takomi-Code-Preview-1.2.1-23c210b1.apk `
+     $desktop `
+     $android `
      --repo JStaRFilms/Takomi-Code --target $buildCommit `
      --title "Takomi Code 0.1.0 preview 1" --notes $notes --prerelease --draft
    ```
@@ -187,8 +199,7 @@ is not needed to upload local builds.
    publish it with `gh release edit $tag --repo JStaRFilms/Takomi-Code --draft=false`. Link to the
    tag-specific release page from the website. Prereleases do not appear at `/releases/latest`.
 
-Only upload the two installables. The local `latest.yml` and blockmap are not a tested update feed
-for this preview.
+Only upload the two installables. Local previews do not publish update metadata.
 
 ## What stays in GitHub/EAS
 
