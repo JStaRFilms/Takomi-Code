@@ -44,17 +44,18 @@ builds manually.
    immediately before a release unless you are prepared to resolve and retest Takomi-specific
    behavior.
 
-3. Choose the application versions.
+3. Check the application versions. Local preview builds add a unique date and build number
+   automatically; do not bump the source version just to avoid overwriting an earlier attempt.
 
-   - **Desktop:** update `version` in `apps/desktop/package.json`. Keep the corresponding release
-     package versions aligned by running:
+   - **Desktop:** for a new public base version, update `apps/desktop/package.json` and align the
+     corresponding release packages by running:
 
      ```powershell
-      node scripts/update-release-package-versions.ts 1.2.4
+     node scripts/update-release-package-versions.ts 1.2.4
      ```
 
-     Replace `1.2.4` with the intended new version. Do not reuse a published version for a
-     materially different public build.
+     Replace `1.2.4` with the intended version. Do not reuse a published version for a materially
+     different public build.
 
    - **Mobile:** update `version` in `apps/mobile/app.config.ts` when preparing a new release.
      The local APK uses that value in its filename. Do not manually change Android
@@ -85,7 +86,9 @@ The desktop version follows upstream's dated preview format, using a local times
 numeric build number. It is embedded in the installer; the source package versions do not change.
 Local previews have no auto-update feed. A new attempt, even in the same millisecond, reserves a
 new output directory before building. Keep published versions and update metadata on the normal
-release workflow; do not treat these preview files as stable update assets.
+release workflow; do not treat these preview files as stable update assets. If you build desktop
+and Android separately, each command gets a different output directory; run `vp run dist:local`
+when you need both files from the same attempt.
 
 ## Build one application
 
