@@ -1,0 +1,13 @@
+# R06: Focused review of actual all-client extension-state rendering
+
+Read-only reviewer in isolated C:/CreativeOS/01_Projects/Code/Clones/takomi-parity-next, baselinef5183248d3. Read AGENTS/unslop, D01.design.md, B06 packet/report and B05.acceptance. One focused correctness/performance/accessibility/regression pass, no style/extra features. No authored writes, stage/commit/subdelegation/native/live/auth/install/dev servers/Metro/browser/native or release builds. Existing hermetic tests allowed.
+
+Review exact13 deliverable files (exclude local report) and actual entry-point integration, not report assertions. Web/desktop ChatComposer/ChatHeader and native ThreadComposer/ThreadRouteScreen/state binding must use correct ScopedThreadRef/current active owner support, not global/futuremodel config. Confirm shared supportgate fix both directions including ended/failed/starting sessions and snapshot.instance mismatch; no old owner status/subtitle falsely current. No unguarded legacy RPC call.
+
+Verify actual supported current/status/widget/title output reaches both editor placements, compact/full plaintext details, clear/replace/inactive and stale/disconnected/reconnect/generation transition. Empty content valid; longtext viewport/reachability; truncation/overflow visibly honest. Manual/native/global title and draft untouched. Local disclosure state keyed environment/thread/process/key/content; no old sensitive content retained/relabelled across changes. No HTML/Markdown/link/OS activity, tool/checkpoint/lifecycle/private Vault interference. Text only, no continuously animating rendering, unnecessary per-frame fullstate allocations or inactive global stream subscriptions.
+
+Walk actual native sheet/header/platform entry points and web/desktop shared route path. Review accessibility labels/action semantics and disabled/stale presentation. Do not infer installed desktop/native browser geometry from host doubles.
+
+Repeat smallest discriminating focused tests/typechecks/lint/fmt/diff as needed. Report35 focused passes/3types/56 inherited warnings are builder claims. Independently check warning attribution across four large existing files by exact source spans/HEAD, no new suppression/error. Package exports/new state helper support types must keep older/nonPi/multienvironment semantics. No fullsuite or platform fixture fix; B05's accepted twoClaude failures irrelevant here.
+
+Completion: inline approve or confirmed blockers with file/line/repro/minimalcorrection, actual commands/results, applicable surfaces/limitations. Parent persists R06.review.md and uses same writer for confirmed corrections. B07 draft suggestions and integrated verification intentionally pending. No callbacks-only/staticprop tests count as behavior.

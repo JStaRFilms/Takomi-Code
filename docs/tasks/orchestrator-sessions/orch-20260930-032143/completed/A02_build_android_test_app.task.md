@@ -1,0 +1,11 @@
+# A02-build: Build the standalone Android test APK
+
+Execute onlyafterW02handled andparent marks task63inprogress. Actualsource cwdC:/CreativeOS/01_Projects/Code/Clones/2026-07-22_t3code onfeat/pi-takomi-parity atda3a3574f45001e0d9260f4d585ebcc63f1d1d0a, cleantracked/index. Read AGENTS,release/README.md,scripts/local-build.ts andnative/appconfig. Userapproved bothlocaltestapps and SPECIFIC externalstagingrefresh C:/takomi-local-build plusdependencycache C:/tp includingrequiredstaginglifecycle scripts. No live/globaldependencyrefresh orappinstall/publication.
+
+VerifyC:/takomi-local-build/.takomi-local-build.json schema1 andrepositoryGitDir matchingmain .git plusgitcommonDir/registeredworktree. Onlythatmanagedbuildscratchmayreset/clean throughdocumentedscript. Do notreset/clean main/isolated/debrand/userdata orotherworktrees. Preservemarker andnativeSDK/globalcacheownership. VerifyJava/AndroidSDK/toolchain anddirectories beforebuild. Secrets/envvaluesmustnotenterchat/logsummaries.
+
+Use projectvp run dist:local:android or reviewednode scripts/local-build.ts --android equivalent. The documentedworkflow stages committedsource, overlayscurrenttrackedfiles, sets APP_VARIANT preview, installs mobiledependencies inshortstaging, Expo prebuildsclean stagingandroid, generatesserialreleaseUpdatesresources andGradleassembleReleasearm64. ScopeCI/frozenlock behaviorifneeded toavoiddependencyversion/lockregeneration. Do notcreatea newEAS/cloud/auth/signing flow. No Metro/emulator/deviceinstallation/realnativeconversation/serveragainstliveuserdata.
+
+Outputexpectedrelease/Takomi-Code-Preview-1.3.1-da3a3574.apk, standalonearm64previewdebugsigned/noMetro. VerifyactualAPK withzip/manifest/signature toolsifavailable, size/mtime/SHA256, sourceHEAD/nodirtysuffix. Anartifactexistencealonefromoldbuildisnotproof. Returnexactpath/hash/size/log andknownpackageID/signinglimitations. Noinstalledfunctionalproof orfullparityclaim.
+
+Oneownedbuild/log/PID, no duplicatelaunchaftertimeout/no killbypattern. Capturelogmain .plans/a02-build.txt andmetadata result; iflongrunning parentmonitorsownedPID. Do notfixunrelatedcode/version/lockfiles withoutscopeapproval. No sourcecommit/push/tag/publication/subdelegate/global/liveinstall. Parentupdatesboardfiles/todo63 andreportsactualartifactorblocker.
