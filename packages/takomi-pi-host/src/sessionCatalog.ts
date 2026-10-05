@@ -4,13 +4,6 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-export const PI_CATALOG_VERSION = "0.84.4";
-/**
- * Pi releases whose session storage and catalog conventions are verified.
- * Deliberately an allowlist, not a range: each new Pi release must prove
- * header version, filename convention, and fork layout before joining it.
- */
-export const PI_CATALOG_VERSIONS: ReadonlyArray<string> = ["0.84.4", "0.85.1", "0.87.1", "0.99.1"];
 export const PI_CATALOG_HARD_CEILING = 2_000;
 const MAX_FILE_PREFIX_BYTES = 1024 * 1024;
 const MAX_FILE_TAIL_BYTES = 64 * 1024;
@@ -363,11 +356,9 @@ async function resolveSessionDirectory(
     !isRecord(packageJson) ||
     packageJson.name !== "@earendil-works/pi-coding-agent" ||
     typeof packageJson.version !== "string" ||
-    !PI_CATALOG_VERSIONS.includes(packageJson.version)
+    packageJson.version.length === 0
   ) {
-    throw new Error(
-      `Pi catalog requires a verified Pi release (${PI_CATALOG_VERSIONS.join(", ")}).`,
-    );
+    throw new Error("Pi catalog requires an installed Pi package.");
   }
   const configured =
     launchSessionDirectory(input.launchArgs) ??

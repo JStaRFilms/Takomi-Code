@@ -5,6 +5,7 @@ import {
   PiSettings,
   ProviderDriverKind,
   ProviderInstanceId,
+  resolveProviderInstanceEnabled,
   type ServerSettings,
 } from "@t3tools/contracts";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
@@ -28,6 +29,7 @@ const isPiSessionCatalogError = Schema.is(PiSessionCatalogError);
 interface ResolvedPiInstance {
   readonly providerInstanceId: ProviderInstanceId;
   readonly settings: PiSettings;
+  readonly enabled: boolean;
   readonly environment: NodeJS.ProcessEnv;
 }
 
@@ -54,6 +56,7 @@ function resolvePiInstance(
       return {
         providerInstanceId,
         settings: decodePiSettings(configured.config ?? {}),
+        enabled: resolveProviderInstanceEnabled(configured),
         environment: mergeProviderInstanceEnvironment(configured.environment),
       };
     } catch {
@@ -63,7 +66,12 @@ function resolvePiInstance(
   if (providerInstanceId !== ProviderInstanceId.make("pi")) {
     return catalogError("provider_unavailable", "This Pi provider instance is unavailable.");
   }
-  return { providerInstanceId, settings: settings.providers.pi, environment: process.env };
+  return {
+    providerInstanceId,
+    settings: settings.providers.pi,
+    enabled: settings.providers.pi.enabled,
+    environment: process.env,
+  };
 }
 
 export function validatePiSessionProvider(
@@ -71,7 +79,10 @@ export function validatePiSessionProvider(
   providerInstanceId: ProviderInstanceId,
 ): Effect.Effect<void, PiSessionCatalogError> {
   const instance = resolvePiInstance(settings, providerInstanceId);
-  return isPiSessionCatalogError(instance) ? Effect.fail(instance) : Effect.void;
+  if (isPiSessionCatalogError(instance)) return Effect.fail(instance);
+  return instance.enabled
+    ? Effect.void
+    : Effect.fail(catalogError("provider_unavailable", "This Pi provider instance is disabled."));
 }
 
 function agentDirectory(
@@ -124,7 +135,7 @@ export const listBoundedPiSessions = Effect.fn("PiSessionCatalog.listBoundedPiSe
   }
   const instance = resolvePiInstance(input.serverSettings, input.catalog.providerInstanceId);
   if (isPiSessionCatalogError(instance)) return yield* instance;
-  if (!instance.settings.enabled) {
+  if (!instance.enabled) {
     return yield* catalogError("provider_unavailable", "This Pi provider instance is disabled.");
   }
   const path = yield* Path.Path;

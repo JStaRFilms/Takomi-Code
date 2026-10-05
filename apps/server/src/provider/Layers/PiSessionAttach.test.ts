@@ -22,6 +22,14 @@ import {
   type PiSessionContinueRequestContext,
 } from "./PiSessionAttach.ts";
 
+const enabledPiSettings = {
+  ...DEFAULT_SERVER_SETTINGS,
+  providers: {
+    ...DEFAULT_SERVER_SETTINGS.providers,
+    pi: { ...DEFAULT_SERVER_SETTINGS.providers.pi, enabled: true },
+  },
+};
+
 const scopeBinding = (workspace: string): PiLifecycleBinding => ({
   environmentId: "environment-a",
   providerInstanceId: ProviderInstanceId.make("pi"),
@@ -128,7 +136,7 @@ function context(
     handle,
     threadId: ThreadId.make("thread-attach"),
     mode: "attach",
-    serverSettings: DEFAULT_SERVER_SETTINGS,
+    serverSettings: enabledPiSettings,
     providerInstanceId: ProviderInstanceId.make("pi"),
     projectId: ProjectId.make("project-a"),
     threadProjectId: ProjectId.make("project-a"),
@@ -351,7 +359,7 @@ describe("Pi point-split forks and message preview", () => {
         );
         const preview = yield* previewPiSessionMessages({
           handle,
-          serverSettings: DEFAULT_SERVER_SETTINGS,
+          serverSettings: enabledPiSettings,
           providerInstanceId: ProviderInstanceId.make("pi"),
           projectId: ProjectId.make("project-a"),
           workspaceCanonicalPath: value.workspace,

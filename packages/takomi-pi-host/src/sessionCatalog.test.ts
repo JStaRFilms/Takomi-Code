@@ -229,32 +229,46 @@ NodeTest.test("honors cancellation and rejects symlink entries", async (t) => {
   );
 });
 
-NodeTest.test("rejects the documented convention for an unverified Pi version", async (t) => {
-  const value = await fixture();
-  t.after(() => NodeFSP.rm(value.root, { recursive: true, force: true }));
-  await NodeFSP.writeFile(
-    NodePath.join(value.packageRoot, "package.json"),
-    JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "0.85.0" }),
-  );
-  await NodeAssert.rejects(() =>
-    scanPiSessionCatalog(request(value), { signal: new AbortController().signal }),
-  );
-});
-
-NodeTest.test("accepts each verified Pi release in the allowlist", async (t) => {
-  for (const version of ["0.84.4", "0.85.1", "0.87.1", "0.99.1"]) {
+NodeTest.test("accepts compatible v3 sessions across Pi package versions", async (t) => {
+  for (const version of ["0.84.4", "1.0.3", "1.1.0"]) {
     const value = await fixture();
     t.after(() => NodeFSP.rm(value.root, { recursive: true, force: true }));
     await NodeFSP.writeFile(
       NodePath.join(value.packageRoot, "package.json"),
       JSON.stringify({ name: "@earendil-works/pi-coding-agent", version }),
     );
-    await writeSession({ directory: value.directory, fileName: "one.jsonl", cwd: value.workspace });
+    await writeSession({ directory: value.directory, fileName: "v3.jsonl", cwd: value.workspace });
+    await writeSession({
+      directory: value.directory,
+      fileName: "v4.jsonl",
+      cwd: value.workspace,
+      version: 4,
+    });
     const result = await scanPiSessionCatalog(request(value), {
       signal: new AbortController().signal,
     });
-    NodeAssert.equal(result.entries.length, 1);
+    NodeAssert.equal(
+      result.entries.find((entry) => entry.nativeSessionId === "v3")?.compatibility,
+      "compatible",
+    );
+    NodeAssert.equal(
+      result.entries.find((entry) => entry.nativeSessionId === "v4")?.compatibility,
+      "unknown",
+    );
   }
+});
+
+NodeTest.test("rejects a different package even with compatible session files", async (t) => {
+  const value = await fixture();
+  t.after(() => NodeFSP.rm(value.root, { recursive: true, force: true }));
+  await NodeFSP.writeFile(
+    NodePath.join(value.packageRoot, "package.json"),
+    JSON.stringify({ name: "not-pi", version: "1.0.3" }),
+  );
+  await writeSession({ directory: value.directory, fileName: "one.jsonl", cwd: value.workspace });
+  await NodeAssert.rejects(() =>
+    scanPiSessionCatalog(request(value), { signal: new AbortController().signal }),
+  );
 });
 
 NodeTest.test("finds trailing renames past the prefix bound, like Pi itself", async (t) => {

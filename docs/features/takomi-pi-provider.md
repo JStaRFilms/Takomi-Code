@@ -146,12 +146,13 @@ Resource snapshots are isolated by environment, provider instance, and exact pro
 
 ## Session catalog
 
-For the supported Pi protocol boundary (verified releases: 0.84.4, 0.85.1, 0.87.1, 0.99.1), web and desktop can request a bounded, paginated list
-of Pi sessions for the selected provider instance and workspace. Catalog cursors are scoped to the
+Web and desktop can request a bounded, paginated list of Pi sessions for the selected enabled
+provider instance and workspace. Package versions are not pinned: the scanner checks the installed
+Pi package and the session's format, and continuation requires a v3 header. Catalog cursors are scoped to the
 environment, provider instance, exact workspace, server generation, and expiry. The server also
 rejects continuation when another active T3 thread already holds the same session file.
-For a new Pi release, follow the [compatibility check](../operations/pi-compatibility.md) before
-adding it to the supported list.
+If a new Pi release changes session storage, follow the
+[compatibility check](../operations/pi-compatibility.md) before changing the reader.
 
 This is discovery plus continuation. Catalog entries hydrate into T3 threads through
 `provider.attachPiSession` (bind the live CLI session file) and `provider.forkPiSession`
@@ -201,7 +202,7 @@ the next message continues with full CLI context.
 - only `full-access` is supported
 - Pi session attach, full-file fork, point-split fork, message preview, and visible CLI
   history hydration are supported into fresh threads
-- session catalog listing is version-gated to verified Pi releases (0.84.4, 0.85.1, 0.87.1, 0.99.1)
+- session continuation requires a compatible v3 file; changed storage conventions need a reader update
 - unknown extension UI methods are ignored
 - plaintext reveal remains TUI-only; vault export and import use separate private GUI transfer handling
 - richer question metadata is reduced to T3's current canonical shape
