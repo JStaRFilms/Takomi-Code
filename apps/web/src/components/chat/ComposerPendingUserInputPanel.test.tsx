@@ -56,6 +56,20 @@ describe("ComposerPendingUserInputPanel", () => {
     expect(markup).toMatch(new RegExp(`<div[^>]*\\sid="${controlledId}"`));
   });
 
+  it("shows a question only once when the provider repeats it as the header", () => {
+    const repeatedQuestion = "[First release] Which milestone comes first?";
+    const question = prompt.questions[0];
+    if (!question) throw new Error("Expected question");
+    const markup = renderPanel({
+      ...prompt,
+      questions: [{ ...question, header: repeatedQuestion, question: repeatedQuestion }],
+    });
+
+    expect(markup.match(/\[First release\] Which milestone comes first\?/g)).toHaveLength(1);
+    expect(markup).toContain(">Question</span>");
+    expect(markup).toContain("Incremental");
+  });
+
   it("offers dismiss only for async questions", () => {
     expect(renderPanel()).toContain("data-pending-user-input-dismiss");
     expect(renderPanel({ ...prompt, dismissible: false })).not.toContain(

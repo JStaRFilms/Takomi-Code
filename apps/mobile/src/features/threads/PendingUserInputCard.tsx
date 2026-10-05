@@ -299,7 +299,9 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
             return (
               <View key={question.id} className="gap-2 pt-1">
                 <Text className="font-t3-bold text-xs uppercase tracking-[1px] text-foreground-muted">
-                  {question.header}
+                  {question.header.trim() === question.question.trim()
+                    ? "Question"
+                    : question.header}
                 </Text>
                 <Text className="font-sans text-base leading-snug text-foreground">
                   {question.question}
