@@ -179,3 +179,16 @@ index 07706139379384dae27befef4e3e5ae09d04a0db..924fa0029243664e369ce08c81e504b6
    /**
     * Whether the activity is displayed in a context with reduced luminance.
     * @platform iOS 16+
+diff --git a/layout-registry.metro.config.js b/layout-registry.metro.config.js
+index 5cd8040..0620286 100644
+--- a/layout-registry.metro.config.js
++++ b/layout-registry.metro.config.js
+@@ -5,7 +5,7 @@ const baseResolveRequest = config.resolver.resolveRequest;
+ const expoWidgetsStubPath = path.join(__dirname, 'bundle/layout-registry-stub.ts');
+ const asyncRequireStubPath = path.join(__dirname, 'bundle/async-require-stub.ts');
+ // const emptyModuleStubPath = path.join(__dirname, 'bundle/empty-module-stub.js');
+-const fileSpecifierRe = /^[\\/]|^\.\.?(?:$|[\\/])/i;
++const fileSpecifierRe = /^[\\/]|^\.\.?(?:$|[\\/])|^[a-zA-Z]:[\\/]/i;
+ 
+ config.resolver = {
+   ...config.resolver,
