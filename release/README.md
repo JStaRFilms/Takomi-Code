@@ -115,12 +115,12 @@ with the generated debug key for direct installation. It does not require Metro.
 
 ### Android build failures on Windows
 
-The `2.0.0` preview APK in this directory needed a **one-off build at `C:\b`** after the standard
-script hit Windows CMake object-path limits. That build also used a local Expo Widgets patch.
-Neither the shorter path nor that patch is in `scripts/local-build.ts`. **Do not assume
-`vp run dist:local:android` reproduces that APK**; the script still uses
-`C:\takomi-local-build`. A future release should put a reproducible fix in the build script,
-not silently reuse an untracked patch or call the old APK a successful standard build.
+An earlier `2.0.0` preview APK used a one-off build at `C:\b` after CMake object-path failures.
+That artifact is historical evidence, not proof that the current workflow succeeds. The repository
+now carries native source-path patches, including gesture-handler shadow-node path shortening,
+and an Expo Widgets patch. `scripts/local-build.ts` still uses `C:\takomi-local-build`.
+No fresh Android build was run during this merge. Verify the maintained workflow from committed
+source before describing a new APK as reproducible.
 
 If Gradle reports `File path too long`, `Filename longer than 260 characters`, or an object-file
 path under a React Native native module, check that the generated source and CMake build paths

@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import * as Socket from "effect/unstable/socket/Socket";
+import * as Socket from "effect/socket/Socket";
 
 export const WS_BUFFERED_BYTES_LIMIT = 4 * 1024 * 1024;
 export const WS_BACKPRESSURE_CLOSE_CODE = 1013;

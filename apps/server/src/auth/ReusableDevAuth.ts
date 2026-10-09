@@ -1,3 +1,4 @@
+// Effect's Crypto has no timingSafeEqual.
 import * as NodeCrypto from "node:crypto";
 import { AuthSessionId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";

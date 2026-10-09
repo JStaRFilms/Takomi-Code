@@ -2,7 +2,7 @@
 
 ## Overview
 
-Takomi is integrated into Takomi Code as a first-party T3 provider backed by the Pi CLI. Pi owns the model session, tool loop, extensions, context, and persistent JSONL session. Takomi Code owns the desktop/web/mobile clients, projects, attachments, work log, provider-neutral runtime, and remote connection layer.
+Takomi is integrated into Takomi Code as a first-party T3 provider backed by the Pi CLI. Pi owns the model session, tool loop, extensions, context, and persistent JSONL session. Takomi Code owns the desktop/web/mobile clients, projects, attachments, work log, provider-neutral V2 orchestration, and remote connection layer.
 
 This is structured JSON-RPC integration, not terminal scraping.
 
@@ -17,16 +17,16 @@ flowchart LR
 
 ## Architecture
 
-- **Driver:** `apps/server/src/provider/Drivers/PiDriver.ts`
-- **Provider snapshot and health probe:** `apps/server/src/provider/Layers/PiProvider.ts`
-- **JSON-RPC process adapter:** `apps/server/src/provider/Layers/PiAdapter.ts`
-- **Driver registration:** `apps/server/src/provider/builtInDrivers.ts`
-- **Settings contracts:** `packages/contracts/src/settings.ts`
+- **Driver:** `packages/provider-pi/src/server/driver.ts`
+- **Provider snapshot and health probe:** `packages/provider-pi/src/server/status.ts`
+- **JSON-RPC process adapter:** `packages/provider-pi/src/server/adapter.ts`
+- **Driver registration:** `apps/server/src/provider/ProviderDriverRegistry.ts`
+- **Settings schema:** `packages/provider-pi/src/settings.ts`
 - **Runtime event contracts:** `packages/contracts/src/providerRuntime.ts`
 - **Web metadata:** `apps/web/src/components/settings/providerDriverMeta.ts`
 - **Web icon mapping:** `apps/web/src/components/chat/providerIconUtils.ts`
 - **Session logic:** `apps/web/src/session-logic.ts`
-- **Session catalog boundary:** `apps/server/src/provider/Layers/PiSessionCatalog.ts`
+- **Session catalog boundary:** `apps/server/src/provider/PiSessionCatalog.ts`
 - **Versioned host utilities:** `packages/takomi-pi-host/`
 
 The provider driver kind remains `pi` for compatibility. New and existing environments receive an enabled `takomi` instance with display name `Takomi` once; the legacy `pi` instance remains opt-in. Both use the Pi RPC executable and retain distinct instance IDs for thread bindings. A persisted migration marker preserves later explicit disables and removals. Add provider offers separate Takomi and Pi choices backed by the same driver. By default the instances share Pi home, and Vault stores credentials under the OS user's `~/.pi/agent/takomi-vault` even when Takomi Code uses a separate app data directory.
@@ -105,9 +105,9 @@ Core Takomi tools now use the semantic tool presentation described in [Takomi to
 
 Pi emits `tool_execution_start`, `tool_execution_update`, and `tool_execution_end`. The adapter turns these into T3 runtime items and classifies common file, shell, search, MCP, subagent, and dynamic tool names.
 
-Core Takomi boards, todos, subagents, routing, workflow, skill, policy, and context tools are normalized into a bounded `ToolPresentationEnvelope`. The envelope survives activity projection for canonical inline cards and the optional inspector. Unknown tools and unsupported extensions remain legible through generic work-log cards.
+Pi tools use canonical V2 turn items and the shared work-log rendering. Todos and subagents use their native item types where available. The web/desktop Takomi inspector selects persisted, non-secret tool details by tool-call identity. Unknown tools retain the generic fallback.
 
-Main-agent `thinking_delta` events are projected as throttled reasoning progress, and subagent thinking blocks are retained as child-specific activity when emitted by the model.
+Reasoning uses Pi's V2 assistant-message stream. The client can display only the thinking content the selected model emits.
 
 ## Configuration
 
@@ -142,7 +142,7 @@ The web and mobile command menus use Pi's `get_commands` response for the select
 
 Project resources follow Pi's project-trust decision. Explicit `--approve` and `--no-approve` launch arguments take precedence. In non-interactive RPC mode, the default `ask` behavior cannot display Pi's own trust prompt, so protected resources may remain unavailable until Pi has a saved decision or another supported trust policy applies. Extensions can also decide trust; when that effective result is not observable, Takomi Code reports the trust information as partial rather than claiming an approval or rejection.
 
-Resource snapshots are isolated by environment, provider instance, and exact project path. Pi advertises and refreshes them after five minutes and after provider settings change. Failed Pi discovery removes stale project resources and retries instead of falling back to resources discovered for the server or another project.
+Resource snapshots are isolated by environment, provider instance, and exact project path. Upstream\'s shared workspace snapshot expiry controls five-minute refreshes and settings invalidation. Failed Pi discovery reports an error rather than publishing an empty successful catalog or falling back to another workspace.
 
 ## Session catalog
 
@@ -159,17 +159,17 @@ This is discovery plus continuation. Catalog entries hydrate into T3 threads thr
 (clone into a new file with the source recorded as parent, then bind the fork), both gated to
 fresh threads without turns or provider state. Provider capabilities report session attach and
 clone as available when the catalog boundary is supported. Continuing backfills visible CLI
-history (user/assistant text via `thread.history.import`, up to bounds); tool traffic stays
+history (user/assistant text via internal V2 history import, up to bounds); tool traffic stays
 model-only context without becoming visible messages. Open threads poll for CLI advances
 (`provider.checkPiSessionUpdates`) and offer one-click Sync above the composer
-(`provider.syncPiSessionUpdates`, appended via `thread.history.append` with the same
+(`provider.syncPiSessionUpdates`, appended through internal V2 history import with the same
 import namespace, idempotent by content).
 
 ## Runtime constraints
 
-Only T3's `full-access` runtime mode is accepted. `approval-required` and `auto-accept-edits` are rejected because T3 does not yet enforce permissions around every Pi tool invocation.
+Pi supports supervised, auto-accept edits, and full-access modes through upstream's injected blocking tool hook. Changing the mode restarts the process and resumes its native conversation. Legacy Auto selections normalize to supervised because Pi has no AI approval reviewer.
 
-Pi extension confirmations are bridged, but that is not equivalent to complete provider-level tool permission enforcement.
+The hook governs Pi tool calls, not code that trusted extensions run outside a tool call. It is not an OS sandbox. See [permission modes](../user/providers-pi.md#permission-modes).
 
 ## Session interoperability
 
@@ -198,8 +198,7 @@ the next message continues with full CLI context.
 
 ## Known limitations
 
-- utility text generation (thread titles, branch names, commit messages, and PR text) is not implemented by the Pi driver
-- only `full-access` is supported
+- utility text generation uses upstream\'s restricted Pi helper, separate from the interactive suite-enabled session
 - Pi session attach, full-file fork, point-split fork, message preview, and visible CLI
   history hydration are supported into fresh threads
 - session continuation requires a compatible v3 file; changed storage conventions need a reader update

@@ -1,152 +1,37 @@
 # Takomi tool-call UI
 
-**Status:** Implemented on `feat/pi-takomi-parity`
+## Current implementation
 
-## Overview
+Takomi Code uses upstream's V2 turn items and work-log rendering. Desktop and web share that React UI. Mobile consumes the same canonical items through its native feed.
 
-Takomi Code presents core Takomi, TakomiFlow, Pi companion-extension, and unknown tool calls without reproducing Pi's terminal UI. Canonical inline accordions keep the conversation functional on their own, while an optional synchronized right inspector provides persistent board state and deeper subagent activity.
+The optional web/desktop Takomi inspector lists persisted tools whose names identify Takomi, Todo, boards, workflows, or subagents. Selecting a call shows its recorded status and non-secret details. Closing the inspector does not remove the inline work-log entry. Vault and secret calls are excluded from the inspector.
 
-Desktop and browser use the same React implementation. The bounded presentation contract remains platform-neutral so mobile can consume it in a later native UI pass.
+The inspector does not reconstruct the older board dashboard or invocation-first child history described in historical task notes. Those notes are not current implementation guidance.
 
-## Architecture
+## Code boundaries
 
-- **Presentation contract:** `packages/contracts/src/providerRuntime.ts`
-- **Pi normalization:** `apps/server/src/provider/Layers/PiAdapter.ts`
-- **Activity projection:** `apps/server/src/orchestration/ActivityPayloadProjection.ts`
-- **Runtime ingestion:** `apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts`
-- **Work-log projection:** `apps/web/src/session-logic.ts`
-- **Inline card:** `apps/web/src/components/chat/TakomiToolCallCard.tsx`
-- **Timeline integration:** `apps/web/src/components/chat/MessagesTimeline.tsx`
-- **Inspector:** `apps/web/src/components/chat/TakomiInspector.tsx`
-- **Inspector state:** `apps/web/src/rightPanelStore.ts`
-- **Right-panel integration:** `apps/web/src/components/ChatView.tsx`
+- [Pi adapter](../../packages/provider-pi/src/server/adapter.ts) translates native events into V2 tool, todo, subagent, and message items.
+- [V2 ingestion](../../apps/server/src/orchestration-v2/ProviderEventIngestor.ts) persists provider events through the shared orchestrator.
+- [Work-log presentation](../../packages/client-runtime/src/work-log/presentation.ts) supplies shared labels and summaries.
+- [Timeline](../../apps/web/src/components/chat/MessagesTimeline.tsx) renders canonical inline items.
+- [Inspector](../../apps/web/src/components/chat/TakomiInspector.tsx) shows recorded Takomi details.
+- [Panel state](../../apps/web/src/rightPanelStore.ts) retains the selected tool-call identity and follows upstream close/reopen behavior.
 
-```mermaid
-flowchart LR
-    Pi[Pi RPC events] --> Adapter[PiAdapter normalizer]
-    Adapter --> Envelope[Bounded ToolPresentationEnvelope]
-    Envelope --> Projection[Activity payload projection]
-    Projection --> Session[Web work-log projection]
-    Session --> Inline[Inline accordion]
-    Session --> Inspector[Optional inspector]
-```
+Unknown tools retain the generic rendering. Native lifecycle updates keep their stable tool-call IDs, so later updates replace the same item rather than creating duplicate calls. When the session is no longer live, the inspector displays unfinished active work as interrupted.
 
-## Presentation contract
+Pi reasoning uses the V2 assistant-message stream. Thinking is available only when the selected model emits it.
 
-`ToolPresentationEnvelope` is a provider-neutral, allowlisted payload containing:
+## Companion extensions
 
-- tool namespace, exact name, and renderer family;
-- bounded action and status summaries;
-- stable session, run, task, and child-agent identities;
-- compact inline detail;
-- larger inspector detail;
-- bounded activity rows and artifact references;
-- explicit warning/error information.
+With a Takomi suite root configured, Pi also loads companion extensions from its installed package settings. The launch-resource resolver excludes duplicate global Takomi resources already supplied by the checkout. This retains tools such as questions, Todo, browser integrations, skills, policies, and context tools without registering them twice.
 
-Safety limits prevent arbitrary extension results from being sent to clients:
+Project resources still follow Pi's trust policy. Configuring a suite root does not approve an otherwise untrusted project.
 
-- inline detail is capped at 600 characters;
-- inspector detail is capped at 16,000 characters;
-- subagent history retains at most 120 meaningful events per invocation;
-- capped history is labeled as retained activity, not total activity.
+## Verification and limits
 
-Unknown tools continue through T3 Code's generic fallback.
+Focused checks cover [inspector filtering and liveness](../../apps/web/src/components/chat/TakomiInspector.test.ts), [timeline logic](../../apps/web/src/components/chat/MessagesTimeline.logic.test.ts), and [Pi adapter events](../../packages/provider-pi/src/server/adapter.test.ts).
 
-## Inline tool cards
-
-Inline cards are canonical: closing the inspector never removes essential information. They reuse existing T3 Code status, disclosure, typography, spacing, and work-log primitives.
-
-Up to five inline tool accordions can remain open. Opening a sixth closes the oldest open accordion.
-
-Renderer families cover:
-
-| Family        | Representative tools                         |
-| ------------- | -------------------------------------------- |
-| Status/report | `takomi_mode`, `context_report`, diagnostics |
-| Collection    | skill and policy discovery                   |
-| Configuration | routing-policy preview/application           |
-| Lifecycle     | `takomi_board`, `todo`, workflow state       |
-| Execution     | `takomi_subagent`, TakomiFlow runs           |
-| Artifact      | generated/reviewed outputs                   |
-
-## Inspector
-
-The right inspector is optional and synchronized with inline selections. Its primary surface is persistent Takomi Board progress, followed by invocation-first subagent activity and selected Context Detail.
-
-### Board behavior
-
-- board sessions merge by stable `sessionId`;
-- tasks update in place with status, checklist, and notes;
-- completed board state remains available after tool completion;
-- selecting a board call exposes its larger detail independently of the inline card.
-
-### Subagent behavior
-
-Execution groups are visibly distinct:
-
-- one synchronous child renders directly as the child agent, with no redundant wrapper, count, or dropdown;
-- one detached child also renders directly and receives a compact **Async** badge;
-- multiple independent children render as **Parallel run**;
-- dependent children render as **Chain run**;
-- multi-child detached work renders as **Async run**.
-
-Parallel and chain groups expose expandable child rows. Children use stable `result-N` identities so selecting one filters Context Detail to only that child's prompt, thinking, tools, messages, output, and terminal status.
-
-Activity survives partial updates and final completion. Synthetic heartbeat rows are not generated.
-
-### Thinking traces
-
-- main Pi `thinking_delta` events become throttled, expandable **Thinking** progress rows;
-- updates for one reasoning block collapse under a stable task identity;
-- remaining reasoning is flushed when the message or agent settles;
-- subagent thinking content is recorded separately from ordinary assistant messages;
-- traces appear only when the selected model/provider emits them.
-
-### Scrolling
-
-The inspector follows live activity only while the user remains near the bottom. Scrolling upward preserves position and exposes **Jump to latest** to resume following.
-
-## Todo companion UI
-
-The `todo` companion extension has a semantic lifecycle presentation instead of generic per-call rows:
-
-- all create/update calls collapse into one persistent state card per thread;
-- the card shows completed/total progress and overall status;
-- active tasks include subject, description or active form, and status;
-- deleted tasks are excluded from the active presentation.
-
-## Pi companion extensions
-
-When a Takomi suite root is configured, Pi still receives globally installed companion extensions. `PiAdapter` discovers package manifests from Pi settings/npm roots, explicitly loads companion extensions, and excludes duplicate global Takomi packages already supplied by the suite checkout.
-
-This preserves tools such as `ask_user_question`, `todo`, browser/preview extensions, context-mode, and other installed Pi packages without registering Takomi tools twice.
-
-## Stable update rules
-
-- ordinary tool lifecycle events collapse by `toolCallId`;
-- boards collapse by `sessionId`;
-- Todo state collapses to one thread-level state card;
-- subagent invocations merge by run/tool identity;
-- child activity uses stable child and message/tool indexes;
-- reasoning progress collapses only when task identities match;
-- unrelated task lifecycle rows remain separate.
-
-## Verification
-
-Focused verification includes:
-
-- `apps/server/src/orchestration/ActivityPayloadProjection.test.ts`
-- `apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.test.ts`
-- `apps/web/src/session-logic.test.ts`
-- contracts, server, and web typechecks
-
-Manual smoke testing should use a fresh thread and cover a board session, Todo updates, one child, parallel children, a chain, and detached async work.
-
-## Known limitations
-
-- historical activities cannot recover structured content discarded before the presentation contract existed;
-- mobile has not yet implemented native semantic tool cards or the inspector;
-- Pi slash commands, prompt templates, and skills are discoverable, but terminal-only built-ins are
-  intentionally omitted because RPC cannot invoke them;
-- model providers that hide reasoning cannot expose a thinking trace;
-- arbitrary Pi widgets, headers, footers, and terminal-rendered extension chrome are not streamed into Takomi Code.
+- Mobile has no dedicated Takomi inspector.
+- Historical items cannot recover content discarded before it was persisted.
+- Arbitrary Pi terminal widgets, headers, and footers have no GUI equivalent.
+- Rich question descriptions, preview panes, and multi-select metadata remain incomplete in the Pi dialog bridge.

@@ -1,7 +1,7 @@
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import type { PiSessionMessagePreviewMessage } from "@t3tools/contracts";
 import * as Option from "effect/Option";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useContext, useMemo, useState } from "react";
 
 import { formatEnvironmentQueryError } from "~/state/query";

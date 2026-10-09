@@ -40,16 +40,18 @@ platform assets remain alongside their platform targets.
 
 The current source versions are:
 
-- desktop: `0.0.44` from `apps/desktop/package.json`;
-- mobile: `1.3.1` from `apps/mobile/app.config.ts`.
+- desktop: `0.0.45` from `apps/desktop/package.json`;
+- mobile: `2.0.0` from `apps/mobile/app.config.ts`.
 
-The maintained local workflow writes artifacts to `release/`:
+Each local attempt reserves a separate `release/local-<UTC-date>.<build-number>/` directory:
 
 ```text
-release\Takomi-Code-0.0.44-x64.exe
-release\Takomi-Code-0.0.44-x64.exe.blockmap
-release\Takomi-Code-Preview-1.3.1-<sha>[-dirty].apk
+Takomi-Code-<desktop-version>-preview.<UTC-date>.<build-number>-x64.exe
+Takomi-Code-Preview-<mobile-version>-<sha>-<UTC-date>.<build-number>[-dirty].apk
 ```
+
+Desktop previews embed the dated version and have no auto-update feed. Retrying does not overwrite
+an earlier attempt or change the source package versions.
 
 The APK commit suffix comes from the current eight-character Git SHA. `-dirty` is appended when
 tracked working-tree changes are included.

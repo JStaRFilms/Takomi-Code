@@ -1,3 +1,4 @@
+// Effect's Crypto has no KeyObject, generateKeyPairSync, or sign.
 import * as NodeCrypto from "node:crypto";
 
 import { assert, describe, it } from "@effect/vitest";

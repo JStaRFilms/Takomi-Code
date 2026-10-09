@@ -1,13 +1,18 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
+import { formatProviderSkillDisplayName } from "@t3tools/shared/inlineSkills";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   dedupeProviderSkillsByName,
-  formatProviderSkillDisplayName,
   getProviderSlashCommandsForSlashMenu,
   getProviderSkillsForSlashMenu,
-  providerWorkspaceSnapshotRefreshDelay,
-  PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
+  hasCompleteProviderWorkspaceSnapshot,
+  hasCurrentProviderWorkspaceSnapshot,
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
   resolveProviderSkillSourceKind,
@@ -254,40 +259,48 @@ describe("workspace provider snapshots", () => {
     expect(resolveProviderSlashCommandsForCwd(provider, null)).toEqual(provider.slashCommands);
   });
 
-  it("invalidates cached workspace resources at the shared TTL only when advertised", () => {
-    const checkedAtMs = Date.parse("2026-01-01T00:01:00.000Z");
-    const freshnessProvider = {
+  it("uses partial workspace skills and commands while keeping discovery retryable", () => {
+    const partial = {
       ...provider,
-      instanceId: ProviderInstanceId.make("pi"),
-      driver: ProviderDriverKind.make("pi"),
-      capabilities: { workspaceSnapshotFreshness: true },
+      workspaceSnapshots: provider.workspaceSnapshots.map((snapshot) => ({
+        ...snapshot,
+        slashCommands: [{ name: "compact" }],
+        slashCommandsPending: true,
+      })),
     } satisfies ServerProvider;
-    expect(
-      providerWorkspaceSnapshotRefreshDelay(freshnessProvider, "/workspace/project-a", checkedAtMs),
-    ).toBe(PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS);
-    expect(
-      providerWorkspaceSnapshotRefreshDelay(
-        freshnessProvider,
-        "/workspace/project-a",
-        checkedAtMs + PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
-      ),
-    ).toBe(0);
-    expect(
-      providerWorkspaceSnapshotRefreshDelay(freshnessProvider, "/workspace/project-b", checkedAtMs),
-    ).toBe(0);
+    expect(resolveProviderSkillsForCwd(partial, "/workspace/project-a")).toEqual(
+      provider.workspaceSnapshots[0]?.skills,
+    );
+    expect(resolveProviderSlashCommandsForCwd(partial, "/workspace/project-a")).toEqual([
+      { name: "compact" },
+    ]);
+    expect(hasCompleteProviderWorkspaceSnapshot(partial, "/workspace/project-a")).toBe(false);
+    expect(hasCompleteProviderWorkspaceSnapshot(provider, "/workspace/project-a")).toBe(true);
+    expect(hasCompleteProviderWorkspaceSnapshot(provider, "/workspace/project-b")).toBe(false);
+    expect(hasCompleteProviderWorkspaceSnapshot(undefined, "/workspace/project-a")).toBe(false);
+    expect(hasCompleteProviderWorkspaceSnapshot(provider, null)).toBe(false);
   });
 
-  it("does not schedule retry loops for a mounted non-Pi provider without freshness support", () => {
-    const checkedAtMs = Date.parse("2026-01-01T00:01:00.000Z");
+  it("asks for a rescan once the workspace snapshot outlives its TTL", () => {
+    const scannedAt = Date.parse("2026-01-01T00:01:00.000Z");
+    const cwd = "/workspace/project-a";
+    expect(hasCurrentProviderWorkspaceSnapshot(provider, cwd, scannedAt)).toBe(true);
     expect(
-      providerWorkspaceSnapshotRefreshDelay(
+      hasCurrentProviderWorkspaceSnapshot(
         provider,
-        "/workspace/project-a",
-        checkedAtMs + PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
+        cwd,
+        scannedAt + PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS - 1,
       ),
-    ).toBeNull();
+    ).toBe(true);
     expect(
-      providerWorkspaceSnapshotRefreshDelay(provider, "/workspace/project-a", checkedAtMs),
-    ).toBeNull();
+      hasCurrentProviderWorkspaceSnapshot(
+        provider,
+        cwd,
+        scannedAt + PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
+      ),
+    ).toBe(false);
+    expect(hasCurrentProviderWorkspaceSnapshot(provider, "/workspace/project-b", scannedAt)).toBe(
+      false,
+    );
   });
 });

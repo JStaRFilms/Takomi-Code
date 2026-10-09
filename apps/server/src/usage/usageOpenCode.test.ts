@@ -36,6 +36,7 @@ describe("parseOpenCodeUsageRow", () => {
     // 2026-09-12T21:41:30.532Z.
     expect(record).toEqual({
       provider: "opencode",
+      speed: "standard",
       timestampMs: 1789352490532,
       model: "glm-5.3",
       sessionId: "ses_1",
@@ -47,7 +48,6 @@ describe("parseOpenCodeUsageRow", () => {
         reasoningTokens: 99,
       },
       reportedCostUsd: null,
-      fast: false,
       dedupeKey: "opencode:msg_1",
     });
   });

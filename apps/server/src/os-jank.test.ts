@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Tests verify native Windows home expansion.
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";

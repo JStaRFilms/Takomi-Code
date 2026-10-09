@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Local output reservation uses filesystem fixtures.
+// @effect-diagnostics globalDate:off -- Fixed timestamp fixture for synchronous output reservation.
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";

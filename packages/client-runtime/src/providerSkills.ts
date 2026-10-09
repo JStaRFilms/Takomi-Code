@@ -1,32 +1,14 @@
-import type {
-  ServerProvider,
-  ServerProviderSkill,
-  ServerProviderSlashCommand,
+import {
+  isProviderWorkspaceSnapshotCurrent,
+  type ServerProvider,
+  type ServerProviderSkill,
+  type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
 
 export type ProviderSkillSourceKind = "app" | "repo" | "project" | "personal" | "system" | "other";
 
-function titleCaseWords(value: string): string {
-  const words: string[] = [];
-  for (const segment of value.split(/[\s:_-]+/)) {
-    if (segment.length === 0) continue;
-    words.push(segment.charAt(0).toUpperCase() + segment.slice(1));
-  }
-  return words.join(" ");
-}
-
 function normalizePathSeparators(pathValue: string): string {
   return pathValue.replaceAll("\\", "/");
-}
-
-export function formatProviderSkillDisplayName(
-  skill: Pick<ServerProviderSkill, "name" | "displayName">,
-): string {
-  const displayName = skill.displayName?.trim();
-  if (displayName) {
-    return displayName;
-  }
-  return titleCaseWords(skill.name);
 }
 
 export function dedupeProviderSkillsByName(
@@ -103,14 +85,34 @@ export function resolveProviderSkillSourceKind(
   }
 }
 
-export const PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS = 5 * 60 * 1_000;
-
 function resolveProviderWorkspaceSnapshot(
   provider: ServerProvider,
   cwd: string | null | undefined,
 ) {
   if (!cwd) return undefined;
   return provider.workspaceSnapshots?.find((snapshot) => snapshot.cwd === cwd);
+}
+
+export function hasCompleteProviderWorkspaceSnapshot(
+  provider: ServerProvider | null | undefined,
+  cwd: string | null | undefined,
+): boolean {
+  const snapshot = provider && resolveProviderWorkspaceSnapshot(provider, cwd);
+  return Boolean(snapshot && !snapshot.slashCommandsPending);
+}
+
+/** A complete snapshot young enough that opening a composer need not rescan. */
+export function hasCurrentProviderWorkspaceSnapshot(
+  provider: ServerProvider | null | undefined,
+  cwd: string | null | undefined,
+  nowMs: number,
+): boolean {
+  const snapshot = provider && resolveProviderWorkspaceSnapshot(provider, cwd);
+  return Boolean(
+    snapshot &&
+    !snapshot.slashCommandsPending &&
+    isProviderWorkspaceSnapshotCurrent(snapshot, nowMs),
+  );
 }
 
 export function resolveProviderSkillsForCwd(
@@ -125,18 +127,4 @@ export function resolveProviderSlashCommandsForCwd(
   cwd: string | null | undefined,
 ): ServerProvider["slashCommands"] {
   return resolveProviderWorkspaceSnapshot(provider, cwd)?.slashCommands ?? provider.slashCommands;
-}
-
-/** Null means this provider does not support client-driven freshness refresh. */
-export function providerWorkspaceSnapshotRefreshDelay(
-  provider: ServerProvider,
-  cwd: string | null | undefined,
-  nowMs: number,
-): number | null {
-  if (provider.capabilities?.workspaceSnapshotFreshness !== true) return null;
-  const snapshot = resolveProviderWorkspaceSnapshot(provider, cwd);
-  if (!snapshot) return 0;
-  const checkedAtMs = Date.parse(snapshot.checkedAt);
-  if (!Number.isFinite(checkedAtMs)) return 0;
-  return Math.max(0, checkedAtMs + PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS - nowMs);
 }

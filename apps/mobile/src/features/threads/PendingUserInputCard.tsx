@@ -29,6 +29,7 @@ import {
 } from "../../lib/threadActivity";
 
 export interface PendingUserInputCardProps {
+  readonly canOperateThread: boolean;
   readonly pendingUserInput: PendingUserInput;
   /**
    * Constant while a request is pending (it reserves keyboard space), so the
@@ -210,6 +211,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           icon="stop.fill"
           variant="danger"
           className="h-9 w-9"
+          disabled={!props.canOperateThread}
           onPress={props.onStopThread}
         />
       ) : null}
@@ -376,7 +378,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           label="Submit answers"
           size="large"
           tone={props.answers ? "primary" : "secondary"}
-          disabled={responseDisabled || props.answers === null}
+          disabled={!props.canOperateThread || responseDisabled || props.answers === null}
           onPress={() => void props.onSubmit()}
         />
       ) : null}
@@ -391,6 +393,11 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
             Dismiss without answering
           </Text>
         </Pressable>
+      ) : null}
+      {!props.canOperateThread ? (
+        <Text className="font-sans text-xs text-foreground-tertiary">
+          This connection cannot submit answers.
+        </Text>
       ) : null}
     </Animated.View>
   ) : null;

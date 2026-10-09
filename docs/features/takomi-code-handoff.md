@@ -1,8 +1,8 @@
 # Takomi Code handoff
 
-**Updated:** 2026-10-01
+**Updated:** 2026-10-09
 
-**Branch:** `feat/pi-takomi-parity`
+**Branch:** `Takomi-Code`
 
 **Repository:** `C:\CreativeOS\01_Projects\Code\Clones\2026-07-22_t3code`
 
@@ -21,8 +21,8 @@ implementation or release guidance.
 
 ## Branch model
 
-- `feat/pi-takomi-parity` — the live branch. All fork work converges here; day-to-day work
-  happens only on this branch. Takomi branding throughout.
+- `Takomi-Code` is the live branch and the target for upstream merges. The parity branches are
+  historical work branches, not migration targets.
 - `feat/pi-debrand` (worktree `worktrees/pi-debrand`) — a dormant stock-flavor branch: the same
   features with visible Takomi chrome swapped for stock T3 equivalents (sidebar wordmark, tab and
   inspector labels, connection client labels, provider icons, driver comment). It exists for
@@ -30,17 +30,17 @@ implementation or release guidance.
 
 Rules for `feat/pi-debrand`:
 
-1. Never merge it into `feat/pi-takomi-parity` — that would strip Takomi branding from the live
+1. Never merge it into `Takomi-Code` — that would strip Takomi branding from the live
    branch.
-2. It is agent-owned. Rebase it onto `feat/pi-takomi-parity` only when a stock build, demo, or
+2. It is agent-owned. Rebase it onto `Takomi-Code` only when a stock build, demo, or
    the upstream PR is actually requested; treat conflicts as trivial string swaps.
 3. Delete it once the upstream PR ships.
 4. App identity (`productName`, `APP_BASE_NAME`, splash, package display names) is intentionally
    still Takomi-branded on that branch and must be handled separately at PR time.
 
-The Pi provider's visible display name is a single constant: `PI_PROVIDER_IDENTITY` in
-`packages/contracts/src/providerIdentity.ts` (the provider name flips in one line; other branding
-is per-surface chrome, not centralized).
+`packages/contracts/src/providerIdentity.ts` keeps `PI_PROVIDER_IDENTITY` for stock Pi and
+`TAKOMI_PROVIDER_IDENTITY` for the separate Takomi instance. Both use the Pi driver. Other app
+branding stays in the clients and desktop identity modules.
 
 ## Current state
 
@@ -57,8 +57,8 @@ is per-surface chrome, not centralized).
   through `provider.attachPiSession` / `provider.forkPiSession`. Continuing backfills visible
   CLI history (user/assistant text); importing terminal sessions any other way remains
   unavailable.
-- Core Takomi tool calls use bounded semantic inline cards and an optional synchronized web/desktop
-  inspector. Board, Todo, and subagent state persist through updates and completion.
+- Takomi tools retain canonical V2 work-log items and an optional web/desktop inspector.
+  Todo and subagent items use the shared upstream rendering.
 - Windows desktop identity and state paths are separate from upstream T3 Code.
 - Repository scripts build a Windows x64 installer and a standalone arm64 Android preview APK into
   `release/`.
@@ -66,8 +66,9 @@ is per-surface chrome, not centralized).
 
 ### Deliberately incomplete
 
-- Pi supports only T3's `full-access` runtime mode.
-- Pi utility text generation for titles and Git/PR text is not implemented.
+- Pi permission modes use upstream\'s blocking tool hook, not an OS sandbox. Trusted extension
+  code outside a tool call still follows Pi\'s trust policy. Utility text generation uses
+  upstream\'s restricted Pi helper rather than the interactive suite-enabled process.
 - Pi session listing follows Pi's documented storage layout; attach/fork require a v3 file.
   Continuation includes visible CLI history hydration (user/assistant text); tool-call history
   hydration and automatic terminal-session import are not implemented.
@@ -81,8 +82,8 @@ is per-surface chrome, not centralized).
   override.
 - Mobile has no native Takomi semantic tool cards or inspector.
 - Mobile does not yet expose the Pi session catalog or CLI continuation flow.
-- Mobile visible names and icons are Takomi-branded, but package, scheme, Expo/EAS, update, and Clerk
-  infrastructure identifiers remain upstream-compatible pending migration.
+- Mobile names, icons, package IDs, and schemes are Takomi-specific. Expo/EAS releases remain
+  gated on Takomi-owned configuration; updates are disabled without that project ID.
 - The local Android preview APK is debug-signed and cannot be uploaded to the Play Store.
 - Without a supplied Linux `node-pty` prebuild, the packaged Windows application's WSL backend is
   unavailable; the normal Windows backend still works.
@@ -96,7 +97,7 @@ Binary path: pi
 Pi agent directory: blank
 Takomi suite root: blank
 Launch arguments: blank
-Runtime mode: full-access
+Runtime mode: supervised, auto-accept edits, or full-access
 ```
 
 For suite development, set **Takomi suite root** to the VibeCode Protocol Suite checkout. Do not set
@@ -104,13 +105,16 @@ For suite development, set **Takomi suite root** to the VibeCode Protocol Suite 
 
 ## Current local release workflow
 
-Current source versions match upstream: desktop `0.0.44` and mobile `1.3.1`. Artifact names are generated from
-those version sources and the current commit:
+Current source versions match the merged upstream: desktop `0.0.45` and mobile `2.0.0`.
+Each attempt reserves a separate output directory:
 
 ```text
-release\Takomi-Code-0.0.44-x64.exe
-release\Takomi-Code-Preview-1.3.1-<sha>[-dirty].apk
+release\local-<UTC-date>.<build-number>\Takomi-Code-<desktop-version>-preview.<UTC-date>.<build-number>-x64.exe
+release\local-<UTC-date>.<build-number>\Takomi-Code-Preview-<mobile-version>-<sha>-<UTC-date>.<build-number>[-dirty].apk
 ```
+
+The desktop preview embeds its dated version and has no auto-update feed. Source versions are not
+bumped to avoid collisions.
 
 From the repository root on Windows, build both:
 
@@ -133,8 +137,7 @@ The Android script owns the managed worktree `C:\takomi-local-build` and pnpm vi
 
 Choose one bounded objective:
 
-1. **Mobile distribution identity:** migrate package IDs, schemes, Expo/EAS/update ownership,
-   Clerk/OAuth configuration, and release signing.
+1. **Mobile distribution:** configure Takomi-owned Expo/EAS, Clerk/OAuth, updates, and release signing.
 2. **Pi session interoperability round 2:** richer point-split UX (forking from a message
    deeper than the preview window carries).
 3. **Pi interaction fidelity:** preserve richer question descriptions, previews, and multi-select
@@ -155,4 +158,4 @@ Use focused package checks for the area changed. For local release preparation, 
   compatibility identifiers intentionally remain.
 - Do not publish through the upstream `pingdotgg` Expo/EAS project.
 - Do not open the same Pi session file in terminal Pi while Takomi Code is writing it.
-- Do not claim safer Pi runtime modes until permission enforcement covers every Pi tool invocation.
+- Do not describe Pi permission modes as a sandbox or as permission enforcement for extension startup code.

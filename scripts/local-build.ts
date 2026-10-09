@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-// @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics nodeBuiltinImport:off -- Synchronous native build orchestration.
+// @effect-diagnostics globalDate:off -- Output reservation uses wall-clock timestamps outside Effect.
 
-import * as ChildProcess from "node:child_process";
-import * as FS from "node:fs";
-import * as Path from "node:path";
-import * as URL from "node:url";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 
-const scriptRoot = Path.resolve(Path.dirname(URL.fileURLToPath(import.meta.url)), "..");
+const scriptRoot = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 const localWorktree = "C:\\takomi-local-build";
 const localVirtualStore = "C:/tp";
 const ownershipMarkerName = ".takomi-local-build.json";
@@ -33,16 +35,16 @@ export function localBuildOutput(
   dryRun: boolean,
   now = new Date(),
 ): LocalBuildOutput {
-  const releaseDir = Path.join(root, "release");
+  const releaseDir = NodePath.join(root, "release");
   const date = now.toISOString().slice(0, 10).replaceAll("-", "");
   let runNumber = now.getTime();
-  if (!dryRun) FS.mkdirSync(releaseDir, { recursive: true });
+  if (!dryRun) NodeFS.mkdirSync(releaseDir, { recursive: true });
   while (true) {
     const stamp = `${date}.${runNumber}`;
-    const directory = Path.join(releaseDir, `local-${stamp}`);
+    const directory = NodePath.join(releaseDir, `local-${stamp}`);
     if (dryRun) return { directory, stamp };
     try {
-      FS.mkdirSync(directory);
+      NodeFS.mkdirSync(directory);
       return { directory, stamp };
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "EEXIST") {
@@ -115,13 +117,13 @@ function run(
   } = {},
 ): string {
   const capture = options.capture ?? false;
-  const result = ChildProcess.spawnSync(command, args, {
+  const result = NodeChildProcess.spawnSync(command, args, {
     cwd,
     env: options.env,
     encoding: "utf8",
     maxBuffer: 32 * 1024 * 1024,
     shell:
-      process.platform === "win32" &&
+      HostProcessPlatform.defaultValue() === "win32" &&
       (command === "vp" ||
         command === "pnpm" ||
         command.endsWith(".bat") ||
@@ -151,21 +153,21 @@ function sourceRoot(): string {
 
 function samePath(left: string, right: string): boolean {
   const normalize = (value: string) => {
-    const normalized = Path.normalize(value);
-    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+    const normalized = NodePath.normalize(value);
+    return HostProcessPlatform.defaultValue() === "win32" ? normalized.toLowerCase() : normalized;
   };
   return normalize(left) === normalize(right);
 }
 
 function gitCommonDir(root: string): string {
   const commonDir = git(root, ["rev-parse", "--git-common-dir"]);
-  return FS.realpathSync(Path.resolve(root, commonDir));
+  return NodeFS.realpathSync(NodePath.resolve(root, commonDir));
 }
 
 function readMarker(markerPath: string): OwnershipMarker {
   let decoded: unknown;
   try {
-    decoded = JSON.parse(FS.readFileSync(markerPath, "utf8"));
+    decoded = JSON.parse(NodeFS.readFileSync(markerPath, "utf8"));
   } catch {
     throw new Error(`Managed Android worktree marker is unreadable: ${markerPath}`);
   }
@@ -186,15 +188,15 @@ function readMarker(markerPath: string): OwnershipMarker {
 
 function writeMarker(worktree: string, repositoryGitDir: string): void {
   const marker: OwnershipMarker = { schemaVersion: 1, repositoryGitDir };
-  FS.writeFileSync(
-    Path.join(worktree, ownershipMarkerName),
+  NodeFS.writeFileSync(
+    NodePath.join(worktree, ownershipMarkerName),
     `${JSON.stringify(marker, null, 2)}\n`,
   );
 }
 
 function assertManagedWorktree(worktree: string, repositoryGitDir: string, root: string): void {
-  const markerPath = Path.join(worktree, ownershipMarkerName);
-  if (!FS.existsSync(markerPath)) {
+  const markerPath = NodePath.join(worktree, ownershipMarkerName);
+  if (!NodeFS.existsSync(markerPath)) {
     throw new Error(
       `Refusing to modify ${worktree}: it exists but is not a Takomi local-build worktree (missing ${ownershipMarkerName}).`,
     );
@@ -220,7 +222,9 @@ function assertManagedWorktree(worktree: string, repositoryGitDir: string, root:
   const registeredWorktrees = git(root, ["worktree", "list", "--porcelain"]);
   const isRegistered = registeredWorktrees.split(/\r?\n/u).some((line) => {
     const prefix = "worktree ";
-    return line.startsWith(prefix) && samePath(line.slice(prefix.length), Path.resolve(worktree));
+    return (
+      line.startsWith(prefix) && samePath(line.slice(prefix.length), NodePath.resolve(worktree))
+    );
   });
   if (!isRegistered) {
     throw new Error(
@@ -231,7 +235,7 @@ function assertManagedWorktree(worktree: string, repositoryGitDir: string, root:
 
 function prepareManagedWorktree(root: string, sha: string): string {
   const repositoryGitDir = gitCommonDir(root);
-  if (FS.existsSync(localWorktree)) {
+  if (NodeFS.existsSync(localWorktree)) {
     assertManagedWorktree(localWorktree, repositoryGitDir, root);
   } else {
     run("git", ["worktree", "add", "--detach", localWorktree, sha], root);
@@ -252,48 +256,48 @@ function prepareManagedWorktree(root: string, sha: string): string {
 function copyTrackedFiles(source: string, target: string): void {
   const files = git(source, ["ls-files", "-z"]).split("\0").filter(Boolean);
   for (const relativePath of files) {
-    if (Path.isAbsolute(relativePath) || relativePath.split(/[\\/]/u).includes("..")) {
+    if (NodePath.isAbsolute(relativePath) || relativePath.split(/[\\/]/u).includes("..")) {
       throw new Error(`Refusing unsafe tracked path: ${relativePath}`);
     }
 
-    const sourcePath = Path.resolve(source, relativePath);
-    const targetPath = Path.resolve(target, relativePath);
-    const targetPrefix = `${Path.resolve(target)}${Path.sep}`;
+    const sourcePath = NodePath.resolve(source, relativePath);
+    const targetPath = NodePath.resolve(target, relativePath);
+    const targetPrefix = `${NodePath.resolve(target)}${NodePath.sep}`;
     if (!targetPath.startsWith(targetPrefix)) {
       throw new Error(`Refusing path outside managed worktree: ${relativePath}`);
     }
 
-    if (!FS.existsSync(sourcePath)) {
+    if (!NodeFS.existsSync(sourcePath)) {
       // A tracked deletion in the current working tree must also be absent
       // from the build copy.
-      FS.rmSync(targetPath, { recursive: true, force: true });
+      NodeFS.rmSync(targetPath, { recursive: true, force: true });
       continue;
     }
 
     // Git already checked out tracked links in the managed worktree. Recreating
     // Windows directory links can require elevation, and their contents are not
     // part of the working-tree overlay.
-    const sourceStat = FS.lstatSync(sourcePath);
+    const sourceStat = NodeFS.lstatSync(sourcePath);
     if (sourceStat.isSymbolicLink() || sourceStat.isDirectory()) continue;
 
-    FS.mkdirSync(Path.dirname(targetPath), { recursive: true });
-    FS.rmSync(targetPath, { recursive: true, force: true });
-    FS.copyFileSync(sourcePath, targetPath);
+    NodeFS.mkdirSync(NodePath.dirname(targetPath), { recursive: true });
+    NodeFS.rmSync(targetPath, { recursive: true, force: true });
+    NodeFS.copyFileSync(sourcePath, targetPath);
   }
 }
 
 function copyRootEnvFiles(source: string, target: string): void {
   for (const name of [".env", ".env.local"]) {
-    const from = Path.join(source, name);
-    if (FS.existsSync(from)) {
-      FS.copyFileSync(from, Path.join(target, name));
+    const from = NodePath.join(source, name);
+    if (NodeFS.existsSync(from)) {
+      NodeFS.copyFileSync(from, NodePath.join(target, name));
     }
   }
 }
 
 function configureShortAndroidPaths(worktree: string): void {
-  const workspacePath = Path.join(worktree, "pnpm-workspace.yaml");
-  FS.appendFileSync(
+  const workspacePath = NodePath.join(worktree, "pnpm-workspace.yaml");
+  NodeFS.appendFileSync(
     workspacePath,
     `\n# Machine-local Android build paths; this worktree is never committed.\nvirtualStoreDir: ${localVirtualStore}\nvirtualStoreDirMaxLength: 32\n`,
   );
@@ -302,25 +306,25 @@ function configureShortAndroidPaths(worktree: string): void {
 function writeAndroidLocalProperties(worktree: string): void {
   const sdkDir = process.env["ANDROID_HOME"] ?? process.env["ANDROID_SDK_ROOT"];
   const defaultSdkDir = process.env["LOCALAPPDATA"]
-    ? Path.join(process.env["LOCALAPPDATA"], "Android", "Sdk")
+    ? NodePath.join(process.env["LOCALAPPDATA"], "Android", "Sdk")
     : undefined;
   const resolvedSdkDir = sdkDir ?? defaultSdkDir;
-  if (!resolvedSdkDir || !FS.existsSync(resolvedSdkDir)) {
+  if (!resolvedSdkDir || !NodeFS.existsSync(resolvedSdkDir)) {
     throw new Error(
       "Android SDK not found. Set ANDROID_HOME or install it under %LOCALAPPDATA%\\Android\\Sdk.",
     );
   }
 
-  const androidRoot = Path.join(worktree, "apps", "mobile", "android");
-  FS.writeFileSync(
-    Path.join(androidRoot, "local.properties"),
+  const androidRoot = NodePath.join(worktree, "apps", "mobile", "android");
+  NodeFS.writeFileSync(
+    NodePath.join(androidRoot, "local.properties"),
     `sdk.dir=${resolvedSdkDir.replaceAll("\\", "/")}\n`,
   );
 }
 
 function readDesktopVersion(root: string): string {
   const metadata: unknown = JSON.parse(
-    FS.readFileSync(Path.join(root, "apps/desktop/package.json"), "utf8"),
+    NodeFS.readFileSync(NodePath.join(root, "apps/desktop/package.json"), "utf8"),
   );
   if (typeof metadata !== "object" || metadata === null || !("version" in metadata)) {
     throw new Error("Could not read the desktop version from apps/desktop/package.json.");
@@ -334,7 +338,7 @@ function readDesktopVersion(root: string): string {
 }
 
 function readMobileVersion(root: string): string {
-  const config = FS.readFileSync(Path.join(root, "apps/mobile/app.config.ts"), "utf8");
+  const config = NodeFS.readFileSync(NodePath.join(root, "apps/mobile/app.config.ts"), "utf8");
   const match = /^\s+version:\s*"([^"]+)"/mu.exec(config);
   const version = match?.[1];
   if (!version) {
@@ -359,20 +363,20 @@ function buildDesktop(root: string, dryRun: boolean, output: LocalBuildOutput): 
   log(`[local-build] Desktop preview version: ${version}`);
   log(`[local-build] Desktop artifacts: ${output.directory}`);
   if (!dryRun) {
-    const cachedMonitor = Path.join(
+    const cachedMonitor = NodePath.join(
       root,
       "native/resource-monitor/target/x86_64-pc-windows-msvc/release/t3-resource-monitor.exe",
     );
     const tempDir = "C:\\Temp";
-    if (!FS.existsSync(tempDir)) {
-      FS.mkdirSync(tempDir, { recursive: true });
+    if (!NodeFS.existsSync(tempDir)) {
+      NodeFS.mkdirSync(tempDir, { recursive: true });
     }
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       TMPDIR: process.env["TMPDIR"] ?? tempDir,
       TEMP: process.env["TEMP"] ?? tempDir,
       TMP: process.env["TMP"] ?? tempDir,
-      ...(FS.existsSync(cachedMonitor) && !process.env["T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR"]
+      ...(NodeFS.existsSync(cachedMonitor) && !process.env["T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR"]
         ? { T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: "true" }
         : {}),
     };
@@ -387,7 +391,7 @@ function buildAndroid(root: string, dryRun: boolean, output: LocalBuildOutput): 
   const dirty = git(root, ["status", "--porcelain", "--untracked-files=no"]).length > 0;
   const version = readMobileVersion(root);
   const artifactName = `Takomi-Code-Preview-${version}-${sha}-${output.stamp}${dirty ? "-dirty" : ""}.apk`;
-  const apkPath = Path.join(
+  const apkPath = NodePath.join(
     localWorktree,
     "apps",
     "mobile",
@@ -401,7 +405,7 @@ function buildAndroid(root: string, dryRun: boolean, output: LocalBuildOutput): 
   );
 
   log(`[local-build] Android worktree: ${localWorktree}`);
-  log(`[local-build] Android artifact: ${Path.join(output.directory, artifactName)}`);
+  log(`[local-build] Android artifact: ${NodePath.join(output.directory, artifactName)}`);
   log(
     "[local-build] This is an internal, debug-signed preview APK; it is not Play Store uploadable.",
   );
@@ -434,13 +438,13 @@ function buildAndroid(root: string, dryRun: boolean, output: LocalBuildOutput): 
     T3CODE_MOBILE_PNPM_STORE: localVirtualStore,
   };
   run("vp", ["install", "--filter=@t3tools/mobile..."], worktree, { env: buildEnv });
-  const mobileRoot = Path.join(worktree, "apps", "mobile");
+  const mobileRoot = NodePath.join(worktree, "apps", "mobile");
   run("pnpm", ["exec", "expo", "prebuild", "--clean", "--platform", "android"], mobileRoot, {
     env: buildEnv,
   });
   writeAndroidLocalProperties(worktree);
-  const androidRoot = Path.join(mobileRoot, "android");
-  const gradle = Path.join(androidRoot, "gradlew.bat");
+  const androidRoot = NodePath.join(mobileRoot, "android");
+  const gradle = NodePath.join(androidRoot, "gradlew.bat");
   run(gradle, ["app:createReleaseUpdatesResources", "--max-workers=1"], androidRoot, {
     env: buildEnv,
   });
@@ -460,16 +464,20 @@ function buildAndroid(root: string, dryRun: boolean, output: LocalBuildOutput): 
     { env: buildEnv },
   );
 
-  if (!FS.existsSync(apkPath)) {
+  if (!NodeFS.existsSync(apkPath)) {
     throw new Error(`Gradle completed but did not produce ${apkPath}.`);
   }
-  FS.copyFileSync(apkPath, Path.join(output.directory, artifactName), FS.constants.COPYFILE_EXCL);
+  NodeFS.copyFileSync(
+    apkPath,
+    NodePath.join(output.directory, artifactName),
+    NodeFS.constants.COPYFILE_EXCL,
+  );
 }
 
 function main(): void {
   const options = parseOptions(process.argv.slice(2));
   if (!options) return;
-  if (process.platform !== "win32") {
+  if (HostProcessPlatform.defaultValue() !== "win32") {
     throw new Error(
       "Local desktop and Android builds are Windows-only. Use GitHub CI/EAS for other platforms.",
     );

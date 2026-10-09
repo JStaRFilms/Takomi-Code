@@ -568,6 +568,8 @@ export const UserInputQuestion = Schema.Struct({
   allowCustomAnswer: Schema.optional(Schema.Boolean),
   sensitive: Schema.optional(Schema.Boolean),
   fileInput: Schema.optional(Schema.Literal("vault-archive")),
+  /** Editable initial text. Answers preserve whitespace and allow an empty string when present. */
+  initialAnswer: Schema.optional(Schema.String),
   multiSelect: Schema.optional(Schema.Boolean).pipe(
     Schema.withConstructorDefault(Effect.succeed(false)),
   ),

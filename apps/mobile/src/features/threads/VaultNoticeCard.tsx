@@ -1,4 +1,4 @@
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useRef, useState } from "react";
 import { View } from "react-native";

@@ -11,7 +11,7 @@ Run from the repository root. Preserve upstream architecture and stability fixes
 
 - `Takomi-Code` — the live branch; upstream merges target it. Confirm this branch is checked out before making changes. The parity branches are historical work branches, not migration targets.
 - `feat/pi-debrand` (worktree `worktrees/pi-debrand`) — dormant stock-flavor branch for stock demos and the eventual upstream PR. Never merge it into `Takomi-Code`; never rebase it as part of a migration. If it has drifted and the user asks for a stock build or the upstream PR, rebase it onto `Takomi-Code` at that point only (its delta is intentional string swaps; resolve conflicts accordingly), then delete it after the PR ships.
-- `PI_PROVIDER_IDENTITY` in `packages/contracts/src/providerIdentity.ts` owns the Pi display name (`"Takomi"` on the live branch, `"Pi"` on `feat/pi-debrand`). See `docs/features/takomi-code-handoff.md` for the full branch rules.
+- `packages/contracts/src/providerIdentity.ts` keeps stock `PI_PROVIDER_IDENTITY` (`"Pi"`) separate from `TAKOMI_PROVIDER_IDENTITY` (`"Takomi"`, instance `takomi`). Both use the Pi driver. See `docs/features/takomi-code-handoff.md` for the full branch rules.
 
 ## 1. Establish a recoverable starting point
 
@@ -185,5 +185,5 @@ Before reporting completion:
 2. Confirm the working tree is clean.
 3. List the merge commit and any corrective commits created afterward.
 4. State focused checks and artifact paths truthfully. Give the built web/server build and launch commands from step 6, and distinguish those from any release build commands actually run.
-5. State unresolved limitations, especially WSL packaging and Android's upstream-compatible infrastructure identity.
+5. State unresolved limitations, especially WSL packaging and Android's gated Takomi-owned release infrastructure.
 6. Do not push unless explicitly requested. A merge-based update uses a normal push; do not force-push for this workflow.

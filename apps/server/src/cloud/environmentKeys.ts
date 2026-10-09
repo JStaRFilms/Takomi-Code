@@ -1,3 +1,4 @@
+// Effect's Crypto has no generateKeyPairSync.
 import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";

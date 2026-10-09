@@ -17,22 +17,18 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import { listBoundedPiSessions, validatePiSessionProvider } from "./Layers/PiSessionCatalog.ts";
+import { listBoundedPiSessions, validatePiSessionProvider } from "./PiSessionCatalog.ts";
 import {
   continuePiSessionInThread,
   previewPiSessionMessages,
   toHistoryImportMessages,
-} from "./Layers/PiSessionAttach.ts";
-import {
-  checkPiSessionUpdates,
-  syncPiSessionUpdates,
-  type PiSyncDeps,
-} from "./Layers/PiSessionSync.ts";
+} from "./PiSessionAttach.ts";
+import { checkPiSessionUpdates, syncPiSessionUpdates, type PiSyncDeps } from "./PiSessionSync.ts";
 import { extractPiHistory } from "@t3tools/takomi-pi-host/sessionHistory";
 import {
   PI_CATALOG_GENERATION_TTL_MS,
