@@ -149,3 +149,31 @@ index 1e1246f709feb04c01cf3221472cc1219a8fffac..f526d4fe2d2738becbe8d29c59d1105a
  }>;
  
  export interface SwipeableMethods {
+diff --git a/android/CMakeLists.txt b/android/CMakeLists.txt
+index ae44354..681667e 100644
+--- a/android/CMakeLists.txt
++++ b/android/CMakeLists.txt
+@@ -4,13 +4,13 @@ project(GestureHandlerCodegen)
+ set(CMAKE_VERBOSE_MAKEFILE on)
+ set(CMAKE_CXX_STANDARD 20)
+ 
+-file(GLOB_RECURSE rn_gesture_handler_SRCS CONFIGURE_DEPENDS ../shared/shadowNodes/*.cpp)
++file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/../shared/shadowNodes/react/renderer/components/rngesturehandler_codegen/RNGestureHandlerDetectorShadowNode.cpp" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+ file(GLOB_RECURSE rn_gesture_handler_codegen_SRCS CONFIGURE_DEPENDS ./build/generated/source/codegen/jni/*.cpp)
+ 
+ add_library(
+   react_codegen_rngesturehandler_codegen
+   SHARED
+-  ${rn_gesture_handler_SRCS}
++  "${CMAKE_CURRENT_BINARY_DIR}/RNGestureHandlerDetectorShadowNode.cpp"
+   ${rn_gesture_handler_codegen_SRCS}
+ )
+ 
+@@ -18,6 +18,7 @@ if(ReactAndroid_VERSION_MINOR GREATER_EQUAL 80)
+   target_compile_reactnative_options(react_codegen_rngesturehandler_codegen PRIVATE)
+ endif()
+ 
++target_include_directories(react_codegen_rngesturehandler_codegen PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../shared/shadowNodes/react/renderer/components/rngesturehandler_codegen")
+ target_include_directories(react_codegen_rngesturehandler_codegen PUBLIC ../shared/shadowNodes)
+ target_include_directories(react_codegen_rngesturehandler_codegen PUBLIC ./build/generated/source/codegen/jni)
+ 
