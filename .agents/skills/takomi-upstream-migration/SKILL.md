@@ -9,8 +9,8 @@ Run from the repository root. Preserve upstream architecture and stability fixes
 
 ## Branch model (read first)
 
-- `feat/pi-takomi-parity` — the live branch; all work converges here and upstream merges target it.
-- `feat/pi-debrand` (worktree `worktrees/pi-debrand`) — dormant stock-flavor branch for stock demos and the eventual upstream PR. Never merge it into `feat/pi-takomi-parity`; never rebase it as part of a migration. If it has drifted and the user asks for a stock build or the upstream PR, rebase it onto `feat/pi-takomi-parity` at that point only (its delta is intentional string swaps; resolve conflicts accordingly), then delete it after the PR ships.
+- `Takomi-Code` — the live branch; upstream merges target it. Confirm this branch is checked out before making changes. The parity branches are historical work branches, not migration targets.
+- `feat/pi-debrand` (worktree `worktrees/pi-debrand`) — dormant stock-flavor branch for stock demos and the eventual upstream PR. Never merge it into `Takomi-Code`; never rebase it as part of a migration. If it has drifted and the user asks for a stock build or the upstream PR, rebase it onto `Takomi-Code` at that point only (its delta is intentional string swaps; resolve conflicts accordingly), then delete it after the PR ships.
 - `PI_PROVIDER_IDENTITY` in `packages/contracts/src/providerIdentity.ts` owns the Pi display name (`"Takomi"` on the live branch, `"Pi"` on `feat/pi-debrand`). See `docs/features/takomi-code-handoff.md` for the full branch rules.
 
 ## 1. Establish a recoverable starting point
@@ -82,7 +82,7 @@ Pay special attention to:
 - provider runtime ingestion and generic provider semantics;
 - Pi driver environment requirements and Effect/Schema API changes;
 - mobile package IDs, schemes, Expo updates, Clerk configuration, and signing;
-- Pi's version-gated, read-only session catalog and its attach/clone/import limitations;
+- Pi's read-only session catalog, installed-package verification, v3 session-format compatibility, effective provider-instance enabled state, and attach/clone/import limitations (do not restore an exact package-version allowlist);
 - documentation links, versions, artifact names, branch names, and stale commit hashes.
 
 If Takomi behavior overrides upstream globally, either narrow it to Takomi/Pi or present the user with the tradeoff.
@@ -139,7 +139,7 @@ For a dedicated Mac host, build with the same `vp run --filter t3 build`, then r
 
 ## 7. Build release artifacts
 
-Local release builds output to `release/` and are driven by repository scripts. These are optional for a merge unless the user requests artifacts. They do not replace the built web/server test commands above.
+Each local release build reserves a unique `release/local-<UTC-date>.<build-number>/` directory through repository scripts. Separate target commands reserve separate directories; use `vp run dist:local` for both artifacts in one attempt. Do not bump source versions merely to avoid output collisions. Desktop previews embed a dated preview version and have no auto-update feed. These are optional for a merge unless the user requests artifacts. They do not replace the built web/server test commands above.
 
 ### Build both applications
 
@@ -158,7 +158,7 @@ vp run dist:local:desktop
 Read the desktop version from `apps/desktop/package.json` at build time. Expected output:
 
 ```text
-release\Takomi-Code-<desktop-version>-x64.exe
+release\local-<UTC-date>.<build-number>\Takomi-Code-<desktop-version>-preview.<UTC-date>.<build-number>-x64.exe
 ```
 
 Report the warning if no WSL `node-pty` prebuild is supplied: normal Windows operation works, but the packaged WSL backend does not. If the desktop build fails while probing temporary directories, set `$env:TEMP` / `$env:TMP` / `$env:TMPDIR` to `C:\t3code-tmp` as documented in `release/README.md`.
@@ -172,10 +172,10 @@ vp run dist:local:android
 Read the mobile version from `apps/mobile/app.config.ts` at build time. Expected output:
 
 ```text
-release\Takomi-Code-Preview-<mobile-version>-<sha>[-dirty].apk
+release\local-<UTC-date>.<build-number>\Takomi-Code-Preview-<mobile-version>-<sha>-<UTC-date>.<build-number>[-dirty].apk
 ```
 
-Uncommitted tracked changes are included (the artifact name appends `-dirty`). The build uses the managed short worktree `C:\takomi-local-build` and `C:\tp` pnpm virtual store. The output is an internal, debug-signed preview APK and is not Play Store uploadable. If Gradle owns a locked build directory, stop the daemon cleanly via `C:\takomi-local-build\apps\mobile\android\gradlew.bat --stop`; never kill Java or Gradle processes by broad name/path matching.
+Uncommitted tracked changes are included (the artifact name appends `-dirty`). The build uses the managed worktree `C:\takomi-local-build` and `C:\tp` pnpm virtual store. It resets and cleans that worktree: inspect its status and preserve any needed work before building. Consult `scripts/local-build.ts` and `release/README.md` for current Windows native-build path handling; do not infer clean-source reproducibility from an earlier one-off APK. The output is an internal, debug-signed preview APK and is not Play Store uploadable. If Gradle owns a locked build directory, stop the daemon cleanly via `C:\takomi-local-build\apps\mobile\android\gradlew.bat --stop`; never kill Java or Gradle processes by broad name/path matching.
 
 ## 8. Finish safely
 
