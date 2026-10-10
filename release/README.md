@@ -1,8 +1,9 @@
 # Local Takomi releases
 
-The `release/` directory holds locally built installers and APKs. Each local build reserves its
-own `release/local-<UTC-date>.<build-number>/` directory, so retrying never overwrites a working
-build. Generated artifacts stay out of Git. Upload selected files to the
+The `release/` directory holds locally built installers and APKs. Each local build reserves a
+unique attempt under the hidden, gitignored `release/.local-build/` area. It creates
+`release/local-<UTC-date>.<build-number>/` only after a target finishes with a nonempty installer
+or APK, so retrying never overwrites a working build. Upload selected files to the
 [Takomi Code releases](https://github.com/JStaRFilms/Takomi-Code/releases).
 
 ## Current release notes
@@ -85,10 +86,21 @@ This prints a unique output directory and produces:
 The desktop version follows upstream's dated preview format, using a local timestamp as the
 numeric build number. It is embedded in the installer; the source package versions do not change.
 Local previews have no auto-update feed. A new attempt, even in the same millisecond, reserves a
-new output directory before building. Keep published versions and update metadata on the normal
+new build number before building. Keep published versions and update metadata on the normal
 release workflow; do not treat these preview files as stable update assets. If you build desktop
 and Android separately, each command gets a different output directory; run `vp run dist:local`
 when you need both files from the same attempt.
+
+Only completed installers and APKs go into the visible output directory. If desktop succeeds but
+Android fails, the desktop installer stays available there. A failed target leaves no partial
+installable or empty visible directory. The script removes this attempt's staged files on success
+or a handled failure, but never removes older releases. Small hidden `.reserved` files keep build
+numbers unique after failed attempts. A forcibly terminated process can leave staged files under
+`release/.local-build/`.
+
+Build diagnostics stay in the terminal; the script does not save log files. If you redirect output
+or save a troubleshooting report, put it under one hidden `release/.logs/` directory instead of
+adding loose files to `release/`. `--dry-run` prints the plan without creating files or directories.
 
 ## Build one application
 

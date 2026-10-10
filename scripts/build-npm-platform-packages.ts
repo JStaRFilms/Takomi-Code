@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
  * Turns the per-platform CLI archives of one release into the npm packages
- * behind `npx t3` / `npm i -g t3`: one `@t3code/t3-<platformKey>` package per
- * archive holding the archive's contents verbatim, plus the `t3` launcher
+ * behind `npx takomi-code` / `npm i -g takomi-code`: one `@johnsax/takomi-code-<platformKey>` package per
+ * archive holding the archive's contents verbatim, plus the `takomi-code` launcher
  * that lists them as optionalDependencies and execs the one npm installed.
  * The bytes a user gets from npm are therefore the release archive's, and
  * running them needs neither a Node runtime, npm, nor a native build.
  *
  * Output layout under `--output-dir`:
  *
- *   @t3code/t3-<platformKey>/      archive contents flattened + package.json
- *   @t3code/t3-<platformKey>.tgz   the same tree as an npm tarball
- *   t3/                             launcher: package.json, bin/t3.js, README.md
- *   t3.tgz                          the launcher as an npm tarball
+ *   @johnsax/takomi-code-<platformKey>/      archive contents flattened + package.json
+ *   @johnsax/takomi-code-<platformKey>.tgz   the same tree as an npm tarball
+ *   takomi-code/                    launcher: package.json, bin/takomi-code.js, README.md
+ *   takomi-code.tgz                 the launcher as an npm tarball
  *
  * The tarballs are what gets published. `npm publish <dir>` always drops
  * `node_modules/` (npm-packlist ignores it whatever `files` says, and
@@ -43,8 +43,9 @@ import serverPackageJson from "../apps/server/package.json" with { type: "json" 
 
 import { windowsSystemTar } from "./build-cli-archive.ts";
 
-export const NPM_PLATFORM_PACKAGE_SCOPE = "@t3code";
-export const NPM_LAUNCHER_PACKAGE_NAME = "t3";
+export const NPM_PLATFORM_PACKAGE_SCOPE = "@johnsax";
+export const NPM_LAUNCHER_PACKAGE_NAME = "takomi-code";
+const NPM_REPOSITORY = { type: "git", url: "https://github.com/JStaRFilms/Takomi-Code" };
 
 const encodePackageJson = Schema.encodeEffect(fromJsonStringPretty(Schema.Unknown));
 
@@ -85,7 +86,7 @@ export class NpmPackagesArchiveLayoutError extends Schema.TaggedError<NpmPackage
 }
 
 export function npmPlatformPackageName(platformKey: CliArchivePlatformKey): string {
-  return `${NPM_PLATFORM_PACKAGE_SCOPE}/t3-${platformKey}`;
+  return `${NPM_PLATFORM_PACKAGE_SCOPE}/${NPM_LAUNCHER_PACKAGE_NAME}-${platformKey}`;
 }
 
 /**
@@ -107,9 +108,9 @@ export function npmPlatformPackageManifest(
   return {
     name: npmPlatformPackageName(platformKey),
     version,
-    description: `T3 Code CLI executable for ${platformKey}`,
+    description: `Takomi Code CLI executable for ${platformKey}`,
     license: serverPackageJson.license,
-    repository: serverPackageJson.repository,
+    repository: NPM_REPOSITORY,
     os: [os],
     cpu: [cpu],
     files: ["t3", "t3.exe", "client", "resource-monitor", "node_modules"],
@@ -155,20 +156,20 @@ export function npmPlatformPackageReadme(platformKey: CliArchivePlatformKey): st
   return [
     `# ${npmPlatformPackageName(platformKey)}`,
     "",
-    `The T3 Code CLI executable for ${platformKey}. Do not install this package directly:`,
+    `The Takomi Code CLI executable for ${platformKey}. Do not install this package directly:`,
     `it is an optional dependency of \`${NPM_LAUNCHER_PACKAGE_NAME}\`, which picks the package for the`,
     "current platform and runs the executable inside it.",
     "",
     "```sh",
-    `npx ${NPM_LAUNCHER_PACKAGE_NAME}@latest`,
+    `npx ${NPM_LAUNCHER_PACKAGE_NAME}@latest serve`,
     "```",
     "",
-    "Source and documentation: https://github.com/pingdotgg/t3code",
+    "Source and documentation: https://github.com/JStaRFilms/Takomi-Code",
     "",
   ].join("\n");
 }
 
-/** package.json for the `t3` launcher. No engines: bin/t3.js is trivial CJS. */
+/** package.json for the public launcher. No engines: the launcher is trivial CJS. */
 export function npmLauncherPackageManifest(
   version: string,
   platformKeys: ReadonlyArray<CliArchivePlatformKey>,
@@ -176,10 +177,10 @@ export function npmLauncherPackageManifest(
   return {
     name: NPM_LAUNCHER_PACKAGE_NAME,
     version,
-    description: "T3 Code CLI. Installs the self-contained executable for this platform.",
+    description: "Takomi Code CLI. Installs the self-contained executable for this platform.",
     license: serverPackageJson.license,
-    repository: serverPackageJson.repository,
-    bin: { t3: "./bin/t3.js" },
+    repository: NPM_REPOSITORY,
+    bin: { "takomi-code": "./bin/takomi-code.js" },
     files: ["bin", "dist"],
     optionalDependencies: Object.fromEntries(
       platformKeys.map((key) => [npmPlatformPackageName(key), version]),
@@ -188,29 +189,30 @@ export function npmLauncherPackageManifest(
 }
 
 /**
- * The launcher every `npx t3` runs. Plain CommonJS with no dependencies so it
+ * The launcher every `npx takomi-code` runs. Plain CommonJS with no dependencies so it
  * loads on any Node that npm itself runs on; the real work happens in the
  * single-executable it execs.
  */
-export const NPM_LAUNCHER_SCRIPT = `#!/usr/bin/env node
+export function npmLauncherScript(platformKeys: ReadonlyArray<CliArchivePlatformKey>): string {
+  return `#!/usr/bin/env node
 "use strict";
 const { spawnSync } = require("node:child_process");
 const { constants } = require("node:os");
 const { dirname, join } = require("node:path");
 
-const SUPPORTED = [${CLI_ARCHIVE_PLATFORM_KEYS.map((key) => `"${key}"`).join(", ")}];
+const SUPPORTED = ${JSON.stringify(platformKeys)};
 const key = process.platform + "-" + process.arch;
 
 let packageDir;
 try {
-  packageDir = dirname(require.resolve("${NPM_PLATFORM_PACKAGE_SCOPE}/t3-" + key + "/package.json"));
+  packageDir = dirname(require.resolve("${NPM_PLATFORM_PACKAGE_SCOPE}/${NPM_LAUNCHER_PACKAGE_NAME}-" + key + "/package.json"));
 } catch {
   process.stderr.write(
     [
-      "t3: no T3 Code CLI build is available for this platform (" + key + ").",
+      "takomi-code: no Takomi Code CLI build is available for this platform (" + key + ").",
       "Supported platforms: " + SUPPORTED.join(", ") + ".",
-      "If yours is listed, reinstall t3 so npm fetches its optional dependency.",
-      "The desktop app and release archives are at https://github.com/pingdotgg/t3code/releases",
+      "If yours is listed, reinstall takomi-code so npm fetches its optional dependency.",
+      "The desktop app and release archives are at https://github.com/JStaRFilms/Takomi-Code/releases",
       "",
     ].join("\\n"),
   );
@@ -220,12 +222,13 @@ try {
 const executable = join(packageDir, process.platform === "win32" ? "t3.exe" : "t3");
 const result = spawnSync(executable, process.argv.slice(2), { stdio: "inherit" });
 if (result.error) {
-  process.stderr.write("t3: failed to start " + executable + ": " + result.error.message + "\\n");
+  process.stderr.write("takomi-code: failed to start " + executable + ": " + result.error.message + "\\n");
   process.exit(1);
 }
 // A child killed by a signal has no status; report it the way a shell would.
 process.exit(result.status ?? 128 + (constants.signals[result.signal] || 1));
 `;
+}
 
 const runCommand = Effect.fn("runCommand")(function* (
   command: ChildProcess.StandardCommand,
@@ -255,7 +258,15 @@ const extractArchive = Effect.fn("extractArchive")(function* (archive: string, i
   const path = yield* Path.Path;
   const platform = yield* HostProcessPlatform;
   if (!archive.endsWith(".zip")) {
-    yield* runCommand(ChildProcess.make("tar", ["-xf", archive, "-C", into]), "tar -xf");
+    yield* runCommand(
+      ChildProcess.make(platform === "win32" ? windowsSystemTar() : "tar", [
+        "-xf",
+        archive,
+        "-C",
+        into,
+      ]),
+      "tar -xf",
+    );
   } else if (platform === "win32") {
     yield* runCommand(
       ChildProcess.make(windowsSystemTar(), ["-xf", archive, "-C", into]),
@@ -365,7 +376,7 @@ const stagePlatformPackage = Effect.fn("stagePlatformPackage")(function* (input:
   return output;
 }, Effect.scoped);
 
-/** Writes the launcher package (package.json, bin/t3.js, README) and its tarball. */
+/** Writes the launcher package and its tarball, retaining dist/bin.mjs for compatibility. */
 const stageLauncherPackage = Effect.fn("stageLauncherPackage")(function* (input: {
   readonly outputDir: string;
   readonly version: string;
@@ -383,17 +394,17 @@ const stageLauncherPackage = Effect.fn("stageLauncherPackage")(function* (input:
     path.join(stageDir, "package.json"),
     `${yield* encodePackageJson(npmLauncherPackageManifest(input.version, input.platformKeys))}\n`,
   );
-  const launcherScript = path.join(stageDir, "bin/t3.js");
-  yield* fs.writeFileString(launcherScript, NPM_LAUNCHER_SCRIPT);
+  const launcherScript = path.join(stageDir, "bin/takomi-code.js");
+  yield* fs.writeFileString(launcherScript, npmLauncherScript(input.platformKeys));
   yield* fs.chmod(launcherScript, 0o755);
   // Older service updaters and launchers run this exact path with Node.
   // Keep it in the package so they can preflight and start the new executable.
   yield* fs.makeDirectory(path.join(stageDir, "dist"));
   yield* fs.writeFileString(path.join(stageDir, "dist/bin.mjs"), legacyCliLauncherScript());
-  const readme = yield* path.fromFileUrl(new URL("../apps/server/README.md", import.meta.url));
-  if (yield* fs.exists(readme)) {
-    yield* fs.copyFile(readme, path.join(stageDir, "README.md"));
-  }
+  yield* fs.writeFileString(
+    path.join(stageDir, "README.md"),
+    "# Takomi Code\n\nRun `npx takomi-code@latest serve`, or install with `npm install -g takomi-code` and run `takomi-code serve`.\n\nThe server runtime is included.\n\nSource and releases: https://github.com/JStaRFilms/Takomi-Code\n",
+  );
   const output: NpmPackageOutput = {
     name: NPM_LAUNCHER_PACKAGE_NAME,
     packageDir: path.join(input.outputDir, NPM_LAUNCHER_PACKAGE_NAME),
@@ -477,7 +488,7 @@ const command = Command.make(
   buildNpmPlatformPackages,
 ).pipe(
   Command.withDescription(
-    "Build the t3 launcher and @t3code/t3-<platform> npm packages from CLI release archives.",
+    "Build the takomi-code launcher and @johnsax/takomi-code-<platform> packages from CLI release archives.",
   ),
 );
 

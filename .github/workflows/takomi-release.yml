@@ -1,0 +1,287 @@
+name: Takomi build and release
+
+on:
+  push:
+    branches: [Takomi-Code]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Explicit stable version, for example 0.1.0. Required to publish."
+        type: string
+      publish:
+        description: "Publish npm packages and the Windows GitHub release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Do not cancel a publisher or let two versions publish out of order.
+concurrency:
+  group: takomi-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'JStaRFilms/Takomi-Code'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - id: meta
+        uses: actions/github-script@v8
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+        with:
+          script: |
+            const tagged = context.eventName === 'push' && context.ref.startsWith('refs/tags/');
+            const publish = tagged || (context.eventName === 'workflow_dispatch' && process.env.INPUT_PUBLISH === 'true');
+            if (context.eventName === 'workflow_dispatch' && context.ref !== 'refs/heads/Takomi-Code') {
+              throw new Error('Select the Takomi-Code branch for a manual run.');
+            }
+            const requested = tagged ? context.ref.slice('refs/tags/v'.length) : (process.env.INPUT_VERSION || '').trim();
+            const stable = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+            if ((publish || requested) && !stable.test(requested)) {
+              throw new Error('Supply a plain X.Y.Z version. Publishing never uses the manifest version.');
+            }
+            if (publish) {
+              let object;
+              try {
+                const response = await github.rest.git.getRef({
+                  ...context.repo,
+                  ref: `tags/v${requested}`,
+                });
+                object = response.data.object;
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+              if (object) {
+                while (object.type === 'tag') {
+                  const response = await github.rest.git.getTag({
+                    ...context.repo,
+                    tag_sha: object.sha,
+                  });
+                  object = response.data.object;
+                }
+                if (object.type !== 'commit' || object.sha !== context.sha) {
+                  throw new Error(`Existing tag v${requested} does not point to source commit ${context.sha}.`);
+                }
+              }
+            }
+            const base = requested || require('./apps/server/package.json').version;
+            const date = new Date().toISOString().slice(0, 10).replaceAll('-', '');
+            core.setOutput('version', publish ? requested : `${base}-preview.${date}.${context.runNumber}`);
+            core.setOutput('publish', String(publish));
+
+  bundle:
+    needs: [prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          run-install: false
+      - run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+      - name: Stage release version in the runner checkout
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/update-release-package-versions.ts "$VERSION"
+      - run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+      - run: vp run build:desktop
+      - uses: actions/upload-artifact@v7
+        with:
+          name: takomi-js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+
+  cli:
+    needs: [prepare, bundle]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            key: linux-x64
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+          - platform: win
+            key: win32-x64
+            runner: windows-2025
+            rust_target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          run-install: false
+      - run: vp install --filter=t3... --filter=@t3tools/scripts...
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: takomi-js-bundle
+          path: apps
+      - env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/update-release-package-versions.ts "$VERSION"
+      - name: Build resource monitor
+        run: |
+          cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target "${{ matrix.rust_target }}"
+          mkdir -p "cli-resource-monitor/${{ matrix.key }}"
+          binary=t3-resource-monitor
+          if [[ "${{ matrix.platform }}" == "win" ]]; then binary="${binary}.exe"; fi
+          cp "native/resource-monitor/target/${{ matrix.rust_target }}/release/$binary" "cli-resource-monitor/${{ matrix.key }}/$binary"
+      - name: Build self-contained CLI
+        env:
+          VP_NODE_VERSION: "26.8.2"
+        run: node apps/server/scripts/cli.ts build-exe --verbose
+      - name: Package CLI with upstream native staging
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/build-cli-archive.ts --platform "${{ matrix.platform }}" --arch x64 --version "$VERSION" --resource-monitor-dir cli-resource-monitor --output-dir release-cli
+      - name: Smoke-test CLI archive
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/smoke-cli-archive.ts --archive release-cli/* --expect-version "$VERSION"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: takomi-cli-${{ matrix.key }}
+          path: release-cli/*
+          if-no-files-found: error
+
+  windows:
+    needs: [prepare, bundle, cli]
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          run-install: false
+      - run: vp install --filter=t3... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Install Spectre-mitigated MSVC libraries
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -products * -latest -property installationPath
+          $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $proc = Start-Process -FilePath $setupExe -ArgumentList "modify", "--installPath", "`"$installPath`"", "--add", "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre", "--quiet", "--norestart" -Wait -PassThru -NoNewWindow
+          if ($null -eq $proc -or $proc.ExitCode -ne 0) { throw "Visual Studio component installation failed" }
+      - uses: actions/download-artifact@v8
+        with:
+          name: takomi-js-bundle
+          path: apps
+      - uses: actions/download-artifact@v8
+        with:
+          name: takomi-cli-linux-x64
+          path: wsl-runtime
+      - name: Build unsigned Windows NSIS installer
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: JStaRFilms/Takomi-Code
+        run: |
+          node scripts/update-release-package-versions.ts "$VERSION"
+          node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64 --build-version "$VERSION" --skip-build --wsl-runtime "wsl-runtime/t3-${VERSION}-linux-x64.tar.gz" --verbose
+      - uses: actions/upload-artifact@v7
+        with:
+          name: takomi-windows
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
+          if-no-files-found: error
+
+  npm:
+    needs: [prepare, cli, windows]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          run-install: false
+      - run: vp install --filter=t3... --filter=@t3tools/scripts...
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: takomi-cli-*
+          merge-multiple: true
+          path: release-cli
+      - name: Stage fork npm packages
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          test -f "release-cli/t3-${VERSION}-linux-x64.tar.gz"
+          test -f "release-cli/t3-${VERSION}-win32-x64.zip"
+          node scripts/build-npm-platform-packages.ts --archives-dir release-cli --version "$VERSION" --output-dir npm-packages --allow-missing
+      - name: Dry-run package publication
+        run: node apps/server/scripts/cli.ts publish --packages-dir npm-packages --provenance --dry-run --verbose
+      - name: Publish platforms before launcher through npm trusted publishing
+        run: node apps/server/scripts/cli.ts publish --packages-dir npm-packages --provenance --verbose
+
+  github_release:
+    needs: [prepare, windows, npm]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: takomi-cli-*
+          merge-multiple: true
+          path: release-assets
+      - uses: actions/download-artifact@v8
+        with:
+          name: takomi-windows
+          path: release-assets
+      - name: Verify assets and publish fork release after npm
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          test -f "Takomi-Code-${VERSION}-x64.exe"
+          test -f "Takomi-Code-${VERSION}-x64.exe.blockmap"
+          test -f latest.yml
+          test -f "t3-${VERSION}-linux-x64.tar.gz"
+          test -f "t3-${VERSION}-win32-x64.zip"
+          sha256sum *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip > SHA256SUMS
+          gh release create "v${VERSION}" --repo JStaRFilms/Takomi-Code --target "$RELEASE_COMMIT" --title "Takomi Code ${VERSION}" --generate-notes --latest *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip SHA256SUMS

@@ -26,26 +26,39 @@ interface OwnershipMarker {
 
 interface LocalBuildOutput {
   readonly directory: string;
+  readonly stagingDirectory: string;
   readonly stamp: string;
 }
 
-/** Reserve a different output directory for every attempt, including retries on the same day. */
+/** Reserve hidden staging for every attempt without creating a visible release directory. */
 export function localBuildOutput(
   root: string,
   dryRun: boolean,
   now = new Date(),
 ): LocalBuildOutput {
   const releaseDir = NodePath.join(root, "release");
+  const stagingRoot = NodePath.join(releaseDir, ".local-build");
   const date = now.toISOString().slice(0, 10).replaceAll("-", "");
   let runNumber = now.getTime();
-  if (!dryRun) NodeFS.mkdirSync(releaseDir, { recursive: true });
+  if (!dryRun) NodeFS.mkdirSync(stagingRoot, { recursive: true });
   while (true) {
     const stamp = `${date}.${runNumber}`;
     const directory = NodePath.join(releaseDir, `local-${stamp}`);
-    if (dryRun) return { directory, stamp };
+    const stagingDirectory = NodePath.join(stagingRoot, `local-${stamp}`);
+    const reservation = `${stagingDirectory}.reserved`;
+    if (
+      NodeFS.existsSync(directory) ||
+      (dryRun && (NodeFS.existsSync(stagingDirectory) || NodeFS.existsSync(reservation)))
+    ) {
+      runNumber += 1;
+      continue;
+    }
+    if (dryRun) return { directory, stagingDirectory, stamp };
     try {
-      NodeFS.mkdirSync(directory);
-      return { directory, stamp };
+      // Keep a zero-byte reservation after cleanup so failed retries cannot reuse
+      // a build number. Exclusive creation also separates concurrent attempts.
+      NodeFS.closeSync(NodeFS.openSync(reservation, "wx"));
+      NodeFS.mkdirSync(stagingDirectory);
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "EEXIST") {
         runNumber += 1;
@@ -53,6 +66,85 @@ export function localBuildOutput(
       }
       throw error;
     }
+    // A completed build may have published while this reservation was being made.
+    if (NodeFS.existsSync(directory)) {
+      NodeFS.rmdirSync(stagingDirectory);
+      runNumber += 1;
+      continue;
+    }
+    return { directory, stagingDirectory, stamp };
+  }
+}
+
+type BuildTarget = "desktop" | "android";
+type LocalBuilder = (root: string, dryRun: boolean, output: LocalBuildOutput) => void;
+
+function publishLocalBuildTarget(
+  output: LocalBuildOutput,
+  target: BuildTarget,
+  alreadyPublished: boolean,
+): void {
+  const stamp = output.stamp.replaceAll(".", "\\.");
+  // Only the expected top-level installables count, not builder reports,
+  // win-unpacked payloads, or NSIS uninstaller executables.
+  const artifactPattern =
+    target === "desktop"
+      ? new RegExp(`^Takomi-Code-\\d+\\.\\d+\\.\\d+-preview\\.${stamp}-(?:x64|arm64)\\.exe$`, "u")
+      : new RegExp(`^Takomi-Code-Preview-.+-${stamp}(?:-dirty)?\\.apk$`, "u");
+  const artifacts = NodeFS.readdirSync(output.stagingDirectory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && artifactPattern.test(entry.name))
+    .filter(
+      (entry) => NodeFS.statSync(NodePath.join(output.stagingDirectory, entry.name)).size > 0,
+    );
+  if (artifacts.length === 0) {
+    throw new Error(
+      `${target} build completed but produced no nonempty installable in ${output.stagingDirectory}.`,
+    );
+  }
+
+  // mkdir fails rather than overwriting an existing release. Later targets reuse
+  // only this attempt's directory, keeping a completed desktop if Android fails.
+  if (!alreadyPublished) NodeFS.mkdirSync(output.directory);
+  const moved: string[] = [];
+  try {
+    for (const artifact of artifacts) {
+      const destination = NodePath.join(output.directory, artifact.name);
+      NodeFS.renameSync(NodePath.join(output.stagingDirectory, artifact.name), destination);
+      moved.push(destination);
+    }
+  } catch (error) {
+    for (const destination of moved) NodeFS.rmSync(destination);
+    if (!alreadyPublished) NodeFS.rmdirSync(output.directory);
+    throw error;
+  }
+  for (const destination of moved) log(`[local-build] Completed artifact: ${destination}`);
+}
+
+/** Publish each successful target and remove only this attempt's staging, even on failure. */
+export function runLocalBuild(
+  root: string,
+  options: Options,
+  builders: Readonly<Record<BuildTarget, LocalBuilder>> = {
+    desktop: buildDesktop,
+    android: buildAndroid,
+  },
+  now = new Date(),
+): LocalBuildOutput {
+  const output = localBuildOutput(root, options.dryRun, now);
+  log(`[local-build] Planned output: ${output.directory}`);
+  let published = false;
+  try {
+    for (const target of ["desktop", "android"] as const) {
+      if (!options[target]) continue;
+      builders[target](root, options.dryRun, output);
+      if (!options.dryRun) {
+        publishLocalBuildTarget(output, target, published);
+        published = true;
+      }
+    }
+    return output;
+  } finally {
+    if (!options.dryRun) NodeFS.rmSync(output.stagingDirectory, { recursive: true, force: true });
   }
 }
 
@@ -358,7 +450,7 @@ function buildDesktop(root: string, dryRun: boolean, output: LocalBuildOutput): 
     "--build-version",
     version,
     "--output-dir",
-    output.directory,
+    output.stagingDirectory,
   ];
   log(`[local-build] Desktop preview version: ${version}`);
   log(`[local-build] Desktop artifacts: ${output.directory}`);
@@ -444,6 +536,13 @@ function buildAndroid(root: string, dryRun: boolean, output: LocalBuildOutput): 
   });
   writeAndroidLocalProperties(worktree);
   const androidRoot = NodePath.join(mobileRoot, "android");
+  // AGP defaults to 1024, but the SDK's Ninja still rejects paths over 260 characters.
+  // Hash long codegen paths and leave enough room for their target and object filenames.
+  NodeFS.appendFileSync(
+    NodePath.join(androidRoot, "app", "build.gradle"),
+    '\nandroid.externalNativeBuild.cmake.buildStagingDirectory = rootProject.file("../../../.cxx")\n' +
+      'android.defaultConfig.externalNativeBuild.cmake.arguments "-DCMAKE_OBJECT_PATH_MAX=240"\n',
+  );
   const gradle = NodePath.join(androidRoot, "gradlew.bat");
   run(gradle, ["app:createReleaseUpdatesResources", "--max-workers=1"], androidRoot, {
     env: buildEnv,
@@ -469,7 +568,7 @@ function buildAndroid(root: string, dryRun: boolean, output: LocalBuildOutput): 
   }
   NodeFS.copyFileSync(
     apkPath,
-    NodePath.join(output.directory, artifactName),
+    NodePath.join(output.stagingDirectory, artifactName),
     NodeFS.constants.COPYFILE_EXCL,
   );
 }
@@ -483,11 +582,7 @@ function main(): void {
     );
   }
 
-  const root = sourceRoot();
-  const output = localBuildOutput(root, options.dryRun);
-  log(`[local-build] This attempt's output: ${output.directory}`);
-  if (options.desktop) buildDesktop(root, options.dryRun, output);
-  if (options.android) buildAndroid(root, options.dryRun, output);
+  runLocalBuild(sourceRoot(), options);
 }
 
 if (import.meta.main) {

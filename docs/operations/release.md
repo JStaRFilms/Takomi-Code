@@ -2,7 +2,8 @@
 
 > For maintainers. Using T3 Code? See [docs/user](../user/).
 
-This document covers the unified release workflow for stable and nightly desktop releases.
+This document covers the upstream unified release workflow for stable and nightly desktop releases.
+For this fork's Windows and npm distribution, use [Takomi Code distribution](takomi-release.md).
 
 ## What the workflow does
 

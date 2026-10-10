@@ -19,36 +19,54 @@ import {
 
 it("formats package runner commands from their cache entry paths", () => {
   for (const [entryPath, expected] of [
-    ["/home/theo/.npm/_npx/abc123/node_modules/t3/dist/bin.mjs", "npx t3 serve"],
+    ["/home/theo/.npm/_npx/abc123/node_modules/takomi-code/dist/bin.mjs", "npx takomi-code serve"],
     [
-      "C:\\Users\\theo\\AppData\\Local\\npm-cache\\_npx\\abc\\node_modules\\t3\\dist\\bin.mjs",
-      "npx t3 serve",
-    ],
-    ["/home/theo/.cache/pnpm/dlx/abc/node_modules/t3/dist/bin.mjs", "pnpm dlx t3 serve"],
-    [
-      "/home/theo/.local/share/pnpm/.pnpm/dlx/abc/node_modules/t3/dist/bin.mjs",
-      "pnpm dlx t3 serve",
+      "C:\\Users\\theo\\AppData\\Local\\npm-cache\\_npx\\abc\\node_modules\\takomi-code\\dist\\bin.mjs",
+      "npx takomi-code serve",
     ],
     [
-      "C:\\Users\\theo\\AppData\\Local\\pnpm-cache\\dlx\\abc\\node_modules\\t3\\dist\\bin.mjs",
-      "pnpm dlx t3 serve",
+      "/home/theo/.cache/pnpm/dlx/abc/node_modules/takomi-code/dist/bin.mjs",
+      "pnpm dlx takomi-code serve",
     ],
-    ["/home/theo/.bun/install/cache/t3@0.0.31/dist/bin.mjs", "bunx t3 serve"],
-    ["/tmp/bunx-1000-t3@latest/node_modules/t3/dist/bin.mjs", "bunx t3 serve"],
     [
-      "C:\\Users\\theo\\AppData\\Local\\Temp\\bunx-0-t3@latest\\node_modules\\t3\\dist\\bin.mjs",
-      "bunx t3 serve",
+      "/home/theo/.local/share/pnpm/.pnpm/dlx/abc/node_modules/takomi-code/dist/bin.mjs",
+      "pnpm dlx takomi-code serve",
+    ],
+    [
+      "C:\\Users\\theo\\AppData\\Local\\pnpm-cache\\dlx\\abc\\node_modules\\takomi-code\\dist\\bin.mjs",
+      "pnpm dlx takomi-code serve",
+    ],
+    ["/home/theo/.bun/install/cache/takomi-code@0.0.31/dist/bin.mjs", "bunx takomi-code serve"],
+    [
+      "/tmp/bunx-1000-takomi-code@latest/node_modules/takomi-code/dist/bin.mjs",
+      "bunx takomi-code serve",
+    ],
+    [
+      "C:\\Users\\theo\\AppData\\Local\\Temp\\bunx-0-takomi-code@latest\\node_modules\\takomi-code\\dist\\bin.mjs",
+      "bunx takomi-code serve",
     ],
   ] as const) {
     assert.equal(formatCliCommand({ subcommand: "serve", entryPath, version: "0.0.31" }), expected);
   }
 });
 
-it("treats stable installs as direct invocations", () => {
+it("names the public launcher for native npm packages without changing standalone t3 commands", () => {
+  for (const entryPath of [
+    "/usr/local/lib/node_modules/takomi-code/node_modules/@johnsax/takomi-code-linux-x64/t3",
+    "C:\\Users\\owner\\AppData\\Roaming\\npm\\node_modules\\takomi-code\\node_modules\\@johnsax\\takomi-code-win32-x64\\t3.exe",
+  ]) {
+    assert.equal(
+      formatCliCommand({ subcommand: "serve", entryPath, version: "0.1.0" }),
+      "takomi-code serve",
+    );
+  }
+});
+
+it("treats standalone and checkout installs as internal direct invocations", () => {
   for (const entryPath of [
     "/usr/local/lib/node_modules/t3/dist/bin.mjs",
     "/home/theo/Code/work/t3code/apps/server/dist/bin.mjs",
-    "/home/theo/.t3/runtime/0.0.31/node_modules/t3/dist/bin.mjs",
+    "/home/theo/.t3/runtime/0.0.31/t3",
     "",
   ]) {
     assert.equal(
@@ -60,15 +78,15 @@ it("treats stable installs as direct invocations", () => {
 
 it("re-suggests the prerelease channel only for prerelease builds", () => {
   for (const [version, expected] of [
-    ["0.0.31-nightly.20260729", "npx t3@nightly serve"],
-    ["0.0.31-preview.20260729.1", "npx t3@preview serve"],
-    ["0.0.31-foo-preview.20260729.1", "npx t3 serve"],
-    ["0.0.31", "npx t3 serve"],
+    ["0.0.31-nightly.20260729", "npx takomi-code@nightly serve"],
+    ["0.0.31-preview.20260729.1", "npx takomi-code@preview serve"],
+    ["0.0.31-foo-preview.20260729.1", "npx takomi-code serve"],
+    ["0.0.31", "npx takomi-code serve"],
   ] as const) {
     assert.equal(
       formatCliCommand({
         subcommand: "serve",
-        entryPath: "/home/theo/.npm/_npx/abc123/node_modules/t3/dist/bin.mjs",
+        entryPath: "/home/theo/.npm/_npx/abc123/node_modules/takomi-code/dist/bin.mjs",
         version,
       }),
       expected,
@@ -80,26 +98,26 @@ it("formats serve suggestions to match the launching command", () => {
   assert.equal(
     formatCliCommand({
       subcommand: "serve",
-      entryPath: "/home/theo/.npm/_npx/abc/node_modules/t3/dist/bin.mjs",
+      entryPath: "/home/theo/.npm/_npx/abc/node_modules/takomi-code/dist/bin.mjs",
       version: "0.0.31-nightly.20260729",
     }),
-    "npx t3@nightly serve",
+    "npx takomi-code@nightly serve",
   );
   assert.equal(
     formatCliCommand({
       subcommand: "serve",
-      entryPath: "/tmp/bunx-1000-t3@latest/node_modules/t3/dist/bin.mjs",
+      entryPath: "/tmp/bunx-1000-takomi-code@latest/node_modules/takomi-code/dist/bin.mjs",
       version: "0.0.31",
     }),
-    "bunx t3 serve",
+    "bunx takomi-code serve",
   );
   assert.equal(
     formatCliCommand({
       subcommand: "serve",
-      entryPath: "/usr/local/lib/node_modules/t3/dist/bin.mjs",
+      entryPath: "/usr/local/lib/node_modules/takomi-code/dist/bin.mjs",
       version: "0.0.31-nightly.20260729",
     }),
-    "t3 serve",
+    "takomi-code serve",
   );
 });
 
@@ -131,15 +149,15 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
 
   it.effect("keeps a user-installed Node reachable when the command runs under sudo", () =>
     Effect.gen(function* () {
-      const npx = "/home/theo/.npm/_npx/abc/node_modules/t3/dist/bin.mjs";
+      const npx = "/home/theo/.npm/_npx/abc/node_modules/takomi-code/dist/bin.mjs";
       // sudo's secure_path already has a system Node.
       expect(yield* rootCommand({ node: "/usr/bin/node", entry: npx })).toBe(
-        "sudo npx t3 browser setup",
+        "sudo npx takomi-code browser setup",
       );
       // nvm, fnm, and tarball installs are dropped by sudo's PATH reset.
       expect(
         yield* rootCommand({ node: "/home/theo/.nvm/versions/node/v24/bin/node", entry: npx }),
-      ).toBe('sudo env "PATH=$PATH" npx t3 browser setup');
+      ).toBe('sudo env "PATH=$PATH" npx takomi-code browser setup');
       expect(
         yield* rootCommand({
           node: "/home/theo/.local/node/bin/node",
@@ -192,9 +210,9 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped();
       for (const [relative, kind] of [
-        ["npm/_npx/hash/node_modules/t3/dist/bin.mjs", "npx"],
-        ["npm/_npx/hash/node_modules/@t3code/t3-linux-x64/t3", "npx"],
-        ["pnpm/dlx/hash/node_modules/t3/dist/bin.mjs", "pnpm-dlx"],
+        ["npm/_npx/hash/node_modules/takomi-code/dist/bin.mjs", "npx"],
+        ["npm/_npx/hash/node_modules/@johnsax/takomi-code-linux-x64/t3", "npx"],
+        ["pnpm/dlx/hash/node_modules/takomi-code/dist/bin.mjs", "pnpm-dlx"],
         [".bun/install/cache/t3/dist/bin.mjs", "bunx"],
       ] as const) {
         const entry = path.join(root, relative);
@@ -216,15 +234,15 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped();
       const prefix = path.join(root, "bunx-tools");
-      const packageRoot = path.join(prefix, "lib/node_modules/t3");
+      const packageRoot = path.join(prefix, "lib/node_modules/takomi-code");
       const entry = path.join(packageRoot, "dist/bin.mjs");
-      const globalBin = path.join(prefix, "bin/t3");
+      const globalBin = path.join(prefix, "bin/takomi-code");
       yield* fs.makeDirectory(path.dirname(entry), { recursive: true });
       yield* fs.makeDirectory(path.dirname(globalBin), { recursive: true });
       yield* fs.writeFileString(entry, "");
       yield* fs.writeFileString(
         path.join(packageRoot, "package.json"),
-        '{"name":"t3","version":"0.0.45","bin":{"t3":"./dist/bin.mjs"}}',
+        '{"name":"takomi-code","version":"0.0.45","bin":{"takomi-code":"./dist/bin.mjs"}}',
       );
       const resolve = resolveServerInstallation.pipe(
         Effect.provideService(HostProcessArguments, ["node", entry]),
@@ -247,9 +265,9 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped();
       const prefix = path.join(root, "bunx-tools");
-      const packageRoot = path.join(prefix, "lib/node_modules/t3");
-      const launcher = path.join(packageRoot, "bin/t3.js");
-      const entry = path.join(packageRoot, "node_modules/@t3code/t3-linux-x64/t3");
+      const packageRoot = path.join(prefix, "lib/node_modules/takomi-code");
+      const launcher = path.join(packageRoot, "bin/takomi-code.js");
+      const entry = path.join(packageRoot, "node_modules/@johnsax/takomi-code-linux-x64/t3");
       yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
       yield* fs.makeDirectory(path.dirname(entry), { recursive: true });
       yield* fs.makeDirectory(path.join(prefix, "bin"));
@@ -257,9 +275,9 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       yield* fs.writeFileString(entry, "");
       yield* fs.writeFileString(
         path.join(packageRoot, "package.json"),
-        '{"name":"t3","version":"0.0.45","bin":{"t3":"./bin/t3.js"},"optionalDependencies":{"@t3code/t3-linux-x64":"0.0.45"}}',
+        '{"name":"takomi-code","version":"0.0.45","bin":{"takomi-code":"./bin/takomi-code.js"},"optionalDependencies":{"@johnsax/takomi-code-linux-x64":"0.0.45"}}',
       );
-      yield* fs.symlink(launcher, path.join(prefix, "bin/t3"));
+      yield* fs.symlink(launcher, path.join(prefix, "bin/takomi-code"));
       const resolve = resolveServerInstallation.pipe(
         Effect.provideService(HostProcessExecutablePath, entry),
         Effect.provideService(HostProcessIsExecutable, true),
@@ -271,7 +289,7 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       ]) {
         yield* fs.writeFileString(
           path.join(path.dirname(entry), "package.json"),
-          `{"name":"@t3code/t3-linux-x64","version":"${version}"}`,
+          `{"name":"@johnsax/takomi-code-linux-x64","version":"${version}"}`,
         );
         expect(yield* resolve).toEqual(expected);
       }
@@ -284,7 +302,7 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped();
       for (const relative of [
-        "project/node_modules/t3/dist/bin.mjs",
+        "project/node_modules/takomi-code/dist/bin.mjs",
         "project/apps/server/dist/bin.mjs",
         ".t3/runtime/0.0.45/t3",
         "missing/dist/bin.mjs",

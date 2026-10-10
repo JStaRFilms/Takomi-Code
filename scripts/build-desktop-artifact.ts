@@ -2916,7 +2916,8 @@ export const packWindowsServerAsar = Effect.fn("packWindowsServerAsar")(function
     try: () =>
       createPackageWithOptions(input.sourceDir, input.asarPath, {
         dot: true,
-        unpack: WINDOWS_NATIVE_ASAR_UNPACK_GLOB,
+        // ASAR matches absolute paths with matchBase, but globstars skip hidden parents.
+        unpack: WINDOWS_NATIVE_ASAR_UNPACK_GLOB.replaceAll("**/", ""),
         // glob 13 (via @electron/asar 4) matches `ignore` relative to `cwd`,
         // not against the absolute paths it crawls, so anchor it at the source.
         globOptions: {

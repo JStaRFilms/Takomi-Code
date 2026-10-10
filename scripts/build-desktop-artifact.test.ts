@@ -294,7 +294,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           ConfigProvider.layer(
             ConfigProvider.fromEnv({
               env: {
-                T3CODE_DESKTOP_UPDATE_REPOSITORY: "pingdotgg/t3code",
+                T3CODE_DESKTOP_UPDATE_REPOSITORY: "JStaRFilms/Takomi-Code",
+                GITHUB_REPOSITORY: "pingdotgg/t3code",
               },
             }),
           ),
@@ -314,8 +315,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
       assert.deepStrictEqual(latestConfig, {
         provider: "github",
-        owner: "pingdotgg",
-        repo: "t3code",
+        owner: "JStaRFilms",
+        repo: "Takomi-Code",
         releaseType: "release",
       });
       assert.deepStrictEqual(nightlyConfig, {
@@ -854,7 +855,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ]);
   });
 
-  it.effect("keeps target native files while excluding the other Windows architecture", () =>
+  it.effect("unpacks natives under hidden parents and excludes other architectures", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -862,7 +863,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         const tempDir = yield* fs.makeTempDirectoryScoped({
           prefix: "t3-windows-architecture-test-",
         });
-        const sourceDir = path.join(tempDir, "server");
+        const sourceDir = path.join(tempDir, ".local-build-temp-fixture", "server");
         const nativeFiles = [
           "node_modules/node-pty/prebuilds/win32-x64/conpty/OpenConsole.exe",
           "node_modules/node-pty/prebuilds/win32-arm64/conpty/OpenConsole.exe",
