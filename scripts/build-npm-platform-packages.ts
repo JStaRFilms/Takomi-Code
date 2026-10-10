@@ -91,7 +91,7 @@ export function npmPlatformPackageName(platformKey: CliArchivePlatformKey): stri
 
 /**
  * package.json for one platform package; `os`/`cpu` let npm skip the other
- * five. The archive's runtime `node_modules` (native addons and their
+ * platforms. The archive's runtime `node_modules` (native addons and their
  * loaders) ships inside the tarball, and npm only keeps a nested tree it can
  * account for: anything not declared is extraneous and pruned on the next
  * `npm install` in that project, which then breaks the executable. Declaring
@@ -212,7 +212,7 @@ try {
       "takomi-code: no Takomi Code CLI build is available for this platform (" + key + ").",
       "Supported platforms: " + SUPPORTED.join(", ") + ".",
       "If yours is listed, reinstall takomi-code so npm fetches its optional dependency.",
-      "The desktop app and release archives are at https://github.com/JStaRFilms/Takomi-Code/releases",
+      "The Windows desktop app and server archives are at https://github.com/JStaRFilms/Takomi-Code/releases",
       "",
     ].join("\\n"),
   );

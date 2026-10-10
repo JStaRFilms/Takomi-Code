@@ -13,6 +13,21 @@ const Job = Schema.Struct({
   needs: Schema.optionalKey(Schema.Array(Schema.String)),
   "runs-on": Schema.String,
   permissions: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  strategy: Schema.optionalKey(
+    Schema.Struct({
+      matrix: Schema.Struct({
+        include: Schema.Array(
+          Schema.Struct({
+            platform: Schema.String,
+            arch: Schema.String,
+            key: Schema.String,
+            runner: Schema.String,
+            rust_target: Schema.String,
+          }),
+        ),
+      }),
+    }),
+  ),
   steps: Schema.Array(
     Schema.Struct({
       run: Schema.optionalKey(Schema.String),
@@ -21,6 +36,10 @@ const Job = Schema.Struct({
       with: Schema.optionalKey(
         Schema.Struct({
           script: Schema.optionalKey(Schema.String),
+          name: Schema.optionalKey(Schema.String),
+          path: Schema.optionalKey(Schema.String),
+          pattern: Schema.optionalKey(Schema.String),
+          "merge-multiple": Schema.optionalKey(Schema.Boolean),
           "sparse-checkout": Schema.optionalKey(Schema.String),
           "sparse-checkout-cone-mode": Schema.optionalKey(Schema.Boolean),
         }),
@@ -157,6 +176,83 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
       });
       assert.equal(refLookups, 1);
       assert.equal(tagLookups, testCase.ref?.type === "tag" ? 1 : 0);
+    }),
+  );
+  it.effect("builds native Mac ARM64 server archives and collects them for npm and GitHub", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const source = yield* fs.readFileString(
+        yield* path.fromFileUrl(
+          new URL("../.github/workflows/takomi-release.yml", import.meta.url),
+        ),
+      );
+      const workflow = yield* Schema.decodeEffect(fromYaml(Workflow))(source);
+      const cli = workflow.jobs.cli;
+      assert.deepStrictEqual(cli?.strategy?.matrix.include, [
+        {
+          platform: "mac",
+          arch: "arm64",
+          key: "darwin-arm64",
+          runner: "macos-15",
+          rust_target: "aarch64-apple-darwin",
+        },
+        {
+          platform: "linux",
+          arch: "x64",
+          key: "linux-x64",
+          runner: "ubuntu-24.04",
+          rust_target: "x86_64-unknown-linux-gnu",
+        },
+        {
+          platform: "win",
+          arch: "x64",
+          key: "win32-x64",
+          runner: "windows-2025",
+          rust_target: "x86_64-pc-windows-msvc",
+        },
+      ]);
+      const cliRuns = cli?.steps.flatMap((step) => (step.run ? [step.run] : [])).join("\n") ?? "";
+      assert.include(cliRuns, '--platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}"');
+      assert.include(cliRuns, '--target "${{ matrix.rust_target }}"');
+      assert.include(cliRuns, 'mkdir -p "cli-resource-monitor/${{ matrix.key }}"');
+      assert.include(cliRuns, "node apps/server/scripts/cli.ts build-exe --verbose");
+      assert.include(cliRuns, "node scripts/smoke-cli-archive.ts --archive release-cli/*");
+      assert.equal(
+        cli?.steps.find((step) => step.uses?.startsWith("actions/upload-artifact@"))?.with?.name,
+        "takomi-cli-${{ matrix.key }}",
+      );
+      for (const name of ["npm", "github_release"]) {
+        const job = workflow.jobs[name];
+        const download = job?.steps.find((step) => step.with?.pattern === "takomi-cli-*");
+        assert.equal(download?.with?.path, name === "npm" ? "release-cli" : "release-assets");
+        assert.isTrue(download?.with?.["merge-multiple"]);
+        const runs = job?.steps.flatMap((step) => (step.run ? [step.run] : [])).join("\n") ?? "";
+        assert.include(runs, 't3-${VERSION}-darwin-arm64.tar.gz"');
+        if (name === "npm") {
+          assert.include(runs, "node scripts/build-npm-platform-packages.ts");
+        } else {
+          assert.include(
+            runs,
+            "sha256sum *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip > SHA256SUMS",
+          );
+          assert.include(
+            runs,
+            "--latest *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip SHA256SUMS",
+          );
+        }
+      }
+      for (const forbidden of [
+        "build-desktop",
+        "dmg",
+        "codesign",
+        "notarytool",
+        "APPLE_",
+        "CSC_",
+      ]) {
+        assert.notInclude(cliRuns, forbidden);
+      }
+      assert.notInclude(source, "--platform mac --target");
     }),
   );
   it.effect(

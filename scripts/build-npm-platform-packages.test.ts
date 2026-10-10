@@ -19,19 +19,21 @@ import {
   npmPlatformPackageManifest,
 } from "./build-npm-platform-packages.ts";
 
-it("generates Windows and Linux packages without a global t3 alias and resolves their executables", () => {
-  const keys = ["linux-x64", "win32-x64"] as const;
+it("generates Mac ARM64, Windows and Linux packages without a global t3 alias and resolves their executables", () => {
+  const keys = ["darwin-arm64", "linux-x64", "win32-x64"] as const;
   const manifest = npmLauncherPackageManifest("0.1.0", keys);
   assert.deepStrictEqual(manifest.bin, { "takomi-code": "./bin/takomi-code.js" });
   assert.deepStrictEqual(manifest.optionalDependencies, {
+    "@johnsax/takomi-code-darwin-arm64": "0.1.0",
     "@johnsax/takomi-code-linux-x64": "0.1.0",
     "@johnsax/takomi-code-win32-x64": "0.1.0",
   });
   for (const key of keys) {
-    const [platform] = key.split("-");
+    const [platform, arch] = key.split("-");
     const native = npmPlatformPackageManifest(key, "0.1.0", {});
+    assert.equal(native.name, `@johnsax/takomi-code-${key}`);
     assert.deepStrictEqual(native.os, [platform]);
-    assert.deepStrictEqual(native.cpu, ["x64"]);
+    assert.deepStrictEqual(native.cpu, [arch]);
     assert.notProperty(native, "bin");
     for (const childResult of [
       { status: 7, signal: null },
@@ -74,7 +76,7 @@ it("generates Windows and Linux packages without a global t3 alias and resolves 
             require,
             process: {
               platform,
-              arch: "x64",
+              arch,
               argv: ["node", "launcher", "serve", "--port", "1234"],
               exit: (code: number) => {
                 exitCode = code;
@@ -93,6 +95,56 @@ it("generates Windows and Linux packages without a global t3 alias and resolves 
     }
   }
 });
+
+it.each(["arm64", "x64"])(
+  "reports the published platforms when darwin-%s cannot resolve a package",
+  (arch) => {
+    const keys = ["darwin-arm64", "linux-x64", "win32-x64"] as const;
+    const messages: string[] = [];
+    let exitCode: number | undefined;
+    const require = Object.assign(
+      (module: string) => {
+        if (module === "node:child_process")
+          return {
+            spawnSync: () => {
+              throw new Error("must not spawn without a platform package");
+            },
+          };
+        if (module === "node:os") return { constants: { signals: {} } };
+        if (module === "node:path") return {};
+        throw new Error(`Unexpected module ${module}`);
+      },
+      {
+        resolve: (specifier: string) => {
+          assert.equal(specifier, `@johnsax/takomi-code-darwin-${arch}/package.json`);
+          throw new Error("package not installed");
+        },
+      },
+    );
+    assert.throws(
+      () =>
+        new NodeVM.Script(npmLauncherScript(keys)).runInNewContext({
+          require,
+          process: {
+            platform: "darwin",
+            arch,
+            stderr: { write: (message: string) => messages.push(message) },
+            exit: (code: number) => {
+              exitCode = code;
+              throw new Error("launcher exited");
+            },
+          },
+        }),
+      "launcher exited",
+    );
+    assert.equal(exitCode, 1);
+    const message = messages.join("");
+    assert.include(message, `this platform (darwin-${arch})`);
+    assert.include(message, "Supported platforms: darwin-arm64, linux-x64, win32-x64.");
+    assert.include(message, "If yours is listed, reinstall takomi-code");
+    assert.include(message, "Windows desktop app and server archives");
+  },
+);
 
 const VERSION = "1.2.3";
 const decodeManifest = Schema.decodeEffect(

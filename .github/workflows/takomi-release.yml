@@ -10,7 +10,7 @@ on:
         description: "Explicit stable version, for example 0.1.0. Required to publish."
         type: string
       publish:
-        description: "Publish npm packages and the Windows GitHub release"
+        description: "Publish npm packages, server archives, and the Windows GitHub release"
         type: boolean
         default: false
 
@@ -120,11 +120,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - platform: mac
+            arch: arm64
+            key: darwin-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
           - platform: linux
+            arch: x64
             key: linux-x64
             runner: ubuntu-24.04
             rust_target: x86_64-unknown-linux-gnu
           - platform: win
+            arch: x64
             key: win32-x64
             runner: windows-2025
             rust_target: x86_64-pc-windows-msvc
@@ -170,7 +177,7 @@ jobs:
       - name: Package CLI with upstream native staging
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-        run: node scripts/build-cli-archive.ts --platform "${{ matrix.platform }}" --arch x64 --version "$VERSION" --resource-monitor-dir cli-resource-monitor --output-dir release-cli
+        run: node scripts/build-cli-archive.ts --platform "${{ matrix.platform }}" --arch "${{ matrix.arch }}" --version "$VERSION" --resource-monitor-dir cli-resource-monitor --output-dir release-cli
       - name: Smoke-test CLI archive
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -264,6 +271,7 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
+          test -f "release-cli/t3-${VERSION}-darwin-arm64.tar.gz"
           test -f "release-cli/t3-${VERSION}-linux-x64.tar.gz"
           test -f "release-cli/t3-${VERSION}-win32-x64.zip"
           node scripts/build-npm-platform-packages.ts --archives-dir release-cli --version "$VERSION" --output-dir npm-packages --allow-missing
@@ -301,6 +309,7 @@ jobs:
           test -f "Takomi-Code-${VERSION}-x64.exe"
           test -f "Takomi-Code-${VERSION}-x64.exe.blockmap"
           test -f latest.yml
+          test -f "t3-${VERSION}-darwin-arm64.tar.gz"
           test -f "t3-${VERSION}-linux-x64.tar.gz"
           test -f "t3-${VERSION}-win32-x64.zip"
           sha256sum *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip > SHA256SUMS
