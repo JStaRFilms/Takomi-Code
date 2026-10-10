@@ -18,7 +18,13 @@ const Job = Schema.Struct({
       run: Schema.optionalKey(Schema.String),
       uses: Schema.optionalKey(Schema.String),
       env: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-      with: Schema.optionalKey(Schema.Struct({ script: Schema.optionalKey(Schema.String) })),
+      with: Schema.optionalKey(
+        Schema.Struct({
+          script: Schema.optionalKey(Schema.String),
+          "sparse-checkout": Schema.optionalKey(Schema.String),
+          "sparse-checkout-cone-mode": Schema.optionalKey(Schema.Boolean),
+        }),
+      ),
     }),
   ),
 });
@@ -170,7 +176,14 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
         assert.isFalse(workflow.on.workflow_dispatch.inputs.publish.default);
         assert.deepStrictEqual(workflow.permissions, { contents: "read" });
         assert.equal(workflow.jobs.prepare?.if, "github.repository == 'JStaRFilms/Takomi-Code'");
+        const checkoutJobs: string[] = [];
         for (const [name, job] of Object.entries(workflow.jobs)) {
+          for (const step of job.steps) {
+            if (!step.uses?.startsWith("actions/checkout@")) continue;
+            checkoutJobs.push(name);
+            assert.equal(step.with?.["sparse-checkout"], "/*\n!/.repos/\n");
+            assert.isFalse(step.with?.["sparse-checkout-cone-mode"]);
+          }
           if (name === "npm" || name === "github_release") {
             assert.equal(job.if, "needs.prepare.outputs.publish == 'true'");
           } else {
@@ -178,6 +191,7 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
           }
           assert.oneOf(job["runs-on"], ["ubuntu-24.04", "windows-2025", "${{ matrix.runner }}"]);
         }
+        assert.deepStrictEqual(checkoutJobs, ["prepare", "bundle", "cli", "windows", "npm"]);
         assert.deepStrictEqual(workflow.jobs.npm?.permissions, {
           contents: "read",
           "id-token": "write",
