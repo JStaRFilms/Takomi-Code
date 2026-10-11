@@ -54,6 +54,11 @@ import {
   type SupervisorConnectionState,
 } from "./model.ts";
 import * as Persistence from "../platform/persistence.ts";
+import {
+  EMPTY_CONNECTION_CATALOG_DOCUMENT,
+  setRoutesInCatalog,
+} from "../platform/storageDocument.ts";
+import { updateBearerConnection } from "./onboarding.ts";
 import * as ConnectionProfileStore from "./profileStore.ts";
 import * as EnvironmentRegistry from "./registry.ts";
 import {
@@ -117,6 +122,31 @@ const BEARER_CREDENTIAL = new BearerConnectionCredential({
   token: "bearer-token",
 });
 
+const LABEL_TARGETS = ["lan", "tailscale", "alternative-lan"].map(
+  (id) =>
+    new BearerConnectionTarget({
+      environmentId: BEARER_TARGET.environmentId,
+      label: "JOHNSAX",
+      connectionId: id,
+    }),
+);
+const LABEL_HTTP_BASE_URL = "http://192.168.100.5:3773/";
+const LABEL_PROFILES = [
+  { connectionId: "lan", httpBaseUrl: LABEL_HTTP_BASE_URL },
+  { connectionId: "tailscale", httpBaseUrl: "https://johnsax.tailb6e2d3.ts.net:4444/" },
+  { connectionId: "alternative-lan", httpBaseUrl: "http://192.168.100.6:3773/" },
+].map(
+  ({ connectionId, httpBaseUrl }, index) =>
+    new BearerConnectionProfile({
+      connectionId,
+      environmentId: BEARER_TARGET.environmentId,
+      label: "JOHNSAX",
+      httpBaseUrl,
+      wsBaseUrl: httpBaseUrl.replace(/^http/, "ws"),
+      ...(index === 2 ? { learned: true, authorization: "t3-connect" } : {}),
+    }),
+);
+
 const SSH_TARGET: DesktopSshEnvironmentTarget = {
   alias: "test",
   hostname: "test.example.test",
@@ -154,6 +184,7 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
     readonly beforeRegistrationRegister?: (
       registration: ConnectionRegistration,
     ) => Effect.Effect<void, Persistence.ConnectionPersistenceError>;
+    readonly beforeSetRoutes?: Effect.Effect<void, Persistence.ConnectionPersistenceError>;
     readonly beforeRegistrationRemove?: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<void, Persistence.ConnectionPersistenceError>;
@@ -238,7 +269,24 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
         }
       }),
     setRoutes: (environmentId, routes) =>
-      Ref.update(storedTargets, (current) => replaceRoutes(current, environmentId, routes)),
+      Effect.gen(function* () {
+        yield* options?.beforeSetRoutes ?? Effect.void;
+        const document = setRoutesInCatalog(
+          {
+            ...EMPTY_CONNECTION_CATALOG_DOCUMENT,
+            profiles: [...(yield* Ref.get(storedProfiles)).values()],
+          },
+          environmentId,
+          routes,
+        );
+        yield* Ref.set(
+          storedProfiles,
+          new Map(document.profiles.map((profile) => [profile.connectionId, profile])),
+        );
+        yield* Ref.update(storedTargets, (current) =>
+          replaceRoutes(current, environmentId, routes),
+        );
+      }),
     remove: (environmentId) =>
       Effect.gen(function* () {
         yield* options?.beforeRegistrationRemove?.(environmentId) ?? Effect.void;
@@ -474,6 +522,7 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
     storedProfiles,
     profileReadCount,
     storedCredentials,
+    credentialStore,
     storedRemoteTokens,
     storedDisabled,
     disconnectedSshTargets,
@@ -522,6 +571,276 @@ function awaitConnectionState(
 }
 
 describe("EnvironmentRegistry", () => {
+  it.effect(
+    "renames every route without a saved bearer or replacing the active alternate session",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(
+          LABEL_TARGETS,
+          LABEL_PROFILES,
+          [["tailscale", BEARER_CREDENTIAL]],
+          {
+            checkRoute: (route) =>
+              route.target._tag === "BearerConnectionTarget" &&
+              route.target.connectionId === "tailscale"
+                ? "answered"
+                : "silent",
+          },
+        );
+        const environmentId = BEARER_TARGET.environmentId;
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          yield* registry.start;
+          const state = yield* awaitConnectionState(
+            registry,
+            environmentId,
+            (state) => state.phase === "connected",
+          );
+          expect(yield* Ref.get(harness.connectedRoutes)).toEqual(["tailscale"]);
+          const sessions = yield* Ref.get(harness.sessions);
+          const credentials = yield* Ref.get(harness.storedCredentials);
+          const tokens = yield* Ref.get(harness.storedRemoteTokens);
+          // Credential reads must not occur even when normalization changes the text.
+          for (const httpBaseUrl of [
+            "http://192.168.100.5:3773",
+            "http://192.168.100.5:3773/path?query=1#hash",
+          ]) {
+            yield* updateBearerConnection({ environmentId, label: "  Takomi  ", httpBaseUrl }).pipe(
+              Effect.provideService(ConnectionCredentialStore.ConnectionCredentialStore, {
+                get: () => Effect.die("A local rename must not read credentials"),
+                put: () => Effect.die("A local rename must not write credentials"),
+                remove: () => Effect.die("A local rename must not remove credentials"),
+              }),
+            );
+          }
+          const entry = Option.getOrThrow(
+            Option.fromUndefinedOr(
+              (yield* SubscriptionRef.get(registry.entries)).get(environmentId),
+            ),
+          );
+          expect(entry).toMatchObject({ target: { label: "Takomi" }, enabled: true });
+          expect(
+            [entry.profile, ...(entry.alternateRoutes?.map((route) => route.profile) ?? [])].map(
+              Option.getOrThrow,
+            ),
+          ).toEqual(LABEL_PROFILES.map((profile) => ({ ...profile, label: "Takomi" })));
+          expect(yield* Ref.get(harness.storedTargets)).toEqual(
+            LABEL_TARGETS.map((target) => ({ ...target, label: "Takomi" })),
+          );
+          expect([...(yield* Ref.get(harness.storedProfiles)).values()]).toEqual(
+            LABEL_PROFILES.map((profile) => ({ ...profile, label: "Takomi" })),
+          );
+          expect(yield* registry.state(environmentId)).toBe(state);
+          expect(yield* Ref.get(harness.sessions)).toBe(sessions);
+          expect(yield* Ref.get(harness.releasedSessions)).toBe(0);
+          expect(yield* Ref.get(harness.storedCredentials)).toBe(credentials);
+          expect(yield* Ref.get(harness.storedRemoteTokens)).toBe(tokens);
+          expect(yield* Ref.get(harness.connectedRoutes)).toEqual(["tailscale"]);
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+        const reloaded = yield* makeHarness(
+          yield* Ref.get(harness.storedTargets),
+          [...(yield* Ref.get(harness.storedProfiles)).values()],
+          [...(yield* Ref.get(harness.storedCredentials)).entries()],
+        );
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          const entry = Option.getOrThrow(
+            Option.fromUndefinedOr(
+              (yield* SubscriptionRef.get(registry.entries)).get(environmentId),
+            ),
+          );
+          expect(entry.target.label).toBe("Takomi");
+          expect(entry?.alternateRoutes?.map((route) => route.target.label)).toEqual([
+            "Takomi",
+            "Takomi",
+          ]);
+          expect(Option.getOrThrow(entry.profile).label).toBe("Takomi");
+          expect(
+            entry?.alternateRoutes?.map((route) => Option.getOrThrow(route.profile).label),
+          ).toEqual(["Takomi", "Takomi"]);
+        }).pipe(Effect.provide(reloaded.layer), Effect.scoped);
+      }),
+  );
+
+  it.effect(
+    "rejects empty labels, invalid URLs and real URL edits without a credential before changing metadata",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(LABEL_TARGETS, LABEL_PROFILES, [], {
+          initialDisabled: [BEARER_TARGET.environmentId],
+        });
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          const entries = yield* SubscriptionRef.get(registry.entries);
+          for (const [label, httpBaseUrl, reason, message] of [
+            ["   ", LABEL_HTTP_BASE_URL, "configuration", "Environment label cannot be empty."],
+            [
+              "Takomi",
+              "ftp://192.168.100.5:3773",
+              "configuration",
+              "Endpoint must use HTTP or HTTPS. Received ftp:",
+            ],
+            [
+              "Takomi",
+              "http://192.168.100.5:3774/",
+              "authentication",
+              "The saved bearer credential is unavailable.",
+            ],
+            [
+              "Takomi",
+              "https://192.168.100.5:3773/",
+              "authentication",
+              "The saved bearer credential is unavailable.",
+            ],
+          ] as const) {
+            const error = yield* updateBearerConnection({
+              environmentId: BEARER_TARGET.environmentId,
+              label,
+              httpBaseUrl,
+            }).pipe(
+              Effect.provideService(
+                ConnectionCredentialStore.ConnectionCredentialStore,
+                harness.credentialStore,
+              ),
+              Effect.flip,
+            );
+            expect(error).toMatchObject({ reason, message });
+            expect(yield* SubscriptionRef.get(registry.entries)).toBe(entries);
+            expect(yield* Ref.get(harness.storedTargets)).toEqual(LABEL_TARGETS);
+            expect([...(yield* Ref.get(harness.storedProfiles)).values()]).toEqual(LABEL_PROFILES);
+          }
+          yield* updateBearerConnection({
+            environmentId: BEARER_TARGET.environmentId,
+            label: "Takomi",
+            httpBaseUrl: LABEL_HTTP_BASE_URL,
+          }).pipe(
+            Effect.provideService(
+              ConnectionCredentialStore.ConnectionCredentialStore,
+              harness.credentialStore,
+            ),
+          );
+          expect(
+            (yield* SubscriptionRef.get(registry.entries)).get(BEARER_TARGET.environmentId)
+              ?.enabled,
+          ).toBe(false);
+          expect(yield* Ref.get(harness.storedDisabled)).toEqual(
+            new Set([BEARER_TARGET.environmentId]),
+          );
+          expect(yield* Ref.get(harness.sessions)).toEqual([]);
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+      }),
+  );
+
+  it.effect("serializes renames with route reordering without losing either change", () =>
+    Effect.gen(function* () {
+      const saving = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const harness = yield* makeHarness(LABEL_TARGETS, LABEL_PROFILES, [], {
+        beforeSetRoutes: Deferred.succeed(saving, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        ),
+      });
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const rename = yield* registry
+          .updateLabel(BEARER_TARGET.environmentId, "Takomi")
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(saving);
+        const reorder = yield* registry
+          .reorderRoutes(BEARER_TARGET.environmentId, ["tailscale", "lan", "alternative-lan"])
+          .pipe(Effect.forkChild);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(rename);
+        yield* Fiber.join(reorder);
+        expect(
+          (yield* Ref.get(harness.storedTargets)).map((target) => [
+            connectionRouteId(target),
+            target.label,
+          ]),
+        ).toEqual([
+          ["tailscale", "Takomi"],
+          ["lan", "Takomi"],
+          ["alternative-lan", "Takomi"],
+        ]);
+        expect(
+          [...(yield* Ref.get(harness.storedProfiles)).values()].map((profile) => profile.label),
+        ).toEqual(["Takomi", "Takomi", "Takomi"]);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect(
+    "still updates a real URL through authenticated registration and preserves alternate routes",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(
+          LABEL_TARGETS,
+          LABEL_PROFILES,
+          [["lan", BEARER_CREDENTIAL]],
+          { initialDisabled: [BEARER_TARGET.environmentId] },
+        );
+        yield* Effect.gen(function* () {
+          yield* updateBearerConnection({
+            environmentId: BEARER_TARGET.environmentId,
+            label: "Takomi",
+            httpBaseUrl: "https://new.example.test:4444/path",
+          }).pipe(
+            Effect.provideService(
+              ConnectionCredentialStore.ConnectionCredentialStore,
+              harness.credentialStore,
+            ),
+          );
+          expect((yield* Ref.get(harness.storedProfiles)).get("lan")).toMatchObject({
+            connectionId: "lan",
+            label: "Takomi",
+            httpBaseUrl: "https://new.example.test:4444/",
+            wsBaseUrl: "wss://new.example.test:4444/",
+          });
+          expect((yield* Ref.get(harness.storedProfiles)).get("tailscale")).toEqual(
+            LABEL_PROFILES[1],
+          );
+          expect((yield* Ref.get(harness.storedProfiles)).get("alternative-lan")).toEqual(
+            LABEL_PROFILES[2],
+          );
+          expect((yield* Ref.get(harness.storedCredentials)).get("lan")).toBe(BEARER_CREDENTIAL);
+          expect(yield* Ref.get(harness.storedDisabled)).toEqual(
+            new Set([BEARER_TARGET.environmentId]),
+          );
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+      }),
+  );
+
+  it.effect("leaves labels unchanged when catalog persistence fails", () =>
+    Effect.gen(function* () {
+      const failure = new Persistence.ConnectionPersistenceError({
+        operation: "set-connection-routes",
+        message: "Could not save catalog",
+      });
+      const harness = yield* makeHarness(LABEL_TARGETS, LABEL_PROFILES, [], {
+        beforeSetRoutes: Effect.fail(failure),
+      });
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const entries = yield* SubscriptionRef.get(registry.entries);
+        const error = yield* updateBearerConnection({
+          environmentId: BEARER_TARGET.environmentId,
+          label: "Takomi",
+          httpBaseUrl: LABEL_HTTP_BASE_URL,
+        }).pipe(
+          Effect.provideService(
+            ConnectionCredentialStore.ConnectionCredentialStore,
+            harness.credentialStore,
+          ),
+          Effect.flip,
+        );
+        expect(error).toBe(failure);
+        expect(yield* SubscriptionRef.get(registry.entries)).toBe(entries);
+        expect(yield* Ref.get(harness.storedTargets)).toEqual(LABEL_TARGETS);
+        expect([...(yield* Ref.get(harness.storedProfiles)).values()]).toEqual(LABEL_PROFILES);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
   it.effect("replays connected state when arming a desktop commit observer", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness([TARGET]);

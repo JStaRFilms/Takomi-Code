@@ -12,6 +12,8 @@ import {
   registerHiddenUpdateTap,
   runAppUpdateCheck,
 } from "../updates/app-updates";
+import { getAndroidUpdateInstallation } from "../updates/android-apk-updates";
+import { AndroidAppUpdateRows } from "../updates/AndroidAppUpdateRows";
 import { SettingsRow } from "./components/SettingsRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsScreen } from "./components/SettingsScreen";
@@ -20,7 +22,7 @@ export function SettingsAboutRouteScreen() {
   const insets = useSafeAreaInsets();
 
   return (
-    <SettingsScreen title="About T3 Code">
+    <SettingsScreen title="About Takomi Code">
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
@@ -39,13 +41,15 @@ function AppSettingsSection() {
   const updateInFlight = useRef(false);
   const hiddenUpdateTapCount = useRef(0);
 
-  const version = Constants.expoConfig?.version ?? "0.0.0";
+  const androidInstallation = getAndroidUpdateInstallation();
+  const version = androidInstallation?.version ?? Constants.expoConfig?.version ?? "0.0.0";
   // Fall back to "production" to match resolveAppVariant in app.config.ts, so a
   // missing variant never mislabels a production build as development.
-  const variant = (Constants.expoConfig?.extra?.appVariant as string | undefined) ?? "production";
+  const configuredVariant: unknown = Constants.expoConfig?.extra?.appVariant;
+  const variant = typeof configuredVariant === "string" ? configuredVariant : "production";
   const variantLabel = variant === "production" ? "" : capitalize(variant);
   const versionLabel = variantLabel ? `${version} · ${variantLabel}` : version;
-  const updateCheckAvailable = isAppUpdateCheckAvailable();
+  const updateCheckAvailable = androidInstallation === null && isAppUpdateCheckAvailable();
   const busy =
     updateState === "checking" || updateState === "downloading" || updateState === "restarting";
 
@@ -128,6 +132,7 @@ function AppSettingsSection() {
         target="SettingsOpenSourceLicenses"
       />
       <SettingsRow icon="doc.text" label="Legal" fullScreenTarget="SettingsLegal" />
+      {androidInstallation ? <AndroidAppUpdateRows /> : null}
       {updateCheckAvailable ? (
         <Pressable
           accessibilityLabel={`Version ${versionLabel}`}

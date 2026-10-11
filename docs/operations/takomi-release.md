@@ -3,7 +3,8 @@
 The fork workflow is `.github/workflows/takomi-release.yml` in
 `JStaRFilms/Takomi-Code`. It builds Windows x64 NSIS installers and self-contained
 Windows x64, Linux x64, and macOS Apple Silicon ARM64 CLI archives on GitHub-hosted
-runners. The Mac server builds and smoke-tests natively on `macos-15` using the
+runners. An independent Ubuntu job builds an arm64 Android APK for every numbered
+stable release, using the same explicit release version. The Mac server builds and smoke-tests natively on `macos-15` using the
 upstream Darwin packager. It does not support Intel Macs or build a Mac desktop
 app or DMG. The Windows app embeds the Linux archive for its WSL backend. The
 workflow does not build a Linux desktop, publish T3 services, or deploy a hosted web app.
@@ -16,7 +17,9 @@ setup is needed.
 
 Get approval before pushing this workflow or a release tag. A push to `Takomi-Code`
 starts build jobs, which consume GitHub Actions minutes, but cannot publish. Build-only
-versions have a `preview` suffix and no desktop update feed. There is no scheduled
+versions have a `preview` suffix and no desktop update feed. Android build-only runs
+produce a clearly named, debug-signed preview Actions artifact. They never receive
+stable signing secrets, even when those secrets exist in the repository. There is no scheduled
 publisher. After upstream merges, review and release deliberately, roughly weekly.
 
 Confirm Actions are allowed in this repository and that `Takomi-Code` is available
@@ -63,6 +66,9 @@ are immutable; do not blindly rerun the publisher.
 
 A manual run defaults to `publish=false`. Select `Takomi-Code`. An optional plain
 `X.Y.Z` version sets the base of its preview build; it still cannot publish.
+To verify production Android signing without publishing, also select `android_signed=true`
+and supply an explicit version. The Android artifact uses that stable version and the signing
+secrets; Windows and server artifacts remain previews. Both publishers remain disabled.
 
 For a deliberate stable release, choose one of these after approval:
 
@@ -76,11 +82,65 @@ been published. Do not bump workspace manifests just to release. The existing ve
 helper aligns manifests only in the runner checkout; the workflow never commits or
 pushes version changes back to the branch.
 
-All three CLI archives are smoke-tested through the upstream scripts. The workflow stages
-npm tarballs from those archives, publishes the platform packages before `takomi-code`,
-and only then publishes the GitHub release. The release includes the Windows EXE,
-blockmap, `latest.yml`, all three server archives, and `SHA256SUMS`. Only the npm job gets
+All three CLI archives are smoke-tested through the upstream scripts. The verified Android
+artifact must succeed before either publisher runs. Missing stable Android credentials fail
+closed before npm publication. The workflow stages npm tarballs from the CLI archives only,
+publishes the platform packages before `takomi-code`, and only then publishes the GitHub
+release. The release includes the Windows EXE, blockmap, `latest.yml`, all three server
+archives, `Takomi-Code-X.Y.Z-android-arm64-v8a.apk`, and `SHA256SUMS`. Only the npm job gets
 `id-token: write`; only the GitHub release job gets `contents: write`.
+
+## Android signing and build prerequisites
+
+Prepare one dedicated, long-lived Android release keystore on an owner-controlled machine.
+Keep encrypted backups of the keystore, alias, and passwords in separate protected locations.
+Test that a backup can be restored before relying on it. Losing this signing key prevents
+upgrades to existing production installs. Do not rotate it for each release or use the
+preview debug key as the release key.
+
+After explicit authorization, provision these repository secrets privately:
+
+- `TAKOMI_ANDROID_KEYSTORE_BASE64`
+- `TAKOMI_ANDROID_KEYSTORE_PASSWORD`
+- `TAKOMI_ANDROID_KEY_ALIAS`
+- `TAKOMI_ANDROID_KEY_PASSWORD`
+
+Base64 is transport encoding, not encryption. Never commit it, paste passwords into command
+arguments, or upload a keystore as an artifact. The stable job decodes the keystore only under
+`RUNNER_TEMP`, signs with password environment references, verifies the certificate against
+the certificate exported from that keystore, and removes its temporary files. Expo prebuild,
+Gradle, and the JavaScript bundler receive no signing credentials. The helper overrides Expo's
+default debug release signing, aligns the unsigned APK, then signs it with `apksigner`.
+
+CI uses Java 17, Gradle 9.4.1 from the Expo/React Native sources, compile SDK 37, target SDK 36,
+build tools 37.0.0, and NDK 27.1.12297006. It clean-prebuilds Android in the disposable runner
+checkout. Generated `apps/mobile/android` files are not maintained release sources. Windows
+local-build short-path workarounds are unchanged and do not apply to Linux CI.
+
+Only the runner checkout stages the mobile version literal and Android version code. Source
+mobile `2.0.0`, Android code `3`, iOS build number, and EAS numbering defaults stay unchanged.
+Stable Android codes use `1 + major * 1000000 + minor * 1000 + patch`, so `0.1.2` is code `1003`.
+Minor and patch must each be below 1000; components must be safe integers and the resulting
+code must not exceed 2100000000. Choose an unused version newer than the previous stable
+release. Preview codes are not a stable upgrade sequence.
+
+These GitHub APKs embed JavaScript and force Expo OTA off, even if an Expo project is configured.
+They need no Expo account, Play Store account, or Android npm package. The helper verifies the
+APK signature, package ID, version, code, SDK metadata, embedded bundle, arm64-only native
+libraries, and disabled OTA before collecting the artifact. The first Linux build and a real
+device upgrade still need verification; unit tests do not establish either.
+
+For an authorized build in a disposable Linux checkout with dependencies and the listed SDK
+packages installed:
+
+```sh
+node scripts/build-android-artifact.ts --version 0.1.2-preview.20261011.1 --channel preview --build-checkout
+```
+
+For stable packaging, privately supply the four signing variables and `RUNNER_TEMP`, then run
+`node scripts/build-android-artifact.ts --version 0.1.2 --channel stable --build-checkout`.
+Both commands stage the checkout and clean generated Android files. Do not run them in a
+working source checkout. Add `--dry-run` to inspect the plan without building or staging.
 
 ## Install and update
 
@@ -103,6 +163,15 @@ manually to replace an older or feedless build. Subsequent stable builds use the
 existing bottom-left desktop updater with the explicit `JStaRFilms/Takomi-Code` feed.
 Preview builds stay feedless. This is the local desktop updater, not an updater for a
 remote browser or hosted product.
+
+Download the stable Android APK from the same GitHub release and compare its checksum with
+`SHA256SUMS`. Android asks you to authorize the download source and confirm installation;
+there is no silent installer. Production uses `com.jstarstudios.takomicode`. The current preview
+uses `com.jstarstudios.takomicode.preview`, so both can stay installed with separate app storage.
+Keep the preview until you have verified the production connection and settings. A historical
+preview with another package ID or certificate is not an in-place production upgrade. Later
+production APKs retain the package ID and signing key and use increasing version codes.
+In-app APK update notification is a separate client task, not part of this packaging change.
 
 Windows downloads are unsigned. SmartScreen may warn or block them according to local
 policy. Verify the repository and checksum before choosing to run an installer.

@@ -30,6 +30,7 @@ const Job = Schema.Struct({
   ),
   steps: Schema.Array(
     Schema.Struct({
+      if: Schema.optionalKey(Schema.String),
       run: Schema.optionalKey(Schema.String),
       uses: Schema.optionalKey(Schema.String),
       env: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
@@ -54,7 +55,10 @@ const Workflow = Schema.Struct({
       tags: Schema.Array(Schema.String),
     }),
     workflow_dispatch: Schema.Struct({
-      inputs: Schema.Struct({ publish: Schema.Struct({ default: Schema.Boolean }) }),
+      inputs: Schema.Struct({
+        publish: Schema.Struct({ default: Schema.Boolean }),
+        android_signed: Schema.Struct({ default: Schema.Boolean }),
+      }),
     }),
   }),
   permissions: Schema.Record(Schema.String, Schema.String),
@@ -178,6 +182,57 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
       assert.equal(tagLookups, testCase.ref?.type === "tag" ? 1 : 0);
     }),
   );
+  it.effect(
+    "allows signed Android verification without enabling publication and requires a version",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const source = yield* fs.readFileString(
+          yield* path.fromFileUrl(
+            new URL("../.github/workflows/takomi-release.yml", import.meta.url),
+          ),
+        );
+        const workflow = yield* Schema.decodeEffect(fromYaml(Workflow))(source);
+        const script = workflow.jobs.prepare?.steps.find(
+          (step) => step.uses === "actions/github-script@v8",
+        )?.with?.script;
+        assert.isString(script);
+        for (const version of ["", "0.1.2"]) {
+          const outputs: Record<string, string> = {};
+          const prepared: unknown = NodeVM.runInNewContext(`(async () => {\n${script}\n})()`, {
+            context: {
+              eventName: "workflow_dispatch",
+              ref: "refs/heads/Takomi-Code",
+              runNumber: 1,
+            },
+            process: {
+              env: { INPUT_VERSION: version, INPUT_PUBLISH: "false", INPUT_ANDROID_SIGNED: "true" },
+            },
+            core: {
+              setOutput: (name: string, value: string) => {
+                outputs[name] = value;
+              },
+            },
+          });
+          if (version === "") {
+            yield* Effect.promise(() => expect(prepared).rejects.toThrow("plain X.Y.Z"));
+            assert.deepStrictEqual(outputs, {});
+          } else {
+            yield* Effect.promise(async () => {
+              await prepared;
+            });
+            assert.equal(outputs.publish, "false");
+            assert.match(outputs.version ?? "", /^0\.1\.2-preview\./u);
+            assert.equal(workflow.jobs.npm?.if, "needs.prepare.outputs.publish == 'true'");
+            assert.equal(
+              workflow.jobs.github_release?.if,
+              "needs.prepare.outputs.publish == 'true'",
+            );
+          }
+        }
+      }),
+  );
   it.effect("builds native Mac ARM64 server archives and collects them for npm and GitHub", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -234,11 +289,11 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
         } else {
           assert.include(
             runs,
-            "sha256sum *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip > SHA256SUMS",
+            "sha256sum *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip *.apk > SHA256SUMS",
           );
           assert.include(
             runs,
-            "--latest *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip SHA256SUMS",
+            "--latest *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip *.apk SHA256SUMS",
           );
         }
       }
@@ -253,6 +308,56 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
         assert.notInclude(cliRuns, forbidden);
       }
       assert.notInclude(source, "--platform mac --target");
+    }),
+  );
+  it.effect("requires a verified Android artifact before either publisher can run", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const source = yield* fs.readFileString(
+        yield* path.fromFileUrl(
+          new URL("../.github/workflows/takomi-release.yml", import.meta.url),
+        ),
+      );
+      const workflow = yield* Schema.decodeEffect(fromYaml(Workflow))(source);
+      const android = workflow.jobs.android;
+      assert.deepStrictEqual(android?.needs, ["prepare"]);
+      assert.equal(android?.["runs-on"], "ubuntu-24.04");
+      const steps = android?.steps ?? [];
+      const signingGuard = steps.findIndex((step) => step.run?.includes("requireAndroidSigning"));
+      const stableBuild = steps.findIndex((step) => step.run?.includes("--channel stable"));
+      const previewBuild = steps.find((step) => step.run?.includes("--channel preview"));
+      assert.isAbove(signingGuard, -1);
+      assert.isAbove(stableBuild, signingGuard);
+      assert.equal(
+        steps[signingGuard]?.if,
+        "needs.prepare.outputs.publish == 'true' || inputs.android_signed",
+      );
+      assert.equal(steps[stableBuild]?.if, steps[signingGuard]?.if);
+      assert.equal(
+        steps[stableBuild]?.env?.VERSION,
+        "${{ inputs.android_signed && inputs.version || needs.prepare.outputs.version }}",
+      );
+      assert.equal(
+        previewBuild?.if,
+        "needs.prepare.outputs.publish != 'true' && !inputs.android_signed",
+      );
+      assert.deepStrictEqual(Object.keys(previewBuild?.env ?? {}), ["VERSION"]);
+      const upload = steps.find((step) => step.uses?.startsWith("actions/upload-artifact@"));
+      assert.equal(upload?.with?.name, "takomi-android-arm64");
+      assert.equal(upload?.with?.path, "release-android/*.apk");
+      for (const name of ["npm", "github_release"]) {
+        const job = workflow.jobs[name];
+        assert.include(job?.needs ?? [], "android");
+        const download = job?.steps.find((step) => step.with?.name === "takomi-android-arm64");
+        assert.equal(download?.with?.path, name === "npm" ? "release-android" : "release-assets");
+        const runs = job?.steps.flatMap((step) => (step.run ? [step.run] : [])).join("\n") ?? "";
+        assert.include(
+          runs,
+          `test -s "${name === "npm" ? "release-android/" : ""}Takomi-Code-${"${VERSION}"}-android-arm64-v8a.apk"`,
+        );
+        if (name === "npm") assert.notInclude(runs, "--archives-dir release-android");
+      }
     }),
   );
   it.effect(
@@ -270,6 +375,7 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
         assert.deepStrictEqual(workflow.on.push.branches, ["Takomi-Code"]);
         assert.deepStrictEqual(workflow.on.push.tags, ["v*.*.*"]);
         assert.isFalse(workflow.on.workflow_dispatch.inputs.publish.default);
+        assert.isFalse(workflow.on.workflow_dispatch.inputs.android_signed.default);
         assert.deepStrictEqual(workflow.permissions, { contents: "read" });
         assert.equal(workflow.jobs.prepare?.if, "github.repository == 'JStaRFilms/Takomi-Code'");
         const checkoutJobs: string[] = [];
@@ -287,7 +393,14 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
           }
           assert.oneOf(job["runs-on"], ["ubuntu-24.04", "windows-2025", "${{ matrix.runner }}"]);
         }
-        assert.deepStrictEqual(checkoutJobs, ["prepare", "bundle", "cli", "windows", "npm"]);
+        assert.deepStrictEqual(checkoutJobs, [
+          "prepare",
+          "bundle",
+          "cli",
+          "windows",
+          "android",
+          "npm",
+        ]);
         assert.deepStrictEqual(workflow.jobs.npm?.permissions, {
           contents: "read",
           "id-token": "write",
@@ -295,7 +408,7 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
         assert.deepStrictEqual(workflow.jobs.github_release?.permissions, { contents: "write" });
         assert.include(workflow.jobs.github_release?.needs ?? [], "npm");
         assert.include(workflow.jobs.windows?.needs ?? [], "cli");
-        for (const name of ["bundle", "cli", "windows", "npm", "github_release"]) {
+        for (const name of ["bundle", "cli", "windows", "android", "npm", "github_release"]) {
           assert.include(workflow.jobs[name]?.needs ?? [], "prepare");
         }
         const publishRuns =
@@ -316,7 +429,6 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
         assert.include(source, "T3CODE_DESKTOP_UPDATE_REPOSITORY: JStaRFilms/Takomi-Code");
         assert.include(source, "--repo JStaRFilms/Takomi-Code");
         for (const forbidden of [
-          "secrets.",
           "secrets: inherit",
           "blacksmith",
           "vercel",
@@ -327,6 +439,28 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
           "schedule:",
         ]) {
           assert.notInclude(source, forbidden);
+        }
+        for (const [name, job] of Object.entries(workflow.jobs)) {
+          for (const step of job.steps) {
+            const secretVariables = Object.entries(step.env ?? {}).filter(([, value]) =>
+              value.includes("secrets."),
+            );
+            if (secretVariables.length === 0) continue;
+            assert.equal(name, "android");
+            assert.equal(
+              step.if,
+              "needs.prepare.outputs.publish == 'true' || inputs.android_signed",
+            );
+            assert.deepStrictEqual(
+              secretVariables.map(([key]) => key),
+              [
+                "TAKOMI_ANDROID_KEYSTORE_BASE64",
+                "TAKOMI_ANDROID_KEYSTORE_PASSWORD",
+                "TAKOMI_ANDROID_KEY_ALIAS",
+                "TAKOMI_ANDROID_KEY_PASSWORD",
+              ],
+            );
+          }
         }
         const upstream = yield* fs.readFileString(
           yield* path.fromFileUrl(new URL("../.github/workflows/release.yml", import.meta.url)),

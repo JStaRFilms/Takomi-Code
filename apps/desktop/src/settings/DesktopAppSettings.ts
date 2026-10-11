@@ -22,7 +22,10 @@ import {
   normalizeLinuxPasswordStorePreference,
   type LinuxPasswordStorePreference,
 } from "../linuxSecretStorage.ts";
-import { resolveDefaultDesktopUpdateChannel } from "../updates/updateChannels.ts";
+import {
+  normalizeTakomiDesktopUpdateChannel,
+  resolveDefaultDesktopUpdateChannel,
+} from "../updates/updateChannels.ts";
 import { isValidDistroName } from "../wsl/wslPathParsing.ts";
 
 export interface DesktopSettings {
@@ -194,7 +197,9 @@ export class DesktopAppSettings extends Context.Service<
 export function resolveDefaultDesktopSettings(appVersion: string): DesktopSettings {
   return {
     ...DEFAULT_DESKTOP_SETTINGS,
-    updateChannel: resolveDefaultDesktopUpdateChannel(appVersion),
+    updateChannel: normalizeTakomiDesktopUpdateChannel(
+      resolveDefaultDesktopUpdateChannel(appVersion),
+    ),
   };
 }
 
@@ -240,9 +245,11 @@ function normalizeDesktopSettingsDocument(
       parsed.serverExposureMode === "network-accessible" ? "network-accessible" : "local-only",
     tailscaleServeEnabled: parsed.tailscaleServeEnabled === true,
     tailscaleServePort: normalizeTailscaleServePort(parsed.tailscaleServePort),
-    updateChannel: updateChannelConfiguredByUser
-      ? Option.getOrElse(parsedUpdateChannel, () => defaultSettings.updateChannel)
-      : defaultSettings.updateChannel,
+    updateChannel: normalizeTakomiDesktopUpdateChannel(
+      updateChannelConfiguredByUser
+        ? Option.getOrElse(parsedUpdateChannel, () => defaultSettings.updateChannel)
+        : defaultSettings.updateChannel,
+    ),
     updateChannelConfiguredByUser,
     wslBackendEnabled,
     wslDistro: normalizeWslDistro(parsed.wslDistro),
@@ -346,11 +353,12 @@ function setUpdateChannel(
   settings: DesktopSettings,
   requestedChannel: DesktopUpdateChannel,
 ): DesktopSettings {
-  return settings.updateChannel === requestedChannel
+  const channel = normalizeTakomiDesktopUpdateChannel(requestedChannel);
+  return settings.updateChannel === channel
     ? settings
     : {
         ...settings,
-        updateChannel: requestedChannel,
+        updateChannel: channel,
         updateChannelConfiguredByUser: true,
       };
 }

@@ -33,7 +33,10 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
-import { resolveDefaultDesktopUpdateChannel } from "./updateChannels.ts";
+import {
+  normalizeTakomiDesktopUpdateChannel,
+  resolveDefaultDesktopUpdateChannel,
+} from "./updateChannels.ts";
 import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
@@ -293,7 +296,7 @@ export const make = Effect.gen(function* () {
     createInitialDesktopUpdateState(
       environment.appVersion,
       environment.runtimeInfo,
-      environment.defaultDesktopSettings.updateChannel,
+      normalizeTakomiDesktopUpdateChannel(environment.defaultDesktopSettings.updateChannel),
     ),
   );
 
@@ -391,7 +394,7 @@ export const make = Effect.gen(function* () {
     channel: DesktopUpdateChannel,
   ) {
     yield* Effect.annotateCurrentSpan({ channel });
-    const allowsPrerelease = channel === "nightly";
+    const allowsPrerelease = false;
     yield* electronUpdater.setChannel(channel);
     yield* electronUpdater.setAllowPrerelease(allowsPrerelease);
     yield* electronUpdater.setAllowDowngrade(allowsPrerelease);
@@ -406,10 +409,7 @@ export const make = Effect.gen(function* () {
 
   const shouldEnableAutoUpdates = resolveDisabledReason.pipe(Effect.map(Option.isNone));
 
-  const checkForUpdates = Effect.fn("desktop.updates.checkForUpdates")(function* (
-    reason: string,
-    actionReservation: "acquire" | "held" = "acquire",
-  ) {
+  const checkForUpdates = Effect.fn("desktop.updates.checkForUpdates")(function* (reason: string) {
     yield* Effect.annotateCurrentSpan({ reason });
     if (yield* Ref.get(desktopState.quitting)) return false;
     if (!(yield* Ref.get(updaterConfiguredRef))) return false;
@@ -423,7 +423,7 @@ export const make = Effect.gen(function* () {
       return false;
     }
 
-    if (actionReservation === "acquire" && !(yield* tryStartUpdateAction("check"))) return false;
+    if (!(yield* tryStartUpdateAction("check"))) return false;
 
     const check = Effect.gen(function* () {
       const checkedAt = yield* currentIsoTimestamp;
@@ -450,12 +450,10 @@ export const make = Effect.gen(function* () {
       );
     });
 
-    return yield* actionReservation === "held"
-      ? check
-      : check.pipe(
-          Effect.onInterrupt(() => setState(state)),
-          Effect.ensuring(finishUpdateAction("check")),
-        );
+    return yield* check.pipe(
+      Effect.onInterrupt(() => setState(state)),
+      Effect.ensuring(finishUpdateAction("check")),
+    );
   });
 
   const downloadAvailableUpdate = Effect.gen(function* () {
@@ -923,8 +921,9 @@ export const make = Effect.gen(function* () {
       }
 
       const settings = yield* desktopSettings.get;
+      const channel = normalizeTakomiDesktopUpdateChannel(settings.updateChannel);
       const enabled = yield* shouldEnableAutoUpdates;
-      yield* setState(createBaseUpdateState(settings.updateChannel, enabled, environment));
+      yield* setState(createBaseUpdateState(channel, enabled, environment));
       if (!enabled) {
         return;
       }
@@ -932,7 +931,7 @@ export const make = Effect.gen(function* () {
 
       yield* electronUpdater.setAutoDownload(false);
       yield* electronUpdater.setAutoInstallOnAppQuit(false);
-      yield* applyAutoUpdaterChannel(settings.updateChannel);
+      yield* applyAutoUpdaterChannel(channel);
       yield* electronUpdater.setDisableDifferentialDownload(
         isArm64HostRunningIntelBuild(environment.runtimeInfo),
       );
@@ -969,23 +968,19 @@ export const make = Effect.gen(function* () {
       yield* startUpdatePollers;
     }).pipe(Effect.withSpan("desktop.updates.configure")),
     setChannel: Effect.fn("desktop.updates.setChannel")(function* (
-      nextChannel: DesktopUpdateChannel,
+      requestedChannel: DesktopUpdateChannel,
     ) {
+      const nextChannel = normalizeTakomiDesktopUpdateChannel(requestedChannel);
       yield* Effect.annotateCurrentSpan({ channel: nextChannel });
       const activeAction = yield* tryStartChannelChange;
       if (Option.isSome(activeAction)) {
         return yield* new DesktopUpdateActionInProgressError({
           action: activeAction.value === "install-recovery" ? "install" : activeAction.value,
-          requestedChannel: nextChannel,
+          requestedChannel,
         });
       }
 
       return yield* Effect.gen(function* () {
-        const state = yield* Ref.get(updateStateRef);
-        if (nextChannel === state.channel) {
-          return state;
-        }
-
         yield* desktopSettings
           .setUpdateChannel(nextChannel)
           .pipe(
@@ -994,19 +989,6 @@ export const make = Effect.gen(function* () {
             ),
           );
 
-        const enabled = yield* shouldEnableAutoUpdates;
-        yield* setState(createBaseUpdateState(nextChannel, enabled, environment));
-
-        if (!enabled || !(yield* Ref.get(updaterConfiguredRef))) {
-          return yield* Ref.get(updateStateRef);
-        }
-
-        yield* applyAutoUpdaterChannel(nextChannel);
-        const allowDowngrade = yield* electronUpdater.allowDowngrade;
-        yield* electronUpdater.setAllowDowngrade(true);
-        yield* checkForUpdates("channel-change", "held").pipe(
-          Effect.ensuring(electronUpdater.setAllowDowngrade(allowDowngrade).pipe(Effect.ignore)),
-        );
         return yield* Ref.get(updateStateRef);
       }).pipe(Effect.ensuring(finishUpdateAction("channel")));
     }),

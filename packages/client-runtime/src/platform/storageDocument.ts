@@ -11,6 +11,8 @@ import { type ConnectionTarget, PersistedConnectionTarget } from "../connection/
 import * as TokenStore from "../authorization/tokenStore.ts";
 import { StoredGitHubRoutingPermission } from "../connection/githubRoutingPermissions.ts";
 
+const decodeConnectionProfile = Schema.decodeSync(ConnectionProfile);
+
 export const StoredConnectionCredential = Schema.Struct({
   connectionId: Schema.String,
   credential: ConnectionCredential,
@@ -108,7 +110,8 @@ export function catalogRoutes(
  * Replaces an environment's routes with `routes`, preferred first. Records
  * owned by a dropped route go with it; the environment keeps its position in
  * the catalog. An empty list leaves the environment's other records in place;
- * use `removeConnectionFromCatalog` to forget the environment.
+ * use `removeConnectionFromCatalog` to forget the environment. Retained
+ * profiles take their labels from the targets in the same catalog write.
  */
 export function setRoutesInCatalog(
   document: ConnectionCatalogDocument,
@@ -126,9 +129,19 @@ export function setRoutesInCatalog(
       ? others.length
       : document.targets.slice(0, firstIndex).filter((t) => t.environmentId !== environmentId)
           .length;
+  const next = removeRouteMetadata(document, dropped);
+  const labels = new Map(routes.map((target) => [connectionIdOf(target), target.label]));
   return {
-    ...removeRouteMetadata(document, dropped),
+    ...next,
     targets: [...others.slice(0, insertAt), ...routes, ...others.slice(insertAt)],
+    profiles: next.profiles.map((profile) => {
+      const label = labels.get(profile.connectionId);
+      return profile.environmentId === environmentId &&
+        label !== undefined &&
+        label !== profile.label
+        ? decodeConnectionProfile({ ...profile, label })
+        : profile;
+    }),
   };
 }
 

@@ -11,8 +11,12 @@ Use `vp run dist:local:desktop` for only the Windows NSIS installer, or
 See [`../../release/README.md`](../../release/README.md) for the complete versioning and release
 checklist.
 
+Local Windows installers are unsigned and can show **Unknown publisher**.
+Product metadata does not authenticate a publisher. A signed release requires
+trusted Windows code-signing credentials.
+
 The Android command needs a working Android SDK, Java, and Gradle-compatible Windows setup. It
-builds `Takomi Code Preview` (`com.t3tools.t3code.preview`) in a managed short-path worktree at
+builds `Takomi Code Preview` (`com.jstarstudios.takomicode.preview`) in a managed short-path worktree at
 `C:\takomi-local-build`, with a short pnpm virtual store at `C:\tp`. These paths avoid
 the React Native/CMake path-length and mixed-drive failures that affected the normal checkout. The
 script overlays your tracked working-tree changes and copies root `.env` and `.env.local` when

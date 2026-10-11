@@ -1,4 +1,5 @@
 import { PermissionUpdateNotice } from "./components/PermissionUpdateNotice";
+import { AndroidUpdateNotice } from "./features/updates/AndroidUpdateNotice";
 import * as Linking from "expo-linking";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
@@ -85,6 +86,7 @@ function AppContent() {
       <SplashScreenCoordinator />
       <SubscriptionUsageCoordinator />
       <PermissionUpdateNotice />
+      <AndroidUpdateNotice />
       <GestureHandlerRootView className="flex-1">
         <KeyboardProvider statusBarTranslucent>
           <SafeAreaProvider>

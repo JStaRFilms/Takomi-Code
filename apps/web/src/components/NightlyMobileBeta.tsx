@@ -5,6 +5,7 @@ import { SmartphoneIcon } from "lucide-react";
 import { useEffect } from "react";
 
 import { APP_VERSION, HOSTED_APP_CHANNEL } from "../branding";
+import { isElectron } from "../env";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { getLocalStorageItem, setLocalStorageItem } from "../hooks/useLocalStorage";
 import { AndroidIcon, AppleIcon } from "./Icons";
@@ -18,9 +19,10 @@ import { toastManager } from "./ui/toast";
 // still V1 and cannot connect to a V2 server, so Nightly users need the V2 beta
 // app. Delete this file when the store apps move to V2. See #14871.
 
-/** True on Nightly desktop, `npx t3@nightly`, and the hosted Nightly app. */
+/** Upstream beta links apply to Nightly web clients, not Takomi desktop. */
 export const IS_NIGHTLY_BUILD =
-  parseSemver(APP_VERSION)?.prerelease[0] === "nightly" || HOSTED_APP_CHANNEL === "nightly";
+  !isElectron &&
+  (parseSemver(APP_VERSION)?.prerelease[0] === "nightly" || HOSTED_APP_CHANNEL === "nightly");
 
 const IOS_TESTFLIGHT_URL = "https://testflight.apple.com/join/XgaxaRtd";
 const ANDROID_BETA_GROUP_URL = "https://groups.google.com/g/t3-code-v2-beta";

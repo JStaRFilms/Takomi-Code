@@ -1,11 +1,11 @@
 # Welcome wizard
 
-T3 Code shows a setup flow when you open a new installation or connect to the
+Takomi Code shows a setup flow when you open a new installation or connect to the
 hosted app for the first time. Existing workspaces skip this flow.
 
 ## Connect your computers
 
-Select one or more computers to set up. If you opened T3 Code directly from a
+Select one or more computers to set up. If you opened Takomi Code directly from a
 server or the desktop app, that computer is already connected and selected.
 It is identified by its name, which may differ from the device running your
 browser.
@@ -14,7 +14,7 @@ You can add more computers before continuing:
 
 - **T3 Connect** connects computers that are signed in to your account.
   [Install the CLI](./install.md#command-line) and run `t3 connect` on each
-  computer you want to add, then start T3 Code or run `t3 serve` so the
+  computer you want to add, then start the server or run `t3 serve` so the
   computer stays available.
 - **Add a computer** connects directly to a server on your network or tailnet.
   Start the server with `t3 serve`, then run `t3 pair --tailscale` and paste
@@ -26,10 +26,10 @@ default. Uncheck any you do not want to set up; this does not disconnect them.
 Continue when your selected computers are connected. Setup checks
 agents across the selected computers, then offers project import grouped by computer.
 
-If T3 Code cannot confirm the workspace during startup, the setup flow shows
+If Takomi Code cannot confirm the workspace during startup, the setup flow shows
 **Still connecting** instead of opening the app. Select **Reload** to try again.
 
-If T3 Code cannot read your saved settings, it shows **Could not read settings**.
+If Takomi Code cannot read your saved settings, it shows **Could not read settings**.
 Select **Retry** after storage becomes available. Setup does not replace
 unreadable settings with defaults.
 

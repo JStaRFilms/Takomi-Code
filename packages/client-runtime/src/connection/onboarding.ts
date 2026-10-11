@@ -166,7 +166,7 @@ const registerPairingConnection = Effect.fn(
 const isBearerCredential = Schema.is(BearerConnectionCredential);
 const isBearerProfile = Schema.is(BearerConnectionProfile);
 
-const updateBearerConnection = Effect.fn(
+export const updateBearerConnection = Effect.fn(
   "clientRuntime.connection.onboarding.updateBearerConnection",
 )(function* (input: BearerConnectionUpdateInput) {
   const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
@@ -180,6 +180,34 @@ const updateBearerConnection = Effect.fn(
           (candidate) => candidate.target._tag === "BearerConnectionTarget",
         );
   const entry = saved === undefined || route === undefined ? saved : routeEntry(saved, route);
+  if (
+    entry?.target._tag === "BearerConnectionTarget" &&
+    Option.isSome(entry.profile) &&
+    isBearerProfile(entry.profile.value)
+  ) {
+    const httpBaseUrl = yield* Effect.try({
+      try: () => normalizeHttpBaseUrl(input.httpBaseUrl),
+      catch: (cause) =>
+        new ConnectionBlockedError({
+          reason: "configuration",
+          detail: cause instanceof Error ? cause.message : "The environment URL is invalid.",
+        }),
+    });
+    if (httpBaseUrl === normalizeHttpBaseUrl(entry.profile.value.httpBaseUrl)) {
+      // A local rename does not need a credential or replace the live session.
+      return yield* registry.updateLabel(input.environmentId, input.label).pipe(
+        Effect.mapError((error) =>
+          error._tag === "EnvironmentNotRegisteredError" ||
+          error._tag === "PlatformEnvironmentRemovalError"
+            ? new ConnectionBlockedError({
+                reason: "configuration",
+                detail: "Only saved bearer environments can be edited.",
+              })
+            : error,
+        ),
+      );
+    }
+  }
   const credential =
     entry?.target._tag === "BearerConnectionTarget"
       ? yield* credentials.get(entry.target.connectionId)

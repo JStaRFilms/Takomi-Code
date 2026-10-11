@@ -1,4 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
+import { EnvironmentId } from "@t3tools/contracts";
+import {
+  BearerConnectionProfile,
+  BearerConnectionTarget,
+} from "@t3tools/client-runtime/connection";
+import {
+  EMPTY_CONNECTION_CATALOG_DOCUMENT,
+  setRoutesInCatalog,
+} from "@t3tools/client-runtime/platform";
 import * as Effect from "effect/Effect";
 import { vi } from "vite-plus/test";
 
@@ -34,6 +43,55 @@ function makeStorage(initial: Readonly<Record<string, string>>) {
 }
 
 describe("mobile connection catalog storage", () => {
+  it.effect(
+    "persists route and profile labels together without requiring or changing bearer credentials",
+    () =>
+      Effect.gen(function* () {
+        const environmentId = EnvironmentId.make("label-test");
+        const targets = ["lan", "tailscale"].map(
+          (connectionId) =>
+            new BearerConnectionTarget({ environmentId, connectionId, label: "JOHNSAX" }),
+        );
+        const profiles = targets.map(
+          (target) =>
+            new BearerConnectionProfile({
+              environmentId,
+              connectionId: target.connectionId,
+              label: target.label,
+              httpBaseUrl:
+                target.connectionId === "lan"
+                  ? "http://192.168.100.5:3773/"
+                  : "https://johnsax.tailb6e2d3.ts.net:4444/",
+              wsBaseUrl:
+                target.connectionId === "lan"
+                  ? "ws://192.168.100.5:3773/"
+                  : "wss://johnsax.tailb6e2d3.ts.net:4444/",
+            }),
+        );
+        const initial = { ...EMPTY_CONNECTION_CATALOG_DOCUMENT, targets, profiles };
+        const memory = makeStorage({ [CONNECTION_CATALOG_KEY]: JSON.stringify(initial) });
+        const catalog = yield* make().pipe(
+          Effect.provideService(MobileSecureStorage.MobileSecureStorage, memory.storage),
+        );
+        yield* catalog.update((document) =>
+          setRoutesInCatalog(
+            document,
+            environmentId,
+            targets.map((target) => new BearerConnectionTarget({ ...target, label: "Takomi" })),
+          ),
+        );
+        const reloaded = yield* make().pipe(
+          Effect.provideService(MobileSecureStorage.MobileSecureStorage, memory.storage),
+        );
+        expect(yield* reloaded.read).toEqual({
+          ...initial,
+          targets: targets.map((target) => ({ ...target, label: "Takomi" })),
+          profiles: profiles.map((profile) => ({ ...profile, label: "Takomi" })),
+        });
+        expect(memory.deleted).toEqual([]);
+      }),
+  );
+
   it.effect("recovers from a corrupt current catalog", () =>
     Effect.gen(function* () {
       const memory = makeStorage({

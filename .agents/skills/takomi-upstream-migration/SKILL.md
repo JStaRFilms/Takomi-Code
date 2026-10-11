@@ -77,6 +77,7 @@ Review the backup comparison for missing Takomi commits and unexpected changes. 
 Pay special attention to:
 
 - desktop environment/state paths and application identity;
+- Takomi's stable-only desktop update policy: saved or requested Nightly must not switch the updater away from the fork's stable feed; keep upstream version classification and remote clients' channels compatible;
 - right-panel kinds and upstream UI replacements;
 - timeline folding and rendering behavior;
 - provider runtime ingestion and generic provider semantics;
@@ -86,6 +87,8 @@ Pay special attention to:
 - documentation links, versions, artifact names, branch names, and stale commit hashes.
 
 If Takomi behavior overrides upstream globally, either narrow it to Takomi/Pi or present the user with the tradeoff.
+
+Audit visible branding in onboarding, Settings/About, timeline author labels and desktop permission/error messages. Use Takomi for this fork's product copy and neutral wording for remote servers whose distribution is unknown. Preserve CLI commands and aliases, persisted identifiers, profile paths, provider names, T3 Connect and upstream attribution. Attribute the existing upstream privacy policy accurately; renaming text does not change telemetry ownership or behavior. Keep this guidance on `Takomi-Code`, not in the dormant `feat/pi-debrand` worktree.
 
 ## 4. Verify proportionally
 

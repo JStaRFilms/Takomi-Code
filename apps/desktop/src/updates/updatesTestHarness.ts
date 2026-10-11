@@ -22,6 +22,7 @@ import * as DesktopUpdates from "./DesktopUpdates.ts";
 export const flushCallbacks = Effect.yieldNow;
 
 export interface UpdatesHarnessOptions {
+  readonly initialSettings?: DesktopAppSettings.DesktopSettings;
   readonly checkForUpdates?: Effect.Effect<
     void,
     ElectronUpdater.ElectronUpdaterCheckForUpdatesError
@@ -45,6 +46,9 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   let downloadCount = 0;
   let allowDowngrade = false;
   let fullChangelog = false;
+  const channels: string[] = [];
+  const prereleaseFlags: boolean[] = [];
+  const downgradeFlags: boolean[] = [];
   const feedUrls: ElectronUpdater.ElectronUpdaterFeedUrl[] = [];
   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
   const sentStates: DesktopUpdateState[] = [];
@@ -74,12 +78,19 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
       }),
     setAutoDownload: () => Effect.void,
     setAutoInstallOnAppQuit: () => Effect.void,
-    setChannel: () => Effect.void,
-    setAllowPrerelease: () => Effect.void,
+    setChannel: (channel) =>
+      Effect.sync(() => {
+        channels.push(channel);
+      }),
+    setAllowPrerelease: (value) =>
+      Effect.sync(() => {
+        prereleaseFlags.push(value);
+      }),
     allowDowngrade: Effect.sync(() => allowDowngrade),
     setAllowDowngrade: (value) =>
       Effect.sync(() => {
         allowDowngrade = value;
+        downgradeFlags.push(value);
       }),
     setFullChangelog: (value) =>
       Effect.sync(() => {
@@ -172,7 +183,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   );
 
   let testSettings: DesktopAppSettings.DesktopSettings = {
-    ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+    ...(options.initialSettings ?? DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS),
   };
   const setUpdateChannelError = options.setUpdateChannelError;
   const layerSettings =
@@ -206,7 +217,9 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
           applyWslWindowsFallback: Effect.die("unexpected WSL Windows fallback"),
           applyWslWindowsFallbackInMemory: Effect.die("unexpected WSL Windows fallback"),
         } satisfies DesktopAppSettings.DesktopAppSettings["Service"])
-      : DesktopAppSettings.layer;
+      : options.initialSettings
+        ? DesktopAppSettings.layerTest(options.initialSettings)
+        : DesktopAppSettings.layer;
 
   // Tracks the restart markers installs leave, so installs stay free of real
   // disk I/O that would outrun the tests' settle loops.
@@ -262,6 +275,9 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     downloadCount: () => downloadCount,
     feedUrls: (): ElectronUpdater.ElectronUpdaterFeedUrl[] => feedUrls,
     fullChangelog: () => fullChangelog,
+    channels,
+    prereleaseFlags,
+    downgradeFlags,
     listenerCount: () =>
       Array.from(listeners.values()).reduce(
         (total, eventListeners) => total + eventListeners.size,

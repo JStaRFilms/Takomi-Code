@@ -58,10 +58,11 @@ builds manually.
      Replace `1.2.4` with the intended version. Do not reuse a published version for a materially
      different public build.
 
-   - **Mobile:** update `version` in `apps/mobile/app.config.ts` when preparing a new release.
-     The local APK uses that value in its filename. Do not manually change Android
-     `versionCode` or iOS `buildNumber` for EAS production builds: EAS owns those remote build
-     numbers and increments them through `apps/mobile/eas.json`.
+   - **Mobile:** local previews use `version` from `apps/mobile/app.config.ts` in their filename.
+     GitHub stable releases stage the explicit workflow `X.Y.Z` version and its derived Android
+     code only in the disposable runner checkout. Do not bump source mobile `2.0.0`, Android
+     code `3`, or the iOS build number just to publish a GitHub APK. EAS continues to own its
+     separate remote build numbers through `apps/mobile/eas.json`.
 
 4. Review public configuration in the repository-root `.env` or `.env.local` when the build needs
    T3 Connect, Clerk, or relay configuration. Never commit secrets.
@@ -216,11 +217,36 @@ is not needed to upload local builds.
 
 Only upload the two installables. Local previews do not publish update metadata.
 
-## What stays in GitHub/EAS
+## Stable Android GitHub releases
 
-The local Android APK is **not Play Store uploadable**. A GitHub release can distribute it for
-sideloading, but production signing, EAS build numbers, native fingerprints, OTA updates, and store
-submission still require the protected EAS workflow.
+Use the deliberate fork workflow in
+[the release operations guide](../docs/operations/takomi-release.md), not the local preview upload
+procedure above. Every numbered stable release must include a verified arm64 APK named
+`Takomi-Code-X.Y.Z-android-arm64-v8a.apk` and cover it in `SHA256SUMS` before publication.
+The APK is not an Android npm package and needs no Expo or Play Store account. It embeds JavaScript
+and disables OTA for this build path. Store submission and EAS/OTA distribution remain separate.
+
+Stable builds use the production package `com.jstarstudios.takomicode` and a dedicated, long-lived
+release key. Current debug previews use `com.jstarstudios.takomicode.preview`, so they can stay
+installed beside production with separate storage. Verify production pairing and settings before
+removing any preview. Historical previews may use yet another package ID. None should be treated
+as an in-place production upgrade. Later production APKs must retain the same package and key.
+
+Prepare and test encrypted key backups before the first release. Privately provision
+`TAKOMI_ANDROID_KEYSTORE_BASE64`, `TAKOMI_ANDROID_KEYSTORE_PASSWORD`, `TAKOMI_ANDROID_KEY_ALIAS`, and
+`TAKOMI_ANDROID_KEY_PASSWORD` only after authorization. Losing the key prevents upgrades for
+existing installs. The workflow decodes it only in runner temp storage, keeps credentials away from
+Expo/Gradle/bundling, and never uploads the key. Build-only runs remain debug-signed previews and
+receive no stable secrets.
+
+Stable version codes use `1 + major * 1000000 + minor * 1000 + patch`; `0.1.2` maps to `1003`.
+Minor and patch must be below 1000 and the code must not exceed 2100000000. Source `2.0.0` is not
+the GitHub release version and remains unchanged. Preview codes do not promise stable upgrade
+ordering. Android requires user confirmation to install the downloaded APK. In-app APK notification
+work is separate from release packaging.
+
+The first Linux release build, signature verification with real credentials, and device installation
+have not yet been run. Do not describe a new APK as device-tested based on helper unit tests.
 
 ## Verification
 

@@ -13,6 +13,14 @@ export function isNightlyDesktopVersion(version: string): boolean {
   return PRERELEASE_VERSION_PATTERN.test(version);
 }
 
+// Takomi publishes stable desktop releases only. Keep version classification
+// separate so upstream Nightly release notes and versions still retain their channel.
+export function normalizeTakomiDesktopUpdateChannel(
+  channel: DesktopUpdateChannel,
+): DesktopUpdateChannel {
+  return channel === "nightly" ? "latest" : channel;
+}
+
 export function resolveDefaultDesktopUpdateChannel(appVersion: string): DesktopUpdateChannel {
   return NIGHTLY_VERSION_PATTERN.test(appVersion) ? "nightly" : "latest";
 }

@@ -10,7 +10,11 @@ on:
         description: "Explicit stable version, for example 0.1.0. Required to publish."
         type: string
       publish:
-        description: "Publish npm packages, server archives, and the Windows GitHub release"
+        description: "Publish npm packages, server archives, Windows installer, and signed Android APK"
+        type: boolean
+        default: false
+      android_signed:
+        description: "Build a signed production Android APK without publishing. Requires an explicit version."
         type: boolean
         default: false
 
@@ -42,6 +46,7 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_PUBLISH: ${{ inputs.publish }}
+          INPUT_ANDROID_SIGNED: ${{ inputs.android_signed }}
         with:
           script: |
             const tagged = context.eventName === 'push' && context.ref.startsWith('refs/tags/');
@@ -51,7 +56,8 @@ jobs:
             }
             const requested = tagged ? context.ref.slice('refs/tags/v'.length) : (process.env.INPUT_VERSION || '').trim();
             const stable = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-            if ((publish || requested) && !stable.test(requested)) {
+            const androidSigned = context.eventName === 'workflow_dispatch' && process.env.INPUT_ANDROID_SIGNED === 'true';
+            if ((publish || androidSigned || requested) && !stable.test(requested)) {
               throw new Error('Supply a plain X.Y.Z version. Publishing never uses the manifest version.');
             }
             if (publish) {
@@ -241,8 +247,61 @@ jobs:
             release/latest.yml
           if-no-files-found: error
 
+  android:
+    needs: [prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          run-install: false
+      - run: vp install --filter=@t3tools/mobile... --filter=@t3tools/scripts...
+      - name: Require stable signing credentials before building
+        if: needs.prepare.outputs.publish == 'true' || inputs.android_signed
+        env:
+          TAKOMI_ANDROID_KEYSTORE_BASE64: ${{ secrets.TAKOMI_ANDROID_KEYSTORE_BASE64 }}
+          TAKOMI_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.TAKOMI_ANDROID_KEYSTORE_PASSWORD }}
+          TAKOMI_ANDROID_KEY_ALIAS: ${{ secrets.TAKOMI_ANDROID_KEY_ALIAS }}
+          TAKOMI_ANDROID_KEY_PASSWORD: ${{ secrets.TAKOMI_ANDROID_KEY_PASSWORD }}
+        run: |
+          node --input-type=module -e 'import { requireAndroidSigning } from "./scripts/build-android-artifact.ts"; requireAndroidSigning(process.env);'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install source-supported Android toolchain
+        run: sdkmanager "platforms;android-37" "build-tools;37.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+      - name: Build and verify debug-signed preview APK without release credentials
+        if: needs.prepare.outputs.publish != 'true' && !inputs.android_signed
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/build-android-artifact.ts --version "$VERSION" --channel preview --build-checkout
+      - name: Build, sign, and verify stable production APK
+        if: needs.prepare.outputs.publish == 'true' || inputs.android_signed
+        env:
+          VERSION: ${{ inputs.android_signed && inputs.version || needs.prepare.outputs.version }}
+          TAKOMI_ANDROID_KEYSTORE_BASE64: ${{ secrets.TAKOMI_ANDROID_KEYSTORE_BASE64 }}
+          TAKOMI_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.TAKOMI_ANDROID_KEYSTORE_PASSWORD }}
+          TAKOMI_ANDROID_KEY_ALIAS: ${{ secrets.TAKOMI_ANDROID_KEY_ALIAS }}
+          TAKOMI_ANDROID_KEY_PASSWORD: ${{ secrets.TAKOMI_ANDROID_KEY_PASSWORD }}
+        run: node scripts/build-android-artifact.ts --version "$VERSION" --channel stable --build-checkout
+      - uses: actions/upload-artifact@v7
+        with:
+          name: takomi-android-arm64
+          path: release-android/*.apk
+          if-no-files-found: error
+
   npm:
-    needs: [prepare, cli, windows]
+    needs: [prepare, cli, windows, android]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -267,10 +326,15 @@ jobs:
           pattern: takomi-cli-*
           merge-multiple: true
           path: release-cli
+      - uses: actions/download-artifact@v8
+        with:
+          name: takomi-android-arm64
+          path: release-android
       - name: Stage fork npm packages
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
+          test -s "release-android/Takomi-Code-${VERSION}-android-arm64-v8a.apk"
           test -f "release-cli/t3-${VERSION}-darwin-arm64.tar.gz"
           test -f "release-cli/t3-${VERSION}-linux-x64.tar.gz"
           test -f "release-cli/t3-${VERSION}-win32-x64.zip"
@@ -281,7 +345,7 @@ jobs:
         run: node apps/server/scripts/cli.ts publish --packages-dir npm-packages --provenance --verbose
 
   github_release:
-    needs: [prepare, windows, npm]
+    needs: [prepare, windows, android, npm]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -296,6 +360,10 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: takomi-windows
+          path: release-assets
+      - uses: actions/download-artifact@v8
+        with:
+          name: takomi-android-arm64
           path: release-assets
       - name: Verify assets and publish fork release after npm
         shell: bash
@@ -312,5 +380,6 @@ jobs:
           test -f "t3-${VERSION}-darwin-arm64.tar.gz"
           test -f "t3-${VERSION}-linux-x64.tar.gz"
           test -f "t3-${VERSION}-win32-x64.zip"
-          sha256sum *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip > SHA256SUMS
-          gh release create "v${VERSION}" --repo JStaRFilms/Takomi-Code --target "$RELEASE_COMMIT" --title "Takomi Code ${VERSION}" --generate-notes --latest *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip SHA256SUMS
+          test -s "Takomi-Code-${VERSION}-android-arm64-v8a.apk"
+          sha256sum *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip *.apk > SHA256SUMS
+          gh release create "v${VERSION}" --repo JStaRFilms/Takomi-Code --target "$RELEASE_COMMIT" --title "Takomi Code ${VERSION}" --generate-notes --latest *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip *.apk SHA256SUMS

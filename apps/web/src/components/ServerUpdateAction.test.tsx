@@ -167,19 +167,19 @@ describe("ServerUpdateAction", () => {
       { kind: "npm-global", prefix: "/opt/node" },
       "npm install --global --prefix '/opt/node' takomi-code@0.0.45",
       "Update command copied",
-      "then restart t3",
+      "Run `npm install --global --prefix '/opt/node' takomi-code@0.0.45` on Test server, then restart t3 with your usual options.",
     ],
     [
       { kind: "npx" },
       "npx takomi-code@0.0.45",
       "Relaunch command copied",
-      "This does not update an installed t3 command.",
+      "Stop the server on Test server, then relaunch with `npx takomi-code@0.0.45` using the same subcommand and options. This does not update an installed t3 command.",
     ],
     [
       undefined,
       "npx takomi-code@0.0.45",
       "Relaunch command copied",
-      "This does not update an installed t3 command.",
+      "Stop the server on Test server, then relaunch with `npx takomi-code@0.0.45` using the same subcommand and options. This does not update an installed t3 command.",
     ],
   ] satisfies ReadonlyArray<readonly [ServerInstallation | undefined, string, string, string]>)(
     "copies an honest manual command for %j without invoking remote update",
@@ -196,7 +196,7 @@ describe("ServerUpdateAction", () => {
       expect(testState.toast).toHaveBeenCalledWith(
         expect.objectContaining({
           title,
-          description: expect.stringContaining(guidance),
+          description: guidance,
         }),
       );
       expect(testState.updateServer).not.toHaveBeenCalled();

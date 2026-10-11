@@ -53,8 +53,12 @@ Takomi-Code-Preview-<mobile-version>-<sha>-<UTC-date>.<build-number>[-dirty].apk
 Desktop previews embed the dated version and have no auto-update feed. Retrying does not overwrite
 an earlier attempt or change the source package versions.
 
-The APK commit suffix comes from the current eight-character Git SHA. `-dirty` is appended when
-tracked working-tree changes are included.
+The local APK commit suffix comes from the current eight-character Git SHA. `-dirty` is appended
+when tracked working-tree changes are included. GitHub stable releases instead stage their explicit
+`X.Y.Z` version only in the build checkout and collect `Takomi-Code-X.Y.Z-android-arm64-v8a.apk`.
+Their version code is `1 + major * 1000000 + minor * 1000 + patch`, with minor and patch below 1000
+and a maximum code of 2100000000. Source mobile and iOS/EAS numbering defaults do not change.
+Build-only Actions runs use descriptive, debug-signed preview APK names, not stable upgrade names.
 
 ## Build commands
 
@@ -108,7 +112,8 @@ The preview APK:
 
 Visible app names are `Takomi Code Dev`, `Takomi Code Preview`, and `Takomi Code` by channel.
 Package IDs use the `com.jstarstudios.takomicode` namespace and URL schemes use `takomi-code`.
-Expo updates are disabled until `TAKOMI_EXPO_PROJECT_ID` is supplied; `TAKOMI_EXPO_OWNER`,
+GitHub release APKs always disable Expo OTA and embed JavaScript. They need no Expo or Play Store
+account. Other mobile build paths leave Expo updates disabled until `TAKOMI_EXPO_PROJECT_ID` is supplied; `TAKOMI_EXPO_OWNER`,
 `TAKOMI_IOS_APPLE_TEAM_ID`, and `TAKOMI_CLERK_RELYING_PARTY` are optional configuration. No
 upstream Expo account, Apple team, store app ID, or Clerk relying party is embedded. EAS workflows
 also require `TAKOMI_MOBILE_RELEASE_ENABLED=true`, repository variable `TAKOMI_EXPO_PROJECT_ID`,
@@ -153,11 +158,39 @@ Validated characteristics that still apply to the current workflow include an em
 requirement. A development-client APK produced by `expo run:android` is different and still expects
 Metro.
 
-## Remaining distribution work
+## GitHub Android distribution
 
-Before distributing the Android app publicly:
+The fork release workflow runs `scripts/build-android-artifact.ts` in an independent Ubuntu job.
+It stages mobile version literals in that disposable checkout, clean-prebuilds from Expo config,
+and builds an arm64 APK with embedded JavaScript. Stable builds explicitly remove Expo's default
+debug release signing, align the unsigned APK, and sign with the dedicated release keystore.
+The helper checks its signature and certificate, package/version/SDK metadata, native architecture,
+embedded bundle, and disabled OTA before artifact upload. npm and GitHub publication both depend
+on this job, but the APK never becomes an npm dependency. No database schema changes are needed.
 
-- create a Takomi Expo owner/project and enable updates with its project ID;
-- configure Takomi-owned Clerk/OAuth infrastructure or define a local-only path;
-- create and protect release-signing credentials;
-- verify pairing, Pi provider selection, questions, images, tools, and interruption on a device.
+Production uses `com.jstarstudios.takomicode`; preview uses `.preview`. They have separate storage
+and can remain installed side by side. Stable upgrades require the same production package and
+certificate plus an increasing version code. An old debug preview is not a production upgrade.
+The production Android client checks the fork's GitHub release index on app launch and foreground
+return, at most once an hour automatically. Settings > About Takomi Code offers a manual check.
+Only plain stable tags with the exact nonempty arm64 APK are eligible. The client checks up to
+three index pages, selects the highest eligible version, and compares it with installed native
+package metadata, not an Expo OTA manifest. SDK 58 exposes that metadata through the existing
+ExpoApplication native module; missing metadata, preview, development, Expo Go and iOS skip
+APK checks. These checks do not depend on Expo OTA being enabled.
+
+An Alert offers Later or Download APK. Later suppresses that version's automatic notice for the
+current app launch; a manual check can offer it again. Download opens a fixed GitHub asset URL in
+the browser. The user opens the downloaded APK and confirms Android's installer, allowing the
+browser to install unknown apps if asked. No extra installer permission, silent installation,
+backend service or persistent data schema is added. Automatic failures are quiet; manual checks
+show a retryable failure or distinguish no published Android APK from an up-to-date installation.
+Release0.1.1 has no Android APK and is not offered as a download. iOS and preview retain their
+existing Expo update behavior.
+
+Before the first stable Android release, the owner must prepare and back up the dedicated key,
+privately provision the four signing secrets listed in the
+[release operations guide](../operations/takomi-release.md#android-signing-and-build-prerequisites),
+then authorize a first Linux build and device verification. Check pairing, Pi provider selection,
+questions, images, tools, and interruption on a device. Expo OTA/store setup is a separate decision,
+not a prerequisite for GitHub sideloading.

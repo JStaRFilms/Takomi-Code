@@ -16,7 +16,7 @@ import * as ClientCapabilities from "../platform/capabilities.ts";
 import {
   type ConnectionCatalogEntry,
   type ConnectionCredential,
-  type ConnectionProfile,
+  ConnectionProfile,
   type ConnectionRegistration,
   type ConnectionRoute,
   type PlatformConnectionRegistration,
@@ -29,12 +29,11 @@ import * as ConnectionProfileStore from "./profileStore.ts";
 import * as Connectivity from "./connectivity.ts";
 import type {
   ConnectionAttemptError,
-  ConnectionTarget,
   NetworkStatus,
   PersistedConnectionTarget,
   SupervisorConnectionState,
 } from "./model.ts";
-import { ConnectionBlockedError } from "./model.ts";
+import { ConnectionBlockedError, ConnectionTarget } from "./model.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionDriver from "./driver.ts";
@@ -56,6 +55,8 @@ import {
 } from "./routes.ts";
 
 const isSshConnectionProfile = Schema.is(SshConnectionProfile);
+const decodeConnectionTarget = Schema.decodeSync(ConnectionTarget);
+const decodeConnectionProfile = Schema.decodeSync(ConnectionProfile);
 
 function unsupportedState(
   entry: ConnectionCatalogEntry,
@@ -101,6 +102,17 @@ export class EnvironmentRegistry extends Context.Service<
     readonly register: (
       registration: ConnectionRegistration,
     ) => Effect.Effect<void, Persistence.ConnectionPersistenceError>;
+    /** Renames saved routes and profiles without replacing the live connection. */
+    readonly updateLabel: (
+      environmentId: EnvironmentId,
+      label: string,
+    ) => Effect.Effect<
+      void,
+      | Persistence.ConnectionPersistenceError
+      | EnvironmentNotRegisteredError
+      | PlatformEnvironmentRemovalError
+      | ConnectionBlockedError
+    >;
     readonly registerPlatform: (registration: PrimaryConnectionRegistration) => Effect.Effect<void>;
     readonly reconcilePlatform: (
       registrations: ReadonlyArray<PlatformConnectionRegistration>,
@@ -613,6 +625,44 @@ export const make = Effect.gen(function* () {
       return yield* new PlatformEnvironmentRemovalError({ environmentId });
     }
     return yield* getEntry(environmentId);
+  });
+
+  const updateLabel = Effect.fn("EnvironmentRegistry.updateLabel")(function* (
+    environmentId: EnvironmentId,
+    inputLabel: string,
+  ) {
+    const label = inputLabel.trim();
+    if (label === "") {
+      return yield* new ConnectionBlockedError({
+        reason: "configuration",
+        detail: "Environment label cannot be empty.",
+      });
+    }
+    yield* withLeaseLock(
+      environmentId,
+      Effect.gen(function* () {
+        const entry = yield* userEntry(environmentId);
+        const routes = connectionRoutes(entry).map((route) => ({
+          target: decodeConnectionTarget({ ...route.target, label }),
+          profile: Option.map(route.profile, (profile) =>
+            decodeConnectionProfile({ ...profile, label }),
+          ),
+        }));
+        const next = entryWithRoutes(entry, routes);
+        // setRoutes saves target and profile labels in one catalog write. Do not
+        // installEntryLocked: metadata changes must keep the active session.
+        yield* registrations.setRoutes(environmentId, persistedRoutes(next));
+        const lease = (yield* SubscriptionRef.get(serviceScopes)).get(environmentId);
+        if (lease !== undefined) {
+          yield* SubscriptionRef.update(serviceScopes, (current) =>
+            new Map(current).set(environmentId, { ...lease, entry: next }),
+          );
+        }
+        yield* SubscriptionRef.update(entries, (current) =>
+          new Map(current).set(environmentId, next),
+        );
+      }),
+    );
   });
 
   const installPlatformRegistration = Effect.fn("EnvironmentRegistry.installPlatformRegistration")(
@@ -1167,6 +1217,7 @@ export const make = Effect.gen(function* () {
     networkStatus,
     start,
     register,
+    updateLabel,
     registerPlatform,
     reconcilePlatform,
     remove,

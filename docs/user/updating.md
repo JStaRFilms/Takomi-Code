@@ -1,9 +1,17 @@
-# Updating T3 Code
+# Updating Takomi Code
 
 The app you use and the server running your agents can be on different machines.
 When a server is behind your web or desktop app, an update notice appears in the
 conversation and **Settings → Connections**. Update the machine named in that
 notice.
+
+## Takomi desktop updates
+
+Takomi desktop uses stable releases only. Saved Nightly preferences are treated as
+Stable, and Settings shows the stable update track without a channel selector.
+Connected upstream servers and hosted T3 Code clients can still use their own
+Nightly channels. Upstream mobile beta links are not guidance for Takomi desktop;
+compatibility with the store apps has not been verified.
 
 ## Before you update
 
@@ -93,7 +101,25 @@ Provider update checks and restart continuation preferences are in
 **Settings → Maintenance**. If provider update checks are disabled, enable them
 there before refreshing to find newer versions.
 
-Install App Store or Google Play releases as usual. The mobile app can also
+### Takomi Android APKs
+
+The stable Takomi Android app checks for newer APKs when it opens and when you return to it.
+You can also check in **Settings → About Takomi Code → Check for updates**. Only releases with
+an Android APK are offered; release0.1.1 has none. **Later** keeps that version's automatic notice
+quiet until the app next launches. A manual check can offer it again.
+
+Choose **Download APK** to open the download in your browser. Once it downloads, open the APK
+and confirm installation in Android. If asked, allow your browser to install unknown apps.
+The app does not install silently or report download completion. If a check or browser launch
+fails, retry from About Takomi Code.
+
+Stable and preview use different Android packages and keep separate app data. A preview cannot
+upgrade to stable in place. Keep it installed if you need its saved connections; stable installs
+alongside it. Stable upgrades require the same release signing key.
+
+### Other mobile builds
+
+Install App Store or Google Play releases as usual. Builds with Expo updates enabled can also
 download updates in the background and apply them when you next leave the app.
 It saves drafts and queued messages before restarting. If you keep the app open
 for a long time, it may ask to install immediately; choosing **Later** leaves the

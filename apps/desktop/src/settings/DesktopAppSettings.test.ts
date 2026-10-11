@@ -119,7 +119,7 @@ describe("DesktopSettings", () => {
     ),
   );
 
-  it("defaults packaged nightly builds to the nightly update channel", () => {
+  it("defaults Takomi desktop to stable even with an upstream nightly version", () => {
     assert.deepEqual(
       DesktopAppSettings.resolveDefaultDesktopSettings("0.0.17-nightly.20260415.1"),
       {
@@ -130,7 +130,7 @@ describe("DesktopSettings", () => {
         serverExposureMode: "local-only",
         tailscaleServeEnabled: false,
         tailscaleServePort: 443,
-        updateChannel: "nightly",
+        updateChannel: "latest",
         updateChannelConfiguredByUser: false,
         wslBackendEnabled: false,
         wslOnly: false,
@@ -179,8 +179,8 @@ describe("DesktopSettings", () => {
         assert.equal(tailscale.settings.tailscaleServePort, 9443);
 
         const updateChannel = yield* settings.setUpdateChannel("nightly");
-        assert.isTrue(updateChannel.changed);
-        assert.equal(updateChannel.settings.updateChannel, "nightly");
+        assert.isFalse(updateChannel.changed);
+        assert.equal(updateChannel.settings.updateChannel, "latest");
         assert.equal(updateChannel.settings.updateChannelConfiguredByUser, true);
       }),
     ),
@@ -207,6 +207,38 @@ describe("DesktopSettings", () => {
     ),
   );
 
+  it.effect.each([undefined, false, true])(
+    "normalizes saved nightly settings with user flag %s",
+    (configuredByUser) =>
+      withSettings(
+        Effect.gen(function* () {
+          const settings = yield* DesktopAppSettings.DesktopAppSettings;
+          yield* writeSettingsPatch({
+            updateChannel: "nightly",
+            ...(configuredByUser !== undefined
+              ? { updateChannelConfiguredByUser: configuredByUser }
+              : {}),
+            wslBackendEnabled: true,
+            wslDistro: "Ubuntu",
+          });
+          const loaded = yield* settings.load;
+          assert.equal(loaded.updateChannel, "latest");
+          assert.isTrue(loaded.wslBackendEnabled);
+          assert.equal(loaded.wslDistro, "Ubuntu");
+
+          yield* settings.setServerExposureMode("network-accessible");
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const persisted = yield* decodeDesktopSettingsPatch(
+            yield* fileSystem.readFileString(environment.desktopSettingsPath),
+          );
+          assert.notEqual(persisted.updateChannel, "nightly");
+          assert.equal((yield* settings.load).updateChannel, "latest");
+        }),
+        { appVersion: "0.1.1" },
+      ),
+  );
+
   it.effect("does not persist no-op semantic updates", () =>
     withSettings(
       Effect.gen(function* () {
@@ -221,8 +253,9 @@ describe("DesktopSettings", () => {
         });
         assert.isFalse(tailscale.changed);
 
-        const updateChannel = yield* settings.setUpdateChannel("latest");
+        const updateChannel = yield* settings.setUpdateChannel("nightly");
         assert.isFalse(updateChannel.changed);
+        assert.equal(updateChannel.settings.updateChannel, "latest");
         assert.equal(updateChannel.settings.updateChannelConfiguredByUser, false);
       }),
     ),
@@ -325,7 +358,7 @@ describe("DesktopSettings", () => {
             serverExposureMode: "network-accessible",
             tailscaleServeEnabled: true,
             tailscaleServePort: 8443,
-            updateChannel: "nightly",
+            updateChannel: "latest",
             updateChannelConfiguredByUser: true,
             wslBackendEnabled: false,
             wslOnly: false,
@@ -402,7 +435,7 @@ describe("DesktopSettings", () => {
           serverExposureMode: "local-only",
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
-          updateChannel: "nightly",
+          updateChannel: "latest",
           updateChannelConfiguredByUser: false,
           wslBackendEnabled: false,
           wslOnly: false,

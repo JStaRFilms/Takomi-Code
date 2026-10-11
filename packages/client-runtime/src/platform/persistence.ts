@@ -62,7 +62,7 @@ export class ConnectionRegistrationStore extends Context.Service<
       registration: ConnectionRegistration,
       routes: ReadonlyArray<PersistedConnectionTarget>,
     ) => Effect.Effect<void, ConnectionPersistenceError>;
-    /** Reorders or drops routes without adding one. `routes` must not be empty. */
+    /** Reorders, relabels or drops routes and their profiles. `routes` must not be empty. */
     readonly setRoutes: (
       environmentId: EnvironmentId,
       routes: ReadonlyArray<PersistedConnectionTarget>,
