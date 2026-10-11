@@ -155,7 +155,9 @@ export function verifyAndroidApk(input: {
     throw new Error("GitHub APK must disable Expo OTA updates.");
   }
   const digests = [
-    ...input.certificates.matchAll(/Signer #\d+ certificate SHA-256 digest: ([a-f\d:]+)/giu),
+    ...input.certificates.matchAll(
+      /(?:Signer #\d+ certificate|V3\.0 Signer: certificate) SHA-256 digest: ([a-f\d:]+)/giu,
+    ),
   ].map((match) => match[1]?.replaceAll(":", "").toLowerCase());
   if (digests.length !== 1 || digests[0] !== input.expectedCertificate.toLowerCase()) {
     throw new Error("APK signing certificate does not match the signing keystore.");

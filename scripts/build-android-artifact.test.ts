@@ -138,6 +138,15 @@ describe("Android APK collection", () => {
     expect(() => verifyAndroidApk(valid)).not.toThrow();
   });
 
+  it("accepts the SDK 37 V3.0 signer certificate label", () => {
+    expect(() =>
+      verifyAndroidApk({
+        ...valid,
+        certificates: `Verified\nV3.0 Signer: certificate SHA-256 digest: ${certificate}\n`,
+      }),
+    ).not.toThrow();
+  });
+
   it.each([
     { packageId: "com.jstarstudios.takomicode.preview" },
     { version: "2.0.0" },
@@ -152,6 +161,8 @@ describe("Android APK collection", () => {
     { manifest: "<manifest />" },
     { certificates: `Signer #1 certificate SHA-256 digest: ${"cd".repeat(32)}\n` },
     { certificates: `${valid.certificates}Signer #2 certificate SHA-256 digest: ${certificate}\n` },
+    { certificates: "" },
+    { certificates: `V4.0 Signer: certificate SHA-256 digest: ${certificate}\n` },
   ])("rejects mismatched metadata before collection: %j", (mismatch) => {
     expect(() => verifyAndroidApk({ ...valid, ...mismatch })).toThrow();
   });
