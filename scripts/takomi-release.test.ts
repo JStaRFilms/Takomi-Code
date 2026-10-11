@@ -40,6 +40,7 @@ const Job = Schema.Struct({
           name: Schema.optionalKey(Schema.String),
           path: Schema.optionalKey(Schema.String),
           pattern: Schema.optionalKey(Schema.String),
+          packages: Schema.optionalKey(Schema.String),
           "merge-multiple": Schema.optionalKey(Schema.Boolean),
           "sparse-checkout": Schema.optionalKey(Schema.String),
           "sparse-checkout-cone-mode": Schema.optionalKey(Schema.Boolean),
@@ -324,6 +325,10 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
       assert.deepStrictEqual(android?.needs, ["prepare"]);
       assert.equal(android?.["runs-on"], "ubuntu-24.04");
       const steps = android?.steps ?? [];
+      assert.equal(
+        steps.find((step) => step.uses === "android-actions/setup-android@v3")?.with?.packages,
+        "platform-tools",
+      );
       const signingGuard = steps.findIndex((step) => step.run?.includes("requireAndroidSigning"));
       const stableBuild = steps.findIndex((step) => step.run?.includes("--channel stable"));
       const previewBuild = steps.find((step) => step.run?.includes("--channel preview"));
