@@ -282,7 +282,8 @@ jobs:
           packages: platform-tools
           log-accepted-android-sdk-licenses: false
       - name: Install source-supported Android toolchain
-        run: sdkmanager "platforms;android-37" "build-tools;37.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+        run: |
+          sdkmanager "platforms;android-$(node --input-type=module -e 'import { ANDROID_TOOLCHAIN } from "./scripts/build-android-artifact.ts"; process.stdout.write(ANDROID_TOOLCHAIN.compileSdkPackage)')" "build-tools;37.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
       - name: Build and verify debug-signed preview APK without release credentials
         if: needs.prepare.outputs.publish != 'true' && !inputs.android_signed
         env:

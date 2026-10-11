@@ -2,6 +2,7 @@
 import * as NodeFS from "node:fs";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  ANDROID_TOOLCHAIN,
   androidBuildEnvironment,
   androidReleasePlan,
   androidSigningOverride,
@@ -11,6 +12,13 @@ import {
 } from "./build-android-artifact.ts";
 
 describe("Android release versions", () => {
+  it("keeps React Native compile API separate from the published platform package", () => {
+    expect(ANDROID_TOOLCHAIN.compileSdkPackage).toBe("37.0");
+    expect(androidReleasePlan("0.1.2", "stable").gradleArgs).toContain(
+      "-Pandroid.compileSdkVersion=37",
+    );
+  });
+
   it("orders stable upgrades across patch, minor, and major boundaries", () => {
     const versions = ["0.0.0", "0.1.2", "0.999.999", "1.0.0", "2099.999.999"];
     const codes = versions.map((version) => androidReleasePlan(version, "stable").versionCode);

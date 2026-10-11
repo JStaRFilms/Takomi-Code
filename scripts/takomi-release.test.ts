@@ -329,6 +329,11 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
         steps.find((step) => step.uses === "android-actions/setup-android@v3")?.with?.packages,
         "platform-tools",
       );
+      const sdkInstall = steps.find((step) => step.run?.includes("sdkmanager"))?.run ?? "";
+      assert.include(sdkInstall, "ANDROID_TOOLCHAIN.compileSdkPackage");
+      assert.include(sdkInstall, '"platforms;android-$(node');
+      assert.include(sdkInstall, '"build-tools;37.0.0" "ndk;27.1.12297006"');
+      assert.notInclude(sdkInstall, '"platforms;android-37"');
       const signingGuard = steps.findIndex((step) => step.run?.includes("requireAndroidSigning"));
       const stableBuild = steps.findIndex((step) => step.run?.includes("--channel stable"));
       const previewBuild = steps.find((step) => step.run?.includes("--channel preview"));

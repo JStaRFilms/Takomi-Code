@@ -13,6 +13,7 @@ export const ANDROID_TOOLCHAIN = {
   gradle: "9.4.1",
   java: "17",
   compileSdk: "37",
+  compileSdkPackage: "37.0",
   targetSdk: "36",
   buildTools: "37.0.0",
   ndk: "27.1.12297006",
