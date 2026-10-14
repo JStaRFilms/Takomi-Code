@@ -51,6 +51,18 @@ import {
   type PiAdapterV2Options,
 } from "./adapter.ts";
 import { makePiRpcConnection, piRecordString, type PiRpcRecord } from "./rpc.ts";
+import { loadVaultToolFixture } from "../testFixtures/piVaultTool.ts";
+import { loadNativeVaultRpcFixture } from "../testFixtures/piVaultNativeRpc.ts";
+
+function vaultOwnershipNotification(ownership: PiRpcRecord): PiRpcRecord {
+  return {
+    type: "extension_ui_request",
+    id: "ownership-notify",
+    method: "notify",
+    message: `[takomi-vault-ownership:v1] ${JSON.stringify(ownership)}`,
+    notifyType: "info",
+  };
+}
 
 const layerTest = Layer.mergeAll(
   NodeServices.layer,
@@ -84,6 +96,7 @@ const modelSelection = (model: string): ModelSelection => ({
 interface FakePi {
   readonly spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly emit: (record: PiRpcRecord) => Effect.Effect<void>;
+  readonly emitSync: (record: PiRpcRecord) => void;
   readonly takeRequest: (type: string) => Effect.Effect<PiRpcRecord>;
   /** Data returned by the next `get_entries` acks, consumed in order. */
   readonly queueEntries: (data: unknown) => void;
@@ -276,6 +289,9 @@ const makeFakePi: Effect.Effect<FakePi> = Effect.gen(function* () {
   return {
     spawner,
     emit,
+    emitSync: (record) => {
+      Queue.offerUnsafe(stdout, new TextEncoder().encode(`${encodeJsonLine(record)}\n`));
+    },
     takeRequest,
     queueEntries: (data) => entriesQueue.push(data),
     queueMessages: (data) => messagesQueue.push(data),
@@ -391,8 +407,12 @@ const openRuntime = Effect.fnUntraced(function* (
     runtimePolicy,
   });
   const emitted = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+  const allEvents: ProviderAdapter.ProviderAdapterV2Event[] = [];
   yield* runtime.events.pipe(
-    Stream.runForEach((event) => Queue.offer(emitted, event)),
+    Stream.runForEach((event) => {
+      allEvents.push(event);
+      return Queue.offer(emitted, event);
+    }),
     Effect.forkScoped,
   );
   const takeEvent = (predicate: (event: ProviderAdapter.ProviderAdapterV2Event) => boolean) =>
@@ -402,7 +422,7 @@ const openRuntime = Effect.fnUntraced(function* (
         if (predicate(event)) return event;
       }
     });
-  return { runtime, takeEvent };
+  return { runtime, takeEvent, allEvents };
 });
 
 const makeAppThread = Effect.fnUntraced(function* (model: string, threadId = THREAD_ID) {
@@ -2936,6 +2956,12 @@ describe("PiAdapterV2", () => {
       );
       if (item.type !== "turn_item.updated" || item.turnItem.type !== "user_input_request")
         throw new Error("Expected private Vault request");
+      assert.equal(item.turnItem.title, "Vault secret");
+      assert.equal(item.turnItem.questions[0]?.header, "Vault secret");
+      assert.equal(
+        item.turnItem.questions[0]?.question,
+        "This value won't be saved in the thread.",
+      );
       yield* fake.emit({ type: "agent_end", messages: [], willRetry: false });
       yield* fake.emit({ type: "agent_settled" });
       yield* takeEvent((event) => event.type === "turn.terminal");
@@ -2950,6 +2976,796 @@ describe("PiAdapterV2", () => {
       );
       assert.equal(stale._tag, "Failure");
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect(
+    "admits one owned secret dialog, strips metadata, and rejects replay and wrong-thread answers",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent, allEvents } = yield* openRuntime(fake);
+        const providerThread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, providerThread);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({
+          type: "tool_execution_start",
+          toolCallId: "owned",
+          toolName: "vault_request",
+          args: {},
+        });
+        const ownership = {
+          type: "takomi_vault_secret_input",
+          version: 1,
+          phase: "open",
+          requestId: "00000000-0000-4000-8000-000000000099",
+          toolCallId: "owned",
+          sessionId: recordedIdleState(FAKE_SESSION_FILE).sessionId,
+        };
+        yield* fake.emit(vaultOwnershipNotification(ownership));
+        const dialog = {
+          type: "extension_ui_request",
+          id: "owned-secret",
+          method: "input",
+          title: "[takomi-vault-secret] Token",
+          placeholder: `[takomi-vault-owner:v1] ${ownership.requestId}`,
+        };
+        yield* fake.emit(dialog);
+        const item = yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+        );
+        if (item.type !== "turn_item.updated" || item.turnItem.type !== "user_input_request")
+          throw new Error("Missing owned dialog");
+        assert.equal(item.turnItem.questions[0]?.sensitive, true);
+        assert.equal(item.turnItem.title, "Vault secret");
+        assert.equal(item.turnItem.questions[0]?.header, "Vault secret");
+        assert.equal(
+          item.turnItem.questions[0]?.question,
+          "This value won't be saved in the thread.",
+        );
+        const respond = runtime.respondPiSecretInput;
+        if (!respond) throw new Error("Missing private channel");
+        assert.equal(
+          (yield* Effect.exit(
+            respond({
+              threadId: ThreadId.make("wrong"),
+              requestId: item.turnItem.requestId,
+              value: "synthetic-private-value",
+            }),
+          ))._tag,
+          "Failure",
+        );
+        assert.equal(
+          (yield* Effect.exit(
+            runtime.respondToRuntimeRequest({
+              requestId: item.turnItem.requestId,
+              answers: { "owned-secret": "synthetic-private-value" },
+            }),
+          ))._tag,
+          "Failure",
+        );
+        yield* respond({
+          threadId: THREAD_ID,
+          requestId: item.turnItem.requestId,
+          value: "synthetic-private-value",
+        });
+        assert.equal(
+          (yield* fake.takeRequest("extension_ui_response"))["value"],
+          "synthetic-private-value",
+        );
+        yield* takeEvent(
+          (event) =>
+            event.type === "runtime_request.updated" && event.runtimeRequest.status === "resolved",
+        );
+        assert.equal(
+          (yield* Effect.exit(
+            respond({
+              threadId: THREAD_ID,
+              requestId: item.turnItem.requestId,
+              value: "synthetic-private-value",
+            }),
+          ))._tag,
+          "Failure",
+        );
+        yield* fake.emit(vaultOwnershipNotification(ownership));
+        yield* fake.emit({ ...dialog, id: "replay" });
+        assert.equal((yield* fake.takeRequest("extension_ui_response"))["cancelled"], true);
+        for (const privateText of [
+          ownership.requestId,
+          "takomi-vault-owner",
+          "synthetic-private-value",
+        ])
+          assert.isFalse(JSON.stringify(allEvents).includes(privateText));
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect.each([
+    "start-only",
+    "wrong-name",
+    "wrong-session",
+    "wrong-call",
+    "wrong-version",
+    "legacy-direct",
+    "missing-placeholder",
+    "wrong-placeholder",
+    "ordinary-title",
+    "archive",
+  ])("rejects unowned Vault input: %s", (invalid) =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, allEvents } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, providerThread);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({
+        type: "tool_execution_start",
+        toolCallId: "call",
+        toolName: invalid === "wrong-name" ? "vault_request_reveal" : "vault_request",
+        args: {},
+      });
+      const correlation = "00000000-0000-4000-8000-000000000098";
+      if (invalid === "legacy-direct")
+        yield* fake.emit({
+          type: "takomi_vault_secret_input",
+          version: 1,
+          phase: "open",
+          requestId: correlation,
+          toolCallId: "call",
+          sessionId: recordedIdleState(FAKE_SESSION_FILE).sessionId,
+        });
+      else if (invalid !== "start-only")
+        yield* fake.emit(
+          vaultOwnershipNotification({
+            type: "takomi_vault_secret_input",
+            version: invalid === "wrong-version" ? 2 : 1,
+            phase: "open",
+            requestId: correlation,
+            toolCallId: invalid === "wrong-call" ? "another" : "call",
+            sessionId:
+              invalid === "wrong-session"
+                ? "another-session"
+                : recordedIdleState(FAKE_SESSION_FILE).sessionId,
+            displayContext: {
+              fieldName: "UNOWNED_FIELD",
+              service: "unowned-service",
+              host: "unowned.example.test",
+              purpose: "UNOWNED_PURPOSE",
+            },
+          }),
+        );
+      yield* fake.emit({
+        type: "extension_ui_request",
+        id: "invalid",
+        method: "input",
+        title:
+          invalid === "archive"
+            ? "[takomi-vault-archive] Import"
+            : invalid === "ordinary-title"
+              ? "Ordinary input"
+              : "[takomi-vault-secret] Token",
+        placeholder:
+          invalid === "missing-placeholder"
+            ? undefined
+            : `[takomi-vault-owner:v1] ${invalid === "wrong-placeholder" ? "00000000-0000-4000-8000-000000000097" : correlation}`,
+      });
+      const reply = yield* fake.takeRequest("extension_ui_response");
+      assert.equal(reply["id"], "invalid");
+      assert.equal(reply["cancelled"], true);
+      assert.isFalse(JSON.stringify(allEvents).includes("UNOWNED_FIELD"));
+      assert.isFalse(JSON.stringify(allEvents).includes("UNOWNED_PURPOSE"));
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("falls back to generic private labels for invalid display metadata", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent, allEvents } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      yield* startTurn(runtime, providerThread);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({
+        type: "tool_execution_start",
+        toolCallId: "fallback",
+        toolName: "vault_request",
+        args: {},
+      });
+      const valid = { fieldName: "TOKEN", service: "synthetic", host: "example.test" };
+      for (const [index, displayContext] of [
+        null,
+        "INVALID_DISPLAY_CONTEXT",
+        { service: "synthetic", host: "example.test" },
+        { ...valid, fieldName: "INVALID-FIELD" },
+        { ...valid, service: "" },
+        { ...valid, service: "s".repeat(129) },
+        { ...valid, host: "h".repeat(254) },
+        { ...valid, host: "example.test\nINVALID_DISPLAY_CONTEXT" },
+        { ...valid, purpose: 42 },
+        { ...valid, purpose: "p".repeat(513) },
+      ].entries()) {
+        const ownership = {
+          type: "takomi_vault_secret_input",
+          version: 1,
+          phase: "open",
+          requestId: `00000000-0000-4000-8000-${String(index + 100).padStart(12, "0")}`,
+          toolCallId: "fallback",
+          sessionId: recordedIdleState(FAKE_SESSION_FILE).sessionId,
+          displayContext,
+        };
+        yield* fake.emit(vaultOwnershipNotification(ownership));
+        yield* fake.emit({
+          type: "extension_ui_request",
+          id: `fallback-${index}`,
+          method: "input",
+          title: "[takomi-vault-secret] MALICIOUS_FALLBACK_TITLE",
+          placeholder: `[takomi-vault-owner:v1] ${ownership.requestId}`,
+        });
+        const item = yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "user_input_request" &&
+            event.turnItem.status === "waiting" &&
+            event.turnItem.nativeItemRef?.nativeId === `fallback-${index}`,
+        );
+        if (item.type !== "turn_item.updated" || item.turnItem.type !== "user_input_request")
+          throw new Error("Missing fallback dialog");
+        assert.equal(item.turnItem.title, "Vault secret");
+        assert.equal(item.turnItem.questions[0]?.header, "Vault secret");
+        assert.equal(
+          item.turnItem.questions[0]?.question,
+          "This value won't be saved in the thread.",
+        );
+        assert.equal(item.turnItem.questions[0]?.sensitive, true);
+        yield* fake.emit(vaultOwnershipNotification({ ...ownership, phase: "close" }));
+        yield* takeEvent(
+          (event) =>
+            event.type === "runtime_request.updated" && event.runtimeRequest.status === "cancelled",
+        );
+      }
+      assert.isFalse(JSON.stringify(allEvents).includes("INVALID_DISPLAY_CONTEXT"));
+      assert.isFalse(JSON.stringify(allEvents).includes("MALICIOUS_FALLBACK_TITLE"));
+      assert.isFalse(JSON.stringify(allEvents).includes("takomi-vault-owner"));
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect.each(["close", "tool-end", "abort", "settle", "exit", "duplicate-start", "new-turn"])(
+    "invalidates owned Vault input on %s",
+    (boundary) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent } = yield* openRuntime(fake);
+        const providerThread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, providerThread);
+        yield* fake.takeRequest("prompt");
+        const start = {
+          type: "tool_execution_start",
+          toolCallId: "call",
+          toolName: "vault_request",
+          args: {},
+        };
+        const ownership = {
+          type: "takomi_vault_secret_input",
+          version: 1,
+          phase: "open",
+          requestId: "00000000-0000-4000-8000-000000000096",
+          toolCallId: "call",
+          sessionId: recordedIdleState(FAKE_SESSION_FILE).sessionId,
+        };
+        yield* fake.emit(start);
+        yield* fake.emit(vaultOwnershipNotification(ownership));
+        yield* fake.emit({
+          type: "extension_ui_request",
+          id: "stale-owned",
+          method: "input",
+          title: "[takomi-vault-secret] Token",
+          placeholder: `[takomi-vault-owner:v1] ${ownership.requestId}`,
+        });
+        const item = yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+        );
+        if (item.type !== "turn_item.updated" || item.turnItem.type !== "user_input_request")
+          throw new Error("Missing owned dialog");
+        if (boundary === "close")
+          yield* fake.emit(vaultOwnershipNotification({ ...ownership, phase: "close" }));
+        else if (boundary === "tool-end")
+          yield* fake.emit({
+            type: "tool_execution_end",
+            toolCallId: "call",
+            toolName: "vault_request",
+            result: {},
+          });
+        else if (boundary === "abort") {
+          const providerTurnId = item.turnItem.providerTurnId;
+          if (providerTurnId === null) throw new Error("Missing owned turn");
+          yield* runtime.interruptTurn({ providerThread, providerTurnId });
+        } else if (boundary === "duplicate-start") yield* fake.emit(start);
+        else if (boundary === "exit") yield* fake.closeStdout;
+        else yield* fake.emit({ type: "agent_settled" });
+        yield* takeEvent(
+          (event) =>
+            event.type === "runtime_request.updated" && event.runtimeRequest.status === "cancelled",
+        );
+        const respond = runtime.respondPiSecretInput;
+        if (!respond) throw new Error("Missing private channel");
+        assert.equal(
+          (yield* Effect.exit(
+            respond({
+              threadId: THREAD_ID,
+              requestId: item.turnItem.requestId,
+              value: "must-not-deliver",
+            }),
+          ))._tag,
+          "Failure",
+        );
+        assert.isFalse(fake.allRequests().some((record) => record["value"] === "must-not-deliver"));
+        if (boundary === "new-turn") {
+          yield* takeEvent((event) => event.type === "turn.terminal");
+          yield* startTurn(runtime, providerThread, "default", [], "Next", undefined, 2);
+          yield* fake.takeRequest("prompt");
+          yield* fake.emit(start);
+          yield* fake.emit(vaultOwnershipNotification(ownership));
+          yield* fake.emit({
+            type: "extension_ui_request",
+            id: "cross-turn-replay",
+            method: "input",
+            title: "[takomi-vault-secret] Token",
+            placeholder: `[takomi-vault-owner:v1] ${ownership.requestId}`,
+          });
+          // First cancellation is for the old dialog; then comes the rejected replay.
+          let reply = yield* fake.takeRequest("extension_ui_response");
+          if (reply["id"] === "stale-owned")
+            reply = yield* fake.takeRequest("extension_ui_response");
+          assert.equal(reply["id"], "cross-turn-replay");
+          assert.equal(reply["cancelled"], true);
+        }
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("consumes malformed reserved ownership notifications before ordinary routing", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakePi;
+      const { runtime, takeEvent, allEvents } = yield* openRuntime(fake);
+      const providerThread = yield* runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection("default"),
+        runtimePolicy,
+      });
+      // Also consume reserved messages while no turn owns the native output.
+      for (const message of [
+        "[takomi-vault-ownership:v1] not-json",
+        "[takomi-vault-ownership:v1] null",
+        "[takomi-vault-ownership:v1] []",
+        '[takomi-vault-ownership:v1] {"type":"unknown"}',
+        "[takomi-vault-ownership:v2] {}",
+        "[takomi-vault-ownership malformed",
+        `[takomi-vault-ownership:v1] ${"x".repeat(4096)}`,
+      ]) {
+        yield* fake.emit({
+          type: "extension_ui_request",
+          method: "notify",
+          id: "reserved",
+          message,
+        });
+      }
+      yield* startTurn(runtime, providerThread);
+      yield* fake.takeRequest("prompt");
+      yield* fake.emit({
+        type: "extension_ui_request",
+        method: "notify",
+        id: "reserved-live",
+        message: '[takomi-vault-ownership:v1] {"type":"takomi_vault_secret_input","version":2}',
+      });
+      yield* fake.emit({
+        type: "extension_ui_request",
+        method: "notify",
+        id: "ordinary",
+        message: "ordinary-notification",
+      });
+      yield* takeEvent(
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "dynamic_tool" &&
+          event.turnItem.toolName === "notify",
+      );
+      assert.include(JSON.stringify(allEvents), "ordinary-notification");
+      assert.isFalse(JSON.stringify(allEvents).includes("takomi-vault-ownership"));
+      assert.isFalse(JSON.stringify(allEvents).includes("takomi_vault_secret_input"));
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  const installedVaultTest =
+    process.env.T3_PI_VAULT_CONFORMANCE_EXTENSION_DIR &&
+    process.env.T3_PI_VAULT_CONFORMANCE_PACKAGE_DIR
+      ? it.effect
+      : it.effect.skip;
+  installedVaultTest(
+    "delivers installed Vault ownership through actual runRpcMode and its output guard",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent, allEvents } = yield* openRuntime(fake);
+        const providerThread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, providerThread);
+        yield* fake.takeRequest("prompt");
+        yield* fake.emit({ type: "agent_start" });
+        const fixture = yield* Effect.acquireRelease(
+          Effect.promise(() =>
+            loadNativeVaultRpcFixture(fake.emitSync, {
+              secretInputSource: process.env.T3_PI_VAULT_CONFORMANCE_SECRET_INPUT_SOURCE,
+            }),
+          ),
+          (native) => Effect.promise(() => native.close()),
+        );
+        for (const [name, args, blocked] of [
+          ["vault_request_unknown", { service: "synthetic", host: "example.test" }, false],
+          ["vault_request", { service: "synthetic" }, false],
+          ["vault_request", { service: "synthetic", host: "example.test", fields: [] }, false],
+          [
+            "vault_request",
+            { service: "synthetic", host: "example.test", fields: [{ name: "invalid-name" }] },
+            false,
+          ],
+          ["vault_request", { service: "synthetic", host: "example.test" }, true],
+        ] as const) {
+          const denied = yield* Effect.promise(() =>
+            fixture.invoke(name, `native-denied-${fixture.records.length}`, args, blocked),
+          );
+          assert.equal(denied["savedCount"], 0);
+          assert.equal(denied["listenerCount"], 0);
+        }
+        const respond = runtime.respondPiSecretInput;
+        if (!respond) throw new Error("Missing private channel");
+        const privateMetadata: string[] = ["00000000-0000-4000-8000-000000000002"];
+        const completions: PiRpcRecord[] = [];
+        const values: string[] = [];
+        for (const [index, scenario] of [
+          {
+            id: "native-owned",
+            service: "synthetic",
+            host: "example.test",
+            purpose: "Configure the synthetic OAuth client",
+            fields: [{ name: "CLIENT_ID" }, { name: "CLIENT_SECRET" }],
+          },
+          {
+            id: "native-owned-next",
+            service: "other-service",
+            host: "other.example.test",
+            fields: [{ name: "NEXT_TOKEN" }],
+          },
+          {
+            id: "native-owned-fallback",
+            service: "synthetic",
+            host: "example.test",
+            purpose: "x".repeat(513),
+            fields: [{ name: "FALLBACK_TOKEN" }],
+            generic: true,
+          },
+          {
+            id: "native-owned-escaped",
+            service: "\ud800".repeat(128),
+            host: "\ud800".repeat(253),
+            purpose: "\ud800".repeat(512),
+            fields: [{ name: "ESCAPED_TOKEN" }],
+            generic: true,
+          },
+        ].entries()) {
+          const invocation = fixture.invoke("vault_request", scenario.id, {
+            service: scenario.service,
+            host: scenario.host,
+            fields: scenario.fields,
+            ...(scenario.purpose === undefined ? {} : { purpose: scenario.purpose }),
+          });
+          void invocation.catch(() => {});
+          for (const field of scenario.fields) {
+            const nativeInput = yield* Effect.promise(() => fixture.nextInput());
+            assert.equal(
+              nativeInput["title"],
+              "[takomi-vault-secret] MALICIOUS_NATIVE_TITLE_DO_NOT_DISPLAY",
+            );
+            const placeholder = String(nativeInput["placeholder"]);
+            privateMetadata.push(placeholder, placeholder.replace("[takomi-vault-owner:v1] ", ""));
+            const ownedStart = fixture.records.findIndex(
+              (record) =>
+                record["type"] === "tool_execution_start" && record["toolCallId"] === scenario.id,
+            );
+            if (index === 0)
+              assert.isFalse(
+                fixture.records
+                  .slice(0, ownedStart)
+                  .some((record) => record["type"] === "extension_ui_request"),
+              );
+            const ownershipIndex = fixture.records.findIndex(
+              (record) =>
+                record["method"] === "notify" &&
+                String(record["message"]).includes(
+                  placeholder.slice("[takomi-vault-owner:v1] ".length),
+                ) &&
+                String(record["message"]).includes('"phase":"open"'),
+            );
+            // Still fails with the old stdout helper, before waiting for a client event.
+            assert.isAbove(ownershipIndex, ownedStart, "Ownership did not arrive on native stdout");
+            assert.isBelow(ownershipIndex, fixture.records.indexOf(nativeInput));
+            assert.isAtMost(String(fixture.records[ownershipIndex]?.["message"]).length, 4096);
+            assert.isFalse(fixture.stderr.join("").includes("takomi_vault_secret_input"));
+            const item = yield* takeEvent(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "user_input_request" &&
+                event.turnItem.status === "waiting" &&
+                event.turnItem.nativeItemRef?.nativeId === nativeInput["id"],
+            );
+            if (item.type !== "turn_item.updated" || item.turnItem.type !== "user_input_request")
+              throw new Error("Missing native private dialog");
+            assert.equal(item.turnItem.title, scenario.generic ? "Vault secret" : field.name);
+            assert.deepEqual(item.turnItem.questions[0], {
+              id: String(nativeInput["id"]),
+              header: scenario.generic ? "Vault secret" : field.name,
+              question: scenario.generic
+                ? "This value won't be saved in the thread."
+                : `Enter ${field.name}.\n\nService: ${scenario.service}\nHost: ${scenario.host}\n\n${scenario.purpose === undefined ? "" : `Purpose: ${scenario.purpose}\n\n`}This value won't be saved in the thread.`,
+              options: [],
+              sensitive: true,
+            });
+            const value = `synthetic-native-secret-${field.name}`;
+            values.push(value);
+            yield* respond({ threadId: THREAD_ID, requestId: item.turnItem.requestId, value });
+            const answer = yield* fake.takeRequest("extension_ui_response");
+            assert.equal(answer["id"], nativeInput["id"]);
+            fixture.answer(String(answer["id"]), String(answer["value"]));
+          }
+          const completed = yield* Effect.promise(() => invocation);
+          completions.push(completed);
+          assert.equal(completed["savedCount"], index + 1);
+          assert.equal(completed["listenerCount"], 0);
+          yield* takeEvent(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "dynamic_tool" &&
+              event.turnItem.nativeItemRef?.nativeId === scenario.id &&
+              event.turnItem.status === "completed",
+          );
+        }
+        const nativeOutput = JSON.stringify(fixture.records);
+        assert.equal(
+          fixture.records.filter(
+            (record) =>
+              record["method"] === "notify" &&
+              String(record["message"]).includes('"phase":"close"'),
+          ).length,
+          5,
+        );
+        for (const value of [
+          ...values,
+          ...privateMetadata,
+          "MALICIOUS_NATIVE_TITLE_DO_NOT_DISPLAY",
+          "takomi-vault-owner",
+          "takomi_vault_secret_input",
+          "displayContext",
+        ])
+          assert.isFalse(JSON.stringify([allEvents, completions]).includes(value));
+        for (const value of values) {
+          assert.isFalse(nativeOutput.includes(value));
+          assert.isFalse(fixture.stderr.join("").includes(value));
+        }
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  installedVaultTest(
+    "fails closed on a native old host without the ownership notify capability",
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.acquireRelease(
+          Effect.promise(() => loadNativeVaultRpcFixture(() => {}, { ownershipNotify: "" })),
+          (native) => Effect.promise(() => native.close()),
+        );
+        const result = yield* Effect.promise(() =>
+          fixture.invoke("vault_request", "old-host", {
+            service: "synthetic",
+            host: "example.test",
+          }),
+        );
+        assert.equal(result["savedCount"], 0);
+        assert.equal(result["listenerCount"], 0);
+        assert.isFalse(fixture.records.some((record) => record["type"] === "extension_ui_request"));
+        assert.isFalse(fixture.stderr.join("").includes("takomi_vault"));
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  installedVaultTest(
+    "runs native argument validation and installed registered Vault execute through the private adapter channel",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const { runtime, takeEvent, allEvents } = yield* openRuntime(fake);
+        const providerThread = yield* runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection("default"),
+          runtimePolicy,
+        });
+        yield* startTurn(runtime, providerThread);
+        yield* fake.takeRequest("prompt");
+        const fixture = yield* Effect.promise(() => loadVaultToolFixture(fake.emitSync));
+        for (const [name, args, blocked] of [
+          ["vault_request_unknown", { service: "synthetic", host: "example.test" }, false],
+          ["vault_request", { service: "synthetic" }, false],
+          ["vault_request", { service: "synthetic", host: "example.test", fields: [] }, false],
+          [
+            "vault_request",
+            { service: "synthetic", host: "example.test", fields: [{ name: "invalid-name" }] },
+            false,
+          ],
+          ["vault_request", { service: "synthetic", host: "example.test" }, true],
+        ] as const) {
+          const before = fixture.records.length;
+          yield* Effect.promise(() =>
+            fixture.invoke(name, `denied-${before}`, args, undefined, blocked),
+          );
+          assert.isFalse(
+            fixture.records
+              .slice(before)
+              .some(
+                (record) =>
+                  record["type"] === "takomi_vault_secret_input" ||
+                  record["type"] === "extension_ui_request",
+              ),
+          );
+        }
+        const a = new AbortController();
+        const invocationA = fixture.invoke(
+          "vault_request",
+          "parallel-a",
+          { service: "synthetic-a", host: "example.test" },
+          a.signal,
+        );
+        const invocationB = fixture.invoke("vault_request", "parallel-b", {
+          service: "synthetic-b",
+          host: "example.test",
+          fields: [{ name: "CLIENT_SECRET" }, { name: "SECOND_SECRET" }],
+        });
+        const first = yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+        );
+        const second = yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" && event.turnItem.type === "user_input_request",
+        );
+        if (
+          first.type !== "turn_item.updated" ||
+          first.turnItem.type !== "user_input_request" ||
+          second.type !== "turn_item.updated" ||
+          second.turnItem.type !== "user_input_request"
+        )
+          throw new Error("Missing parallel dialogs");
+        a.abort();
+        yield* Effect.promise(() => invocationA);
+        yield* takeEvent(
+          (event) =>
+            event.type === "runtime_request.updated" && event.runtimeRequest.status === "cancelled",
+        );
+        const respond = runtime.respondPiSecretInput;
+        if (!respond) throw new Error("Missing private channel");
+        assert.equal(
+          (yield* Effect.exit(
+            respond({
+              threadId: THREAD_ID,
+              requestId: first.turnItem.requestId,
+              value: "synthetic-rejected-secret",
+            }),
+          ))._tag,
+          "Failure",
+        );
+        const cancelled = yield* fake.takeRequest("extension_ui_response");
+        assert.equal(cancelled["cancelled"], true);
+        yield* respond({
+          threadId: THREAD_ID,
+          requestId: second.turnItem.requestId,
+          value: "synthetic-private-one",
+        });
+        const answer = yield* fake.takeRequest("extension_ui_response");
+        assert.equal(answer["value"], "synthetic-private-one");
+        fixture.answer(String(answer["id"]), String(answer["value"]));
+        const third = yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "user_input_request" &&
+            event.turnItem.nativeItemRef?.nativeId === "native-dialog-3",
+        );
+        if (third.type !== "turn_item.updated" || third.turnItem.type !== "user_input_request")
+          throw new Error("Missing second field");
+        yield* respond({
+          threadId: THREAD_ID,
+          requestId: third.turnItem.requestId,
+          value: "synthetic-private-two",
+        });
+        const nextAnswer = yield* fake.takeRequest("extension_ui_response");
+        fixture.answer(String(nextAnswer["id"]), String(nextAnswer["value"]));
+        yield* Effect.promise(() => invocationB);
+        yield* takeEvent(
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "dynamic_tool" &&
+            event.turnItem.toolName === "vault_request" &&
+            event.turnItem.nativeItemRef?.nativeId === "parallel-b" &&
+            event.turnItem.status === "completed",
+        );
+        assert.equal(fixture.saved.length, 1);
+        assert.equal(fixture.listenerCount(), 0);
+        for (const value of [
+          "synthetic-private-one",
+          "synthetic-private-two",
+          "synthetic-rejected-secret",
+          "takomi-vault-owner",
+        ])
+          assert.isFalse(
+            JSON.stringify([
+              allEvents,
+              fixture.records.filter((record) => record["type"] !== "extension_ui_request"),
+              fixture.audit,
+            ]).includes(value),
+          );
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  installedVaultTest(
+    "cleans installed invocation scopes on replacement, reload, settlement and shutdown",
+    () =>
+      Effect.gen(function* () {
+        for (const boundary of [
+          "session_before_switch",
+          "session_before_fork",
+          "session_before_tree",
+          "agent_settled",
+          "session_shutdown",
+          "session-mismatch",
+        ]) {
+          const fixture = yield* Effect.promise(() => loadVaultToolFixture(() => {}));
+          const invocation = fixture.invoke("vault_request", "cleanup", {
+            service: "synthetic",
+            host: "example.test",
+          });
+          const dialog = fixture.records.find(
+            (record) => record["type"] === "extension_ui_request" && record["method"] === "input",
+          );
+          assert.isDefined(dialog);
+          if (boundary === "session-mismatch") {
+            fixture.setSessionId("replacement-session");
+            fixture.answer(String(dialog?.["id"]), "synthetic-stale-secret");
+          } else fixture.lifecycle(boundary);
+          yield* Effect.promise(() => invocation);
+          assert.equal(fixture.listenerCount(), 0);
+          assert.equal(fixture.saved.length, 0);
+          assert.equal(
+            fixture.records.filter((record) =>
+              String(record["message"]).includes('"phase":"close"'),
+            ).length,
+            1,
+          );
+          assert.isFalse(
+            JSON.stringify([fixture.audit, fixture.records]).includes("synthetic-stale-secret"),
+          );
+        }
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
   it.effect("rejects spoofed Vault prompts outside a recognized Vault turn", () =>

@@ -43,7 +43,8 @@ const DEVELOPMENT_ASSETS = {
   androidAdaptiveForeground,
   androidAdaptiveBackgroundColor: "#347FF8",
   androidAdaptiveBackgroundImage: "./assets/android-icon-background-dev.png",
-  androidSplashIcon: "./assets/android-splash-icon-dev.png",
+  androidSplashIcon: "./assets/android-splash-wordmark-dark.png",
+  androidSplashIconDark: "./assets/android-splash-wordmark-light.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
   androidNotificationColor: "#00639B",
@@ -56,7 +57,8 @@ const PREVIEW_ASSETS = {
   androidAdaptiveForeground,
   androidAdaptiveBackgroundColor: "#111533",
   androidAdaptiveBackgroundImage: "./assets/android-icon-background-nightly.png",
-  androidSplashIcon: androidAdaptiveForeground,
+  androidSplashIcon: "./assets/android-splash-wordmark-light.png",
+  androidSplashIconDark: "./assets/android-splash-wordmark-light.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
   androidNotificationColor: "#7565C7",
@@ -69,7 +71,8 @@ const RELEASE_ASSETS = {
   androidAdaptiveForeground,
   androidAdaptiveBackgroundColor: "#000000",
   androidAdaptiveBackgroundImage: undefined,
-  androidSplashIcon: "./assets/android-splash-icon-prod.png",
+  androidSplashIcon: "./assets/android-splash-wordmark-dark.png",
+  androidSplashIconDark: "./assets/android-splash-wordmark-light.png",
   androidMonochromeIcon: "./assets/android-icon-mark.png",
   androidNotificationIcon: "./assets/android-notification-icon.png",
   androidNotificationColor: "#FFFFFF",
@@ -410,15 +413,14 @@ const config: ExpoConfig = {
           backgroundColor: "#0a0a0a",
         },
         android: {
-          // Android 12+ masks the splash icon to the center of its 288dp canvas.
-          // Preview uses the transparent launcher mark instead of the upstream artwork.
+          // Android 12+ masks the splash icon to a circle in the center of its 288dp canvas.
           image: variant.assets.androidSplashIcon,
           imageWidth: 288,
           ...(APP_VARIANT === "preview"
             ? { backgroundColor: variant.assets.androidAdaptiveBackgroundColor }
             : {}),
           dark: {
-            image: variant.assets.androidSplashIcon,
+            image: variant.assets.androidSplashIconDark,
             ...(APP_VARIANT === "preview"
               ? { backgroundColor: variant.assets.androidAdaptiveBackgroundColor }
               : {}),

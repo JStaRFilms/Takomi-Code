@@ -55,7 +55,14 @@ export function providerRuntimeModes(
   instanceId: string | null | undefined,
 ): ReadonlyArray<RuntimeMode> {
   const provider = config?.providers.find((candidate) => candidate.instanceId === instanceId);
-  return provider?.capabilities ? (provider.capabilities.runtimeModes ?? []) : LEGACY_RUNTIME_MODES;
+  if (!provider?.capabilities) return LEGACY_RUNTIME_MODES;
+  // Pi publishes session capabilities alongside the older top-level mode list.
+  // Its missing nested modes do not mean that sending is unsupported.
+  return (
+    provider.capabilities.runtimeModes ??
+    (provider.driver === "pi" ? provider.supportedRuntimeModes : undefined) ??
+    []
+  );
 }
 
 export function providerSupportsPlanMode(
@@ -71,7 +78,8 @@ export function providerSupportsPlanMode(
 /**
  * Uses a resolved provider instance's published capability descriptor at the
  * command boundary. Legacy or unavailable snapshots keep their stored values;
- * a published descriptor must explicitly support both dispatched modes.
+ * published modes must support the dispatch. Pi snapshots also advertise
+ * modes through their older top-level fields.
  */
 export function normalizeProviderDispatchModes(input: {
   readonly config: T3ServerConfig | null | undefined;
@@ -92,14 +100,20 @@ export function normalizeProviderDispatchModes(input: {
     };
   }
 
-  const runtimeMode = provider.capabilities.runtimeModes?.includes(input.runtimeMode)
+  const runtimeModes = providerRuntimeModes(input.config, input.modelSelection.instanceId);
+  const interactionModes =
+    provider.capabilities.interactionModes ??
+    (provider.driver === "pi" && provider.showInteractionModeToggle === false
+      ? [DEFAULT_PROVIDER_INTERACTION_MODE]
+      : []);
+  const runtimeMode = runtimeModes.includes(input.runtimeMode)
     ? input.runtimeMode
-    : provider.capabilities.runtimeModes?.[0];
-  const interactionMode = provider.capabilities.interactionModes?.includes(input.interactionMode)
+    : runtimeModes[0];
+  const interactionMode = interactionModes.includes(input.interactionMode)
     ? input.interactionMode
-    : provider.capabilities.interactionModes?.includes(DEFAULT_PROVIDER_INTERACTION_MODE)
+    : interactionModes.includes(DEFAULT_PROVIDER_INTERACTION_MODE)
       ? DEFAULT_PROVIDER_INTERACTION_MODE
-      : provider.capabilities.interactionModes?.[0];
+      : interactionModes[0];
   return runtimeMode && interactionMode ? { runtimeMode, interactionMode } : null;
 }
 

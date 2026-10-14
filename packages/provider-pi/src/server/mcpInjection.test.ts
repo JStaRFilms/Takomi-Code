@@ -40,6 +40,7 @@ describe("pi T3 MCP injection", () => {
       environment: {
         PATH: "/usr/bin",
         T3_TAKOMI_VAULT_SECRET_UI: "stale",
+        T3_TAKOMI_VAULT_OWNERSHIP_NOTIFY: "stale",
         T3_TAKOMI_VAULT_TRANSFER_UI: "stale",
       },
       mcpSession,
@@ -70,6 +71,7 @@ describe("pi T3 MCP injection", () => {
     assert.equal(launch.env[T3_MCP_BEARER_ENV], "secret-pi-token");
     assert.equal(launch.env[T3_PI_RUNTIME_MODE_ENV], "approval-required");
     assert.equal(launch.env.T3_TAKOMI_VAULT_SECRET_UI, "1");
+    assert.equal(launch.env.T3_TAKOMI_VAULT_OWNERSHIP_NOTIFY, "1");
     assert.equal(launch.env.T3_TAKOMI_VAULT_TRANSFER_UI, "1");
 
     const permissionOnly = buildPiRpcLaunch({
@@ -93,8 +95,23 @@ describe("pi T3 MCP injection", () => {
     assert.isUndefined(permissionOnly.env[T3_MCP_BEARER_ENV]);
     assert.equal(permissionOnly.env[T3_PI_RUNTIME_MODE_ENV], "auto-accept-edits");
     assert.equal(permissionOnly.env.T3_TAKOMI_VAULT_SECRET_UI, "1");
+    assert.equal(permissionOnly.env.T3_TAKOMI_VAULT_OWNERSHIP_NOTIFY, "1");
     assert.equal(permissionOnly.env.T3_TAKOMI_VAULT_TRANSFER_UI, "1");
   });
+
+  it.each([{ ephemeral: true }, { extensionPath: undefined }])(
+    "does not inherit ownership notify capability for unsupported launches: %j",
+    (override) => {
+      const launch = buildPiRpcLaunch({
+        launchArgs: [],
+        environment: { T3_TAKOMI_VAULT_OWNERSHIP_NOTIFY: "1" },
+        mcpSession: undefined,
+        extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
+        ...override,
+      });
+      assert.isUndefined(launch.env.T3_TAKOMI_VAULT_OWNERSHIP_NOTIFY);
+    },
+  );
 
   it("falls back to Pi's first supported mode for legacy auto threads", () => {
     const launch = buildPiRpcLaunch({
@@ -121,6 +138,7 @@ describe("pi T3 MCP injection", () => {
       ],
       environment: {
         T3_TAKOMI_VAULT_SECRET_UI: "1",
+        T3_TAKOMI_VAULT_OWNERSHIP_NOTIFY: "1",
         T3_TAKOMI_VAULT_TRANSFER_UI: "1",
       },
       mcpSession,
@@ -140,6 +158,7 @@ describe("pi T3 MCP injection", () => {
     ]);
     assert.isFalse(launch.hasT3Mcp);
     assert.isUndefined(launch.env.T3_TAKOMI_VAULT_SECRET_UI);
+    assert.isUndefined(launch.env.T3_TAKOMI_VAULT_OWNERSHIP_NOTIFY);
     assert.isUndefined(launch.env.T3_TAKOMI_VAULT_TRANSFER_UI);
     assert.deepInclude(resolvePiLaunchArgs("--mode text"), {
       ok: false,

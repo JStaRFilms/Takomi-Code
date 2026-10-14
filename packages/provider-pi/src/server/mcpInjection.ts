@@ -12,6 +12,7 @@ import {
 } from "./mcpExtensionSource.ts";
 
 const VAULT_SECRET_UI_ENV = "T3_TAKOMI_VAULT_SECRET_UI";
+const VAULT_OWNERSHIP_NOTIFY_ENV = "T3_TAKOMI_VAULT_OWNERSHIP_NOTIFY";
 const VAULT_TRANSFER_UI_ENV = "T3_TAKOMI_VAULT_TRANSFER_UI";
 
 const RESERVED_PI_LAUNCH_ARGUMENTS = new Set([
@@ -295,6 +296,7 @@ export function buildPiRpcLaunch(input: {
   delete environment[T3_MCP_URL_ENV];
   delete environment[T3_MCP_BEARER_ENV];
   delete environment[VAULT_SECRET_UI_ENV];
+  delete environment[VAULT_OWNERSHIP_NOTIFY_ENV];
   delete environment[VAULT_TRANSFER_UI_ENV];
 
   return {
@@ -302,7 +304,11 @@ export function buildPiRpcLaunch(input: {
     env: {
       ...environment,
       ...(hasT3Extension && input.ephemeral !== true
-        ? { [VAULT_SECRET_UI_ENV]: "1", [VAULT_TRANSFER_UI_ENV]: "1" }
+        ? {
+            [VAULT_SECRET_UI_ENV]: "1",
+            [VAULT_OWNERSHIP_NOTIFY_ENV]: "1",
+            [VAULT_TRANSFER_UI_ENV]: "1",
+          }
         : {}),
       ...(hasT3Extension && input.runtimeMode !== undefined
         ? {

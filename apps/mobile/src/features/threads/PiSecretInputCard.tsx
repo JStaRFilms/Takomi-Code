@@ -89,7 +89,7 @@ export function PiSecretInputCard({
       <Text className="font-sans text-base leading-snug text-foreground">{question}</Text>
       {!fileInput ? (
         <TextInput
-          accessibilityLabel="Secret response"
+          accessibilityLabel={header}
           secureTextEntry
           autoCorrect={false}
           autoCapitalize="none"

@@ -1,4 +1,10 @@
-import { AuthOrchestrationOperateScope, RuntimeRequestId } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  RuntimeRequestId,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import type { PendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
 import { AsyncResult, type Atom } from "effect/reactivity";
@@ -7,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 const state = vi.hoisted(() => ({
   grantedEnvironments: new Set<string>(),
   connectionState: "connected",
+  providers: [] as ServerProvider[],
   draft: { text: "Keep my draft", attachments: [] as DraftComposerImageAttachment[] },
   pendingRequests: { approvals: [], userInputs: [] } as PendingThreadRequests,
   enqueue: vi.fn(async () => undefined),
@@ -71,7 +78,7 @@ vi.mock("./use-thread-selection", () => ({
     selectedEnvironmentRuntime: {
       connectionState: state.connectionState,
       serverConfig: {
-        providers: [{ instanceId: "codex", driver: "codex" }],
+        providers: state.providers,
         environment: { capabilities: {} },
       },
     },
@@ -83,6 +90,10 @@ vi.mock("./use-thread-detail", () => ({
   useSelectedThreadPendingRequests: () => state.pendingRequests,
 }));
 vi.mock("./use-atom-command", () => ({ useAtomCommand: <A>(command: A) => command }));
+vi.mock("@t3tools/client-runtime/state/runtime", () => ({
+  createEnvironmentRpcCommand: () => vi.fn(),
+}));
+vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: {} }));
 vi.mock("./threads", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
@@ -142,7 +153,6 @@ vi.mock("../lib/commandMetadata", () => ({
   }),
 }));
 vi.mock("../lib/copyTextWithHaptic", () => ({ copyTextWithHaptic: vi.fn() }));
-vi.mock("../lib/modelOptions", () => ({ isModelSelectionUnavailable: () => false }));
 vi.mock("./use-remote-environment-registry", () => ({ setPendingConnectionError: vi.fn() }));
 
 import { useThreadComposerState } from "./use-thread-composer-state";
@@ -151,6 +161,24 @@ import { useSelectedThreadRequests } from "./use-selected-thread-requests";
 beforeEach(() => {
   state.grantedEnvironments = new Set(["primary"]);
   state.connectionState = "connected";
+  state.thread.modelSelection = { instanceId: "codex", model: "gpt-5.4" };
+  state.thread.runtimeMode = "full-access";
+  state.thread.interactionMode = "default";
+  state.providers = [
+    {
+      instanceId: ProviderInstanceId.make("codex"),
+      driver: ProviderDriverKind.make("codex"),
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-09-05T00:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    },
+  ];
   state.draft = { text: "Keep my draft", attachments: [] };
   state.pendingRequests = {
     approvals: [
@@ -170,6 +198,92 @@ beforeEach(() => {
 });
 
 describe("mobile task permissions", () => {
+  it.each([
+    { connectionState: "connected", runtimeMode: "full-access", sentMode: "full-access" },
+    {
+      connectionState: "connected",
+      runtimeMode: "approval-required",
+      sentMode: "approval-required",
+    },
+    {
+      connectionState: "connected",
+      runtimeMode: "auto-accept-edits",
+      sentMode: "auto-accept-edits",
+    },
+    { connectionState: "disconnected", runtimeMode: "full-access", sentMode: "full-access" },
+    { connectionState: "disconnected", runtimeMode: "auto", sentMode: "approval-required" },
+  ])(
+    "queues the exact Takomi model and clears its draft when $connectionState in $runtimeMode",
+    async ({ connectionState, runtimeMode, sentMode }) => {
+      state.connectionState = connectionState;
+      state.grantedEnvironments.add("secondary");
+      state.thread.modelSelection = {
+        instanceId: "takomi",
+        model: "openai-codex/gpt-6.1-sol",
+      };
+      state.thread.runtimeMode = runtimeMode;
+      state.thread.interactionMode = "plan";
+      // Published by provider-pi/status.ts: session capabilities coexist with
+      // the older top-level mode fields, without nested mode capabilities.
+      state.providers = state.providers.map((provider) => ({
+        ...provider,
+        instanceId: ProviderInstanceId.make("takomi"),
+        driver: ProviderDriverKind.make("pi"),
+        capabilities: { sessions: { list: true, attach: true, clone: true } },
+        supportedRuntimeModes: ["approval-required", "auto-accept-edits", "full-access"],
+        showInteractionModeToggle: false,
+      }));
+      const composer = useThreadComposerState();
+      expect(await composer.onSendMessage()).toBe("message");
+      expect(state.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          environmentId: "secondary",
+          threadId: "thread",
+          text: "Keep my draft",
+          modelSelection: state.thread.modelSelection,
+          runtimeMode: sentMode,
+          interactionMode: "default",
+        }),
+      );
+      expect(state.clearDraft).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["runtimeModes", "interactionModes"] as const)(
+    "does not override explicitly unsupported Pi %s",
+    async (modeField) => {
+      state.grantedEnvironments.add("secondary");
+      state.thread.modelSelection = {
+        instanceId: "takomi",
+        model: "openai-codex/gpt-6.1-sol",
+      };
+      state.providers = state.providers.map((provider) => ({
+        ...provider,
+        instanceId: ProviderInstanceId.make("takomi"),
+        driver: ProviderDriverKind.make("pi"),
+        capabilities: { [modeField]: [] },
+        supportedRuntimeModes: ["full-access"],
+        showInteractionModeToggle: false,
+      }));
+      expect(await useThreadComposerState().onSendMessage()).toBeNull();
+      expect(state.enqueue).not.toHaveBeenCalled();
+      expect(state.clearDraft).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not apply Pi's older mode fields to another provider", async () => {
+    state.grantedEnvironments.add("secondary");
+    state.providers = state.providers.map((provider) => ({
+      ...provider,
+      capabilities: { sessions: { list: true } },
+      supportedRuntimeModes: ["full-access"],
+      showInteractionModeToggle: false,
+    }));
+    expect(await useThreadComposerState().onSendMessage()).toBeNull();
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).not.toHaveBeenCalled();
+  });
+
   it("keeps a connected read-only task's draft instead of queueing it with another environment's grant", async () => {
     const composer = useThreadComposerState();
     expect(await composer.onSendMessage()).toBeNull();

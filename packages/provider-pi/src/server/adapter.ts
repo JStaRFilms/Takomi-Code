@@ -114,6 +114,11 @@ const PI_INHERIT_MODEL_SLUG = "default";
 const STREAM_FLUSH_MS = 50;
 const PI_REQUEST_TIMEOUT_MS = 15_000;
 const VAULT_SECRET_TITLE_PREFIX = "[takomi-vault-secret] ";
+const VAULT_OWNER_PLACEHOLDER_PREFIX = "[takomi-vault-owner:v1] ";
+const VAULT_OWNERSHIP_NOTIFY_PREFIX = "[takomi-vault-ownership:v1] ";
+const decodeVaultOwnershipEnvelope = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
 const VAULT_ARCHIVE_TITLE_PREFIX = "[takomi-vault-archive] ";
 // Session lifecycle hooks reload extensions, MCP servers and language servers.
 const PI_SESSION_TIMEOUT_MS = 60_000;
@@ -356,10 +361,42 @@ interface PiTurnTreeRefs {
   readonly retainedNativeTurnIds: ReadonlyArray<string> | undefined;
 }
 
+// Public labels come only from the owned envelope, never the native input title.
+function vaultInputDisplayContext(value: unknown) {
+  const fieldName = recordString(value, "fieldName");
+  const service = recordString(value, "service");
+  const host = recordString(value, "host");
+  const purpose = recordField(value, "purpose");
+  const displayText = (text: unknown, limit: number): text is string =>
+    typeof text === "string" &&
+    text.trim().length > 0 &&
+    text.length <= limit &&
+    !/\p{Cc}/u.test(text);
+  if (
+    fieldName === undefined ||
+    !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(fieldName) ||
+    !displayText(service, 128) ||
+    !displayText(host, 253) ||
+    (purpose !== undefined && !displayText(purpose, 512))
+  )
+    return undefined;
+  return { fieldName, service, host, ...(purpose === undefined ? {} : { purpose }) };
+}
+
+interface PiVaultInputOwner {
+  readonly requestId: string;
+  readonly turn: ActivePiTurn;
+  readonly sessionId: string;
+  readonly toolCallId: string;
+  readonly displayContext?: ReturnType<typeof vaultInputDisplayContext>;
+  nativeRequestId?: string;
+}
+
 interface PendingPiPrompt {
   readonly nativeRequestId: string;
   readonly sensitive?: boolean;
   readonly archive?: boolean;
+  readonly vaultOwner?: PiVaultInputOwner;
   readonly method: "select" | "confirm" | "input" | "editor";
   readonly questionId: string;
   readonly approvalKey: string;
@@ -504,6 +541,13 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         ProviderAdapter.ProviderAdapterV2Error | Cause.Done
       >();
       const pendingPrompts = new Map<string, PendingPiPrompt>();
+      // Request assertions originate in validated vault_request.execute, not start events.
+      const vaultInputOwners = new Map<string, PiVaultInputOwner>();
+      const vaultToolCalls = new Map<string, ActivePiTurn>();
+      const seenVaultInputs = new Set<string>();
+      const seenVaultToolCalls = new Set<string>();
+      const seenVaultNativeRequests = new Set<string>();
+      let nativeSessionId: string | null = null;
       let customSelectReply: { title: string; value: string; turnId: string | null } | null = null;
       let pendingVaultCommand: { turnId: string; name: string } | null = null;
       let pendingVaultExport: { id: string; key: string; path: string } | null = null;
@@ -511,6 +555,11 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           sessionAlive = false;
+          vaultInputOwners.clear();
+          vaultToolCalls.clear();
+          seenVaultInputs.clear();
+          seenVaultToolCalls.clear();
+          seenVaultNativeRequests.clear();
         }),
       );
       const sessionApprovals = new Set<string>();
@@ -1276,15 +1325,96 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           });
         });
 
+      const vaultOwnerIsLive = (owner: PiVaultInputOwner) =>
+        sessionAlive &&
+        !closed &&
+        !stopRequested &&
+        !owner.turn.interrupted &&
+        threadState?.activeTurn === owner.turn &&
+        nativeSessionId === owner.sessionId &&
+        vaultToolCalls.get(owner.toolCallId) === owner.turn &&
+        vaultInputOwners.get(owner.requestId) === owner;
+
+      const invalidateVaultInputs = (toolCallId?: string) =>
+        Effect.gen(function* () {
+          for (const [id, owner] of vaultInputOwners) {
+            if (toolCallId !== undefined && owner.toolCallId !== toolCallId) continue;
+            vaultInputOwners.delete(id);
+            for (const [key, pending] of pendingPrompts) {
+              if (pending.vaultOwner !== owner) continue;
+              pendingPrompts.delete(key);
+              yield* cancelPrompt(pending, yield* DateTime.now);
+            }
+          }
+          if (toolCallId === undefined) vaultToolCalls.clear();
+          else vaultToolCalls.delete(toolCallId);
+        });
+
       const cancelPendingPrompts = (resolvedAt: DateTime.Utc) =>
         Effect.gen(function* () {
           const pending = Array.from(pendingPrompts.values());
           pendingPrompts.clear();
+          vaultInputOwners.clear();
+          vaultToolCalls.clear();
           customSelectReply = null;
           yield* Effect.forEach(pending, (prompt) => cancelPrompt(prompt, resolvedAt), {
             discard: true,
           });
         });
+
+      const handleVaultOwnership = Effect.fnUntraced(function* (event: PiRpcRecord) {
+        const turn = threadState?.activeTurn ?? null;
+        // Trust the installed extension in this child, never a model title or tool name.
+        const requestId = recordString(event, "requestId");
+        const toolCallId = recordString(event, "toolCallId");
+        const sessionId = recordString(event, "sessionId");
+        if (
+          event["version"] !== 1 ||
+          requestId === undefined ||
+          !/^[0-9a-f-]{36}$/.test(requestId) ||
+          toolCallId === undefined ||
+          toolCallId.length === 0 ||
+          toolCallId.length > 256 ||
+          sessionId === undefined ||
+          sessionId.length === 0 ||
+          sessionId.length > 256
+        )
+          return;
+        if (event["phase"] === "close") {
+          const owner = vaultInputOwners.get(requestId);
+          if (owner?.toolCallId !== toolCallId || owner.sessionId !== sessionId) return;
+          vaultInputOwners.delete(requestId);
+          for (const [key, pending] of pendingPrompts) {
+            if (pending.vaultOwner !== owner) continue;
+            pendingPrompts.delete(key);
+            yield* cancelPrompt(pending, yield* DateTime.now);
+          }
+          return;
+        }
+        if (
+          event["phase"] !== "open" ||
+          turn === null ||
+          turn.interrupted ||
+          closed ||
+          stopRequested ||
+          !sessionAlive ||
+          sessionId !== nativeSessionId ||
+          vaultToolCalls.get(toolCallId) !== turn ||
+          seenVaultInputs.has(requestId) ||
+          seenVaultInputs.size >= 16384 ||
+          vaultInputOwners.size >= 64
+        )
+          return;
+        seenVaultInputs.add(requestId);
+        vaultInputOwners.set(requestId, {
+          requestId,
+          turn,
+          sessionId,
+          toolCallId,
+          displayContext: vaultInputDisplayContext(event["displayContext"]),
+        });
+        return;
+      });
 
       const handleExtensionUiRequest = Effect.fnUntraced(function* (event: PiRpcRecord) {
         const method = recordString(event, "method");
@@ -1366,10 +1496,24 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           turn !== null && pendingVaultCommand?.turnId === turn.providerTurn.id
             ? pendingVaultCommand
             : null;
-        const sensitive =
-          (secretTitle && vaultTurn !== null) ||
-          (archiveTitle && vaultTurn?.name === "vault-import");
-        if (vaultTitle && !sensitive) {
+        const placeholder = recordString(event, "placeholder") ?? "";
+        const hasOwnershipMetadata = placeholder.startsWith("[takomi-vault-owner:");
+        const correlationId = placeholder.startsWith(VAULT_OWNER_PLACEHOLDER_PREFIX)
+          ? placeholder.slice(VAULT_OWNER_PLACEHOLDER_PREFIX.length)
+          : "";
+        const vaultOwner = vaultInputOwners.get(correlationId);
+        const toolOwned =
+          secretTitle &&
+          vaultOwner !== undefined &&
+          vaultOwner.nativeRequestId === undefined &&
+          vaultOwnerIsLive(vaultOwner) &&
+          !seenVaultNativeRequests.has(nativeRequestId) &&
+          seenVaultNativeRequests.size < 16384;
+        const sensitive = hasOwnershipMetadata
+          ? toolOwned
+          : (secretTitle && vaultTurn !== null) ||
+            (archiveTitle && vaultTurn?.name === "vault-import");
+        if ((vaultTitle || hasOwnershipMetadata) && !sensitive) {
           // Never display or persist a spoofed Vault prompt or its payload.
           yield* connection.send({
             type: "extension_ui_response",
@@ -1378,6 +1522,12 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           });
           return;
         }
+        if (toolOwned) {
+          vaultOwner.nativeRequestId = nativeRequestId;
+          seenVaultNativeRequests.add(nativeRequestId);
+        }
+        // Consume the placeholder locally; no correlation metadata enters client events.
+        if (hasOwnershipMetadata) delete event["placeholder"];
         const createdAt = yield* DateTime.now;
         const requestId = yield* idAllocator.allocate.runtimeRequest({
           driver: PI_PROVIDER,
@@ -1385,7 +1535,15 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           nativeRequestId,
         });
         const nodeId = idAllocator.derive.approvalNode({ requestId });
-        const displayTitle = sensitive ? (archiveTitle ? "Vault archive" : "Vault secret") : title;
+        const displayContext = toolOwned ? vaultOwner.displayContext : undefined;
+        const displayTitle = sensitive
+          ? archiveTitle
+            ? "Vault archive"
+            : (displayContext?.fieldName ?? "Vault secret")
+          : title;
+        const secretQuestion = displayContext
+          ? `Enter ${displayContext.fieldName}.\n\nService: ${displayContext.service}\nHost: ${displayContext.host}\n\n${displayContext.purpose === undefined ? "" : `Purpose: ${displayContext.purpose}\n\n`}This value won't be saved in the thread.`
+          : "This value won't be saved in the thread.";
         const threadId =
           turn?.turnInput.threadId ?? state?.providerThread.appThreadId ?? input.threadId;
         const providerThreadId = state?.providerThread.id ?? null;
@@ -1457,7 +1615,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                         header: displayTitle,
                         question: archiveTitle
                           ? "Choose an encrypted vault archive on this device."
-                          : "This value won't be saved in the thread.",
+                          : secretQuestion,
                         options: [],
                         sensitive: true,
                         ...(archiveTitle ? { fileInput: "vault-archive" as const } : {}),
@@ -1468,6 +1626,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         pendingPrompts.set(String(requestId), {
           nativeRequestId,
           ...(sensitive ? { sensitive: true, archive: archiveTitle } : {}),
+          ...(toolOwned ? { vaultOwner } : {}),
           method,
           questionId: nativeRequestId,
           approvalKey,
@@ -1764,6 +1923,25 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
       });
 
       const handleSessionEvent = Effect.fnUntraced(function* (event: PiRpcRecord) {
+        // Consume even malformed reserved notifications before wake buffering or ordinary UI.
+        const notification = recordString(event, "message");
+        if (
+          event["type"] === "extension_ui_request" &&
+          event["method"] === "notify" &&
+          notification?.startsWith("[takomi-vault-ownership")
+        ) {
+          if (
+            notification.startsWith(VAULT_OWNERSHIP_NOTIFY_PREFIX) &&
+            notification.length <= 4096
+          ) {
+            const ownership = yield* decodeVaultOwnershipEnvelope(
+              notification.slice(VAULT_OWNERSHIP_NOTIFY_PREFIX.length),
+            ).pipe(Effect.orElseSucceed(() => undefined));
+            if (ownership?.["type"] === "takomi_vault_secret_input")
+              yield* handleVaultOwnership(ownership);
+          }
+          return;
+        }
         // Model-selection hooks can await a dialog before startTurn can claim
         // a wake. Keep interactive requests session-scoped until a turn owns
         // them; buffer native output and notifications for that turn.
@@ -1785,6 +1963,9 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         const state = threadState;
         const turn = state?.activeTurn ?? null;
         switch (event["type"]) {
+          case "takomi_vault_secret_input":
+            // Legacy direct records are private but cannot establish notify ownership.
+            return;
           case "agent_start": {
             if (
               turn === null &&
@@ -1887,6 +2068,18 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           }
           case "tool_execution_start":
             if (turn !== null) {
+              const toolCallId = recordString(event, "toolCallId");
+              if (toolCallId !== undefined) {
+                yield* invalidateVaultInputs(toolCallId);
+                if (
+                  recordString(event, "toolName") === "vault_request" &&
+                  !seenVaultToolCalls.has(toolCallId) &&
+                  seenVaultToolCalls.size < 16384
+                ) {
+                  seenVaultToolCalls.add(toolCallId);
+                  vaultToolCalls.set(toolCallId, turn);
+                }
+              }
               turn.sawAgentActivity = true;
               yield* emitToolItem(turn, event, "start");
             }
@@ -1895,6 +2088,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             if (turn !== null) yield* emitToolItem(turn, event, "update");
             return;
           case "tool_execution_end":
+            if (recordString(event, "toolCallId") !== undefined)
+              yield* invalidateVaultInputs(recordString(event, "toolCallId"));
             if (turn !== null) yield* emitToolItem(turn, event, "end");
             return;
           case "compaction_start": {
@@ -2080,6 +2275,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             return;
           }
           case "agent_settled": {
+            yield* invalidateVaultInputs();
             if (turn?.interrupted === true) {
               if (state !== null) yield* finalizeTurn(state);
               return;
@@ -2402,6 +2598,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           return yield* protocolError("Pi did not create a distinct session file");
         }
         lastNativeThreadId = nativeId;
+        nativeSessionId = recordString(stateData, "sessionId") ?? null;
         const createdAt = yield* DateTime.now;
         const providerThread: OrchestrationV2ProviderThread =
           existing !== undefined
@@ -2869,6 +3066,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               return yield* protocolError(`Pi turn ${interruptInput.providerTurnId} is not active`);
             }
             turn.interrupted = true;
+            yield* sessionEventPermit.withPermits(1)(invalidateVaultInputs());
             if (
               interruptInput.requestRuntimeRestart === true ||
               turn.settleWhenIdle ||
@@ -3009,6 +3207,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
               state?.providerThread.appThreadId !== secretInput.threadId ||
               state.activeTurn === null ||
               pending?.sensitive !== true ||
+              state.activeTurn.interrupted ||
+              (pending.vaultOwner !== undefined &&
+                (!vaultOwnerIsLive(pending.vaultOwner) ||
+                  pending.vaultOwner.nativeRequestId !== pending.nativeRequestId)) ||
               pending.runtimeRequest.providerTurnId !== state.activeTurn.providerTurn.id ||
               pending.runtimeRequest.status !== "pending" ||
               (secretInput.cancelled === true) === (secretInput.value !== undefined) ||
@@ -3026,6 +3228,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                 : { value: secretInput.value }),
             });
             pendingPrompts.delete(String(secretInput.requestId));
+            if (pending.vaultOwner !== undefined)
+              vaultInputOwners.delete(pending.vaultOwner.requestId);
             const resolvedAt = yield* DateTime.now;
             yield* emit({
               type: "runtime_request.updated",

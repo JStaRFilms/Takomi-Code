@@ -13,8 +13,9 @@ const prompt = {
   questions: [
     {
       id: "secret",
-      header: "Credential",
-      question: "Enter the access token",
+      header: "GOOGLE_CLIENT_SECRET",
+      question:
+        "Enter GOOGLE_CLIENT_SECRET.\n\nService: Google\nHost: accounts.google.com\n\nPurpose: Connect the app to Google sign-in.\n\nThis value won't be saved in the thread.",
       options: [],
       sensitive: true,
       multiSelect: false,
@@ -69,14 +70,28 @@ function input() {
 }
 
 describe("Pi credential prompt", () => {
-  it("submits only via the secret response and clears the field before the request settles", async () => {
+  it("shows named field instructions in separate paragraphs and clears private input before the response settles", async () => {
     let resolve!: (result: boolean) => void;
     const response = new Promise<boolean>((done) => {
       resolve = done;
     });
     const respond = vi.fn(() => response);
     await mount(respond);
-    await act(() => input().props.onChange({ currentTarget: { value: "private-token" } }));
+    const field = renderer!.root.findByProps({ "aria-label": "GOOGLE_CLIENT_SECRET" });
+    expect(field).toBe(input());
+    const instructions = renderer!.root.findByProps({ id: field.props["aria-describedby"] });
+    const paragraphs = instructions.findAllByType("p");
+    expect(paragraphs.map((paragraph) => paragraph.children.join(""))).toEqual([
+      "Enter GOOGLE_CLIENT_SECRET.",
+      "Service: Google\nHost: accounts.google.com",
+      "Purpose: Connect the app to Google sign-in.",
+      "This value won't be saved in the thread.",
+    ]);
+    await act(() => field.props.onChange({ currentTarget: { value: "private-token" } }));
+    expect(input().props.value).toBe("private-token");
+    expect(
+      paragraphs.every((paragraph) => !paragraph.children.join("").includes("private-token")),
+    ).toBe(true);
     await act(() => {
       input().props.onKeyDown({ key: "Enter", preventDefault() {}, stopPropagation() {} });
     });

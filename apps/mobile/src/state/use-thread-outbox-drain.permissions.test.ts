@@ -4,8 +4,10 @@ import {
   EnvironmentId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult, type Atom } from "effect/reactivity";
@@ -33,7 +35,7 @@ const state = vi.hoisted(() => ({
     session: null,
   },
   config: {
-    providers: [{ instanceId: "codex", driver: "codex" }],
+    providers: [] as ServerProvider[],
     environment: { capabilities: {} },
   },
 }));
@@ -80,7 +82,6 @@ vi.mock("./threads", async () => {
   };
 });
 vi.mock("./use-atom-command", () => ({ useAtomCommand: <A>(command: A) => command }));
-vi.mock("../lib/modelOptions", () => ({ isModelSelectionUnavailable: () => false }));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => "uuid", randomHex: () => "abcd" }));
 vi.mock("../lib/attachmentUpload", () => ({ prepareTurnAttachments: state.prepare }));
 vi.mock("./use-remote-environment-registry", () => ({
@@ -171,6 +172,21 @@ function runDrain() {
 beforeEach(() => {
   state.grantedEnvironments = new Set(["primary"]);
   state.draftText = "Keep this draft separate";
+  state.config.providers = [
+    {
+      instanceId: ProviderInstanceId.make("codex"),
+      driver: ProviderDriverKind.make("codex"),
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-09-05T00:00:00.000Z",
+      models: [],
+      slashCommands: [],
+      skills: [],
+    },
+  ];
   appAtomRegistry.set(state.manager.queuedMessagesByThreadKeyAtom, {});
   appAtomRegistry.set(dispatchingQueuedMessageIdAtom, null);
   for (const command of [state.start, state.metadata, state.runtime, state.interaction]) {
@@ -188,6 +204,57 @@ afterEach(() => {
 });
 
 describe("queued task operation access", () => {
+  it.each([false, true])(
+    "delivers a queued Takomi prompt with its exact instance and model (new task: %s)",
+    async (isCreation) => {
+      state.grantedEnvironments.add("secondary");
+      state.config.providers = state.config.providers.map((provider) => ({
+        ...provider,
+        instanceId: ProviderInstanceId.make("takomi"),
+        driver: ProviderDriverKind.make("pi"),
+        capabilities: { sessions: { list: true, attach: true, clone: true } },
+        supportedRuntimeModes: ["approval-required", "auto-accept-edits", "full-access"],
+        showInteractionModeToggle: false,
+      }));
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("takomi"),
+        model: "openai-codex/gpt-6.1-sol",
+        options: [{ id: "thinkingLevel", value: "high" }],
+      };
+      const queued = message({
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        ...(isCreation
+          ? {
+              threadId: ThreadId.make("new-thread"),
+              creation: {
+                projectId: ProjectId.make("project"),
+                projectCwd: "/repo",
+                workspaceMode: "local" as const,
+                branch: null,
+                worktreePath: null,
+              },
+            }
+          : {}),
+      });
+      await state.manager.enqueue(queued);
+      await runDrain();
+      expect(state.start).toHaveBeenCalledWith({
+        environmentId: "secondary",
+        input: expect.objectContaining({
+          threadId: queued.threadId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          message: expect.objectContaining({ text: queued.text }),
+        }),
+      });
+      expect(remaining()).toEqual([]);
+      expect(state.draftText).toBe("Keep this draft separate");
+    },
+  );
+
   it("parks a connected read-only target, then delivers its unchanged queue after a grant", async () => {
     const queued = message();
     await state.manager.enqueue(queued);

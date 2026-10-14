@@ -206,6 +206,20 @@ const renderSplashIcon = Effect.fn("androidIcons.renderSplashIcon")(function* (
   return yield* composite(`${variant}-splash`, background, [{ input: foreground }]);
 });
 
+const renderSplashWordmark = Effect.fn("androidIcons.renderSplashWordmark")(function* (
+  repositoryRoot: string,
+  color: "#000000" | "#ffffff",
+) {
+  const source = yield* (yield* FileSystem.FileSystem).readFileString(
+    (yield* Path.Path).join(repositoryRoot, OUTPUT_DIRECTORY, "android-splash-wordmark.svg"),
+  );
+  return yield* rasterize(
+    "splash-wordmark",
+    source.replace('fill="#000000"', `fill="${color}"`),
+    SPLASH_CANVAS,
+  );
+});
+
 const exportAndroidIcons = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -223,6 +237,8 @@ const exportAndroidIcons = Effect.gen(function* () {
     ["android-splash-icon-dev.png", yield* renderSplashIcon(repositoryRoot, "dev")],
     ["android-splash-icon-nightly.png", yield* renderSplashIcon(repositoryRoot, "nightly")],
     ["android-splash-icon-prod.png", yield* renderSplashIcon(repositoryRoot, "prod")],
+    ["android-splash-wordmark-light.png", yield* renderSplashWordmark(repositoryRoot, "#ffffff")],
+    ["android-splash-wordmark-dark.png", yield* renderSplashWordmark(repositoryRoot, "#000000")],
   ] as const;
   for (const [name, contents] of outputs) {
     yield* fs.writeFile(path.join(repositoryRoot, OUTPUT_DIRECTORY, name), contents);

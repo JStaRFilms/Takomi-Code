@@ -1,5 +1,5 @@
 import { PI_VAULT_ARCHIVE_MAX_BYTES, type RuntimeRequestId } from "@t3tools/contracts";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { Button } from "../ui/button";
 
 interface ComposerPiSecretInputCardProps {
@@ -23,6 +23,7 @@ export function ComposerPiSecretInputCard({
   unavailable,
   onRespond,
 }: ComposerPiSecretInputCardProps) {
+  const questionId = useId();
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -75,7 +76,16 @@ export function ComposerPiSecretInputCard({
   return (
     <div className="px-3 py-2.5 sm:px-4" data-pi-secret-input>
       <div className="text-xs font-medium text-muted-foreground">{header}</div>
-      <p className="mt-1 text-sm text-foreground/85 wrap-anywhere">{question}</p>
+      <div id={questionId}>
+        {question.split(/\r?\n\s*\r?\n/).map((paragraph, index) => (
+          <p
+            key={index}
+            className="mt-1 text-sm whitespace-pre-wrap text-foreground/85 wrap-anywhere"
+          >
+            {paragraph}
+          </p>
+        ))}
+      </div>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {fileInput ? (
           <input
@@ -94,7 +104,8 @@ export function ComposerPiSecretInputCard({
           <>
             <input
               type="password"
-              aria-label="Secret response"
+              aria-label={header}
+              aria-describedby={questionId}
               autoComplete="off"
               spellCheck={false}
               value={value}
