@@ -1,172 +1,169 @@
 # Takomi Code
 
-> **Fork of [T3 Code](https://github.com/pingdotgg/t3code)** by [JStaRFilms](https://github.com/JStaRFilms).
+Run coding agents on your computer and work with them from a desktop app, browser, or Android phone. Takomi Code is a fork of [T3 Code](https://github.com/pingdotgg/t3code) with Takomi/Pi integration and its own stable releases.
 
-Takomi Code tracks upstream T3 Code and adds the Pi/Takomi provider, Takomi tool-call surfaces, and separate desktop/mobile branding. [Download the first Takomi preview](https://github.com/JStaRFilms/Takomi-Code/releases/tag/takomi-v0.1.0-preview.1) for Windows x64 or Android arm64. The Android APK is debug-signed for sideloading, not for the Play Store. The upstream installation and release commands below install T3 Code, not Takomi Code.
+[Download the latest stable release](https://github.com/JStaRFilms/Takomi-Code/releases/latest) · [npm package](https://www.npmjs.com/package/takomi-code) · [Documentation](./docs/)
 
-- [Takomi / Pi provider](./docs/features/takomi-pi-provider.md)
-- [Takomi desktop and Android builds](./docs/features/takomi-desktop-and-android.md)
-- [Current Takomi implementation status](./docs/features/takomi-code-handoff.md)
+## Install Takomi Code
 
-On Windows, the repository-owned local release workflow builds both the desktop installer and the
-standalone Android preview APK into `release/`:
+| What you want            | Install                                                                                                                        |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Windows x64 desktop app  | Download `Takomi-Code-<version>-x64.exe` from the [latest release](https://github.com/JStaRFilms/Takomi-Code/releases/latest). |
+| Android arm64 app        | Download `Takomi-Code-<version>-android-arm64-v8a.apk` from the same release.                                                  |
+| Server with a web client | Run `npx takomi-code@latest serve` on Windows x64, Linux x64, or an Apple Silicon Mac.                                         |
 
-```powershell
-vp run dist:local
+These are Takomi's published builds. There is no Takomi macOS or Linux desktop download, Intel Mac server package, or iOS store release at present. Upstream T3 Code store apps and package-manager installers are separate products.
+
+### Windows desktop
+
+1. Download the `.exe` from the [latest stable release](https://github.com/JStaRFilms/Takomi-Code/releases/latest).
+2. Run the installer, then open Takomi Code.
+3. Open **Settings → Providers** and set up a coding agent on the machine where it will run.
+4. Choose a project and start a thread.
+
+The installer includes the local server and web client. You do not need to run the npm command separately to use the desktop app.
+
+Windows installers are not yet code-signed, so SmartScreen may warn. Check that the download comes from `JStaRFilms/Takomi-Code`; each release includes `SHA256SUMS` for verifying downloads.
+
+### Android
+
+The Android app connects to a computer running Takomi Code. It does not run coding agents on the phone.
+
+1. Download the stable `.apk` from the [latest release](https://github.com/JStaRFilms/Takomi-Code/releases/latest) on your phone.
+2. Open the downloaded file and approve installation. Android may ask you to allow your browser to install apps.
+3. Open Takomi Code and pair it with your computer using the [connection steps below](#connect-your-phone-or-another-computer).
+
+For a stable-to-stable upgrade, install the new APK over the existing app. Do not uninstall first if you want to keep its saved data. Stable and Preview are separate apps with separate data; installing stable does not replace Preview.
+
+### Server and browser
+
+Install [Node.js](https://nodejs.org/) to get `npm` and `npx`, then run this on the computer that will host your projects and agents:
+
+```sh
+npx takomi-code@latest serve
 ```
 
-Use `vp run dist:local:desktop` or `vp run dist:local:android` for one target. See the
-[local release guide](./release/README.md) for release notes, artifact names, prerequisites, and
-limitations.
+Keep that terminal running and open the local URL it prints in your browser. `serve` does not open a browser automatically. The phone or another computer can connect to this same server.
 
----
+To install the command globally instead:
 
-## Upstream T3 Code overview
-
-T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
-
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, and Google Antigravity. If they're set up on your computer, T3 Code can control them.
-
-## "Wait, what are you selling me?"
-
-Nothing. We built T3 Code because we wanted the best possible development experience with agents. We were inspired by existing solutions like the Codex desktop app, Conductor, Claude Desktop and Cursor Glass, but none met our bar.
-
-We wanted something performant, remote-ready, and truly open. If we ever go the wrong direction, we want you to have everything you need to fork and build the editor that you want.
-
-## Installation
-
-> [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, Grok Build, OpenCode, and Antigravity. Install and authenticate at least one provider before use:
->
-> - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
-> - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
-> - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `agent login`
-> - Grok Build: install [Grok Build CLI](https://x.ai/cli) and run `grok login`
-> - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
-> - Antigravity: enable it in Settings, then use **Install Antigravity** and **Sign in with Google**. No CLI is required.
-
-### Command line
-
-```bash
-curl -fsSL https://t3.codes/install.sh | sh
+```sh
+npm install -g takomi-code@latest
+takomi-code serve
 ```
 
-On Windows, in PowerShell:
+For the command reference:
 
-```powershell
-irm https://t3.codes/install.ps1 | iex
+```sh
+npx takomi-code@latest --help
 ```
 
-Then run `t3` to start the server and open the local web app. `t3 service install` keeps it running in the background, `t3 update` moves to a newer release, and `t3 --help` has the full reference.
+The npm launcher selects the matching server package automatically. On an Apple Silicon Mac, use a native ARM64 Node installation, not an x64 installation under Rosetta. Self-contained server archives are also available in [GitHub Releases](https://github.com/JStaRFilms/Takomi-Code/releases/latest).
 
-To try it once without installing, run `npx t3@latest` instead.
+The public app command is `takomi-code`. You do not need to install the `@johnsax/takomi-code-*` platform packages yourself.
 
-### Desktop app
+## Set up your coding agent
 
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
+Takomi Code supports Takomi/Pi alongside Codex, Claude Code, Cursor, Grok Build, OpenCode, Antigravity, and Muse Code. Enable and configure providers in **Settings → Providers** on the environment where your projects live. Install and authenticate the provider there before starting a thread.
 
-#### Windows (`winget`)
+For Takomi/Pi, install [Pi](https://pi.dev) on the server machine, run `pi` once to configure its models and authentication, and keep the provider's binary path set to `pi`. Your existing Pi models, extensions, skills, and session history are used by the app. See [Takomi and Pi setup](./docs/user/providers-pi.md).
 
-```bash
-winget install T3Tools.T3Code
+The app does not bundle the separate Takomi suite or Vault extension. Install those on the server if you use them. Desktop and web can also [continue compatible Pi CLI sessions](./docs/user/cli-continuity.md); mobile does not yet expose session discovery.
+
+## Connect your phone or another computer
+
+The host computer must stay running and reachable. Pairing does not move your projects or agents onto the phone.
+
+For a desktop host, open **Settings → Connections**, enable **Network access**, and create a pairing link using an address your other device can reach. Enabling network access restarts the desktop app, so finish active work first. Scan the QR code or open the pairing link in the Android app.
+
+For a command-line host over Tailscale, connect both devices to the same tailnet and run:
+
+```sh
+npx takomi-code@latest serve --tailscale-serve
 ```
 
-#### macOS (Homebrew)
+In another terminal on that host, create a pairing link for the running server:
 
-```bash
-brew install --cask t3-code
+```sh
+npx takomi-code@latest pair --tailscale
 ```
 
-#### Debian, Ubuntu (`.deb`)
+Use the same server data-directory options if you set a custom directory. Do not start a second server if one is already running. Pairing links authorize access to your host; keep them private.
 
-Download the `.deb` from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), then:
+See [remote access](./docs/user/remote-access.md) for LAN, Tailscale, SSH, and T3 Connect options. T3 Connect retains its upstream name.
 
-```bash
-sudo apt install ./T3-Code-*.deb
+## Update Takomi Code
+
+### Windows desktop
+
+The desktop app checks the fork's stable release feed. When an update is available, download it through the app, then confirm installation and restart when your work is finished. Updating can interrupt running agents and terminal commands.
+
+Older or locally built Preview installers may have no update feed. Install the latest stable `.exe` manually once to switch to the normal stable update path.
+
+### Android
+
+Stable Android checks GitHub for newer stable APKs when you open or return to the app. You can also use **Settings → About Takomi Code → Check for updates**.
+
+Choose **Download APK**, open the downloaded file, and approve installation in Android. Update detection is automatic; installation is not silent. You can always download the APK directly from the latest release.
+
+### Command-line servers
+
+For an `npx` server, finish active work, stop the running server, and relaunch it with your usual options:
+
+```sh
+npx takomi-code@latest serve
 ```
 
-#### Arch Linux (AUR)
+For a global npm installation, stop the server, update the package, then restart it:
 
-Stable:
-
-```bash
-yay -S t3code-bin
+```sh
+npm install -g takomi-code@latest
+takomi-code serve
 ```
 
-Nightly:
-
-```bash
-yay -S t3code-nightly-bin
-```
-
-The AUR packaging is maintained in this repository under [`packaging/aur`](./packaging/aur).
-
-## Some notes
-
-We are very very early in this project. Expect bugs.
-
-We are (mostly) not accepting contributions yet. Small fixes may be considered. Big features will not be.
+Update the machine hosting the agents, not just the device you use to control it. Keep your usual host, data-directory, and Tailscale options when restarting. See [app and server updates](./docs/user/updating.md) for connected-environment controls and version compatibility.
 
 ## Documentation
 
-Full docs live in [docs/](./docs). There's no docs site yet.
-
-- [Install and first run](./docs/user/install.md)
+- [Takomi/Pi integration](./docs/features/takomi-pi-provider.md)
+- [Working with threads](./docs/user/thread-sidebar.md)
 - [Permission modes](./docs/user/permission-modes.md)
+- [Remote access](./docs/user/remote-access.md)
 - [Keyboard shortcuts](./docs/user/keybindings.md)
-- [Project settings](./docs/user/project-settings.md)
-- [Appearance preferences](./docs/user/appearance.md)
-- [Remote access from a phone or another machine](./docs/user/remote-access.md)
-- [Connect Claude Code, Codex, ChatGPT and other agents over MCP](./docs/user/outside-agents.md)
-- [Keeping app and server in sync](./docs/user/updating.md)
-- [Local Windows builds](./docs/user/local-builds.md)
-- [Source control integrations](./docs/user/source-control.md)
-- Multiple accounts: [Codex](./docs/user/providers-codex.md) · [Claude](./docs/user/providers-claude.md)
-- [Run T3 Code as a background service](./docs/user/background-service.md)
+- [Local Windows and Android builds](./docs/user/local-builds.md)
+- [Architecture](./docs/internals/overview.md)
 
-Building from source? Start at [docs/internals/overview.md](./docs/internals/overview.md).
+Some inherited guides still use T3 Code names and commands. Use this README's download links and npm commands to install Takomi rather than the upstream app.
 
-## If you REALLY want to contribute still.... read this first
+## Build from source
 
-### Install `vp`
+Install [Vite+](https://viteplus.dev/guide/) and Node.js 24, then clone this fork:
 
-T3 Code uses Vite+ so you'll need to install the global `vp` command-line tool.
-
-#### macOS / Linux
-
-```bash
-curl -fsSL https://vite.plus | bash
-```
-
-#### Windows
-
-```bash
-irm https://vite.plus/ps1 | iex
-```
-
-Checkout their getting started guide for more information: https://viteplus.dev/guide/
-
-### Install dependencies
-
-```bash
+```sh
+git clone https://github.com/JStaRFilms/Takomi-Code.git
+cd Takomi-Code
 vp i
+vp run dev
 ```
 
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before reporting a bug or opening a PR.
+For Windows desktop and Android Preview artifacts, follow the prerequisites and build instructions in the [local release guide](./release/README.md). Local Preview builds are not the published stable installers.
 
-Have a feature request? Start an [Ideas discussion](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
+Report Takomi-specific bugs in [this repository's issues](https://github.com/JStaRFilms/Takomi-Code/issues). For development conventions, read [AGENTS.md](./AGENTS.md) and [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
+## Credits and license
 
----
+Takomi Code is maintained by [JStaRFilms](https://github.com/JStaRFilms) and builds on [T3 Code](https://github.com/pingdotgg/t3code) by T3 Tools and its contributors. Upstream architecture, compatible identifiers, and T3 Connect remain part of the project. Some internal executable and archive names still use `t3`; the npm launcher exposes `takomi-code` without replacing a separately installed `t3` command.
 
-## Old Tries
+Licensed under the [MIT License](./LICENSE), with the upstream copyright notice retained.
 
-Previous Takomi experiments that led to this fork. Kept for historical reference.
+<details>
+<summary>Earlier Takomi projects</summary>
 
-| Project                    | Stack                                | Dates           | Repo                                                                                                            |
-| -------------------------- | ------------------------------------ | --------------- | --------------------------------------------------------------------------------------------------------------- |
-| **TakomiDX** (TakomiUX)    | Next.js + agentd monorepo, CLI-first | Mar 7–8, 2026   | [JStaRFilms/deprecated-TakomiDX](https://github.com/JStaRFilms/deprecated-TakomiDX)                             |
-| **Takomi Code**            | WinUI 3 / C# + Codex SDK             | Mar 10–19, 2026 | [JStaRFilms/deprecated-Takomi_Code](https://github.com/JStaRFilms/deprecated-Takomi_Code)                       |
-| **Takomi Code Remastered** | Electron + React 19 + TypeScript     | Mar 20–21, 2026 | [JStaRFilms/deprecated-Takomi_Code_Remastered](https://github.com/JStaRFilms/deprecated-Takomi_Code_Remastered) |
-| **Takomi Mobile**          | Expo + local worker + Pi SDK         | Jun 13–14, 2026 | [JStaRFilms/deprecated-Takomi_Mobile](https://github.com/JStaRFilms/deprecated-Takomi_Mobile)                   |
+These experiments preceded this fork and are kept for historical reference:
+
+- [TakomiDX](https://github.com/JStaRFilms/deprecated-TakomiDX), Next.js and agentd.
+- [Takomi Code](https://github.com/JStaRFilms/deprecated-Takomi_Code), WinUI 3 and the Codex SDK.
+- [Takomi Code Remastered](https://github.com/JStaRFilms/deprecated-Takomi_Code_Remastered), Electron and React.
+- [Takomi Mobile](https://github.com/JStaRFilms/deprecated-Takomi_Mobile), Expo and the Pi SDK.
+
+</details>
