@@ -3,7 +3,7 @@ import { beginForegroundHandoff } from "../../lib/foreground-handoff";
 import { useRef, useState } from "react";
 import { View } from "react-native";
 
-import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
+import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
 import { RequestActionButton } from "./RequestActionButton";
 
 interface PiSecretInputCardProps {

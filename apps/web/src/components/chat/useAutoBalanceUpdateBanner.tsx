@@ -26,7 +26,6 @@ import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 import { ComposerServerUpdateIcon } from "./ComposerServerUpdateStatus";
 
-/** Keep every machine's update visible while auto balance has no single update target. */
 export function useAutoBalanceUpdateBanner(
   environments: readonly EnvironmentPresentation[],
 ): ComposerBannerStackItem | null {
@@ -65,6 +64,8 @@ export function useAutoBalanceUpdateBanner(
         serverLabel: environment.label,
         selfUpdate,
         installation: environment.serverConfig?.environment.capabilities.serverInstallation,
+        distribution: environment.serverConfig?.environment.distribution,
+        serverVersion: environment.serverConfig?.environment.serverVersion,
         desktopAppUpdate,
         threadContinuation: supportsServerUpdateThreadContinuation(environment.serverConfig),
         continueThreadsAfterServerUpdate:

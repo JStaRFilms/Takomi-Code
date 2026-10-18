@@ -105,10 +105,15 @@ describe("environment maintenance access", () => {
 
   it("requires remote desktop update support for desktop hosts", () => {
     expect(supportsEnvironmentUpdate({})).toBe(false);
-    expect(supportsEnvironmentUpdate({ serverSelfUpdate: "respawn" })).toBe(true);
-    expect(supportsEnvironmentUpdate({ serverSelfUpdate: "desktop-managed" })).toBe(false);
+    expect(supportsEnvironmentUpdate({ serverSelfUpdate: "respawn" }, "takomi")).toBe(true);
+    expect(supportsEnvironmentUpdate({ serverSelfUpdate: "desktop-managed" }, "takomi")).toBe(
+      false,
+    );
     expect(
-      supportsEnvironmentUpdate({ serverSelfUpdate: "desktop-managed", desktopAppUpdate: true }),
+      supportsEnvironmentUpdate(
+        { serverSelfUpdate: "desktop-managed", desktopAppUpdate: true },
+        "takomi",
+      ),
     ).toBe(true);
   });
 
@@ -173,9 +178,9 @@ describe("environment release checks", () => {
           ]),
         ),
     );
-    expect(await findEnvironmentUpdate("1.0.0", signal)).toBe("1.1.0");
-    expect(await findEnvironmentUpdate("1.1.0", signal)).toBeNull();
-    expect(await findEnvironmentUpdate("1.3.0", signal)).toBeNull();
+    expect(await findEnvironmentUpdate("1.0.0", signal, "takomi")).toBe("1.1.0");
+    expect(await findEnvironmentUpdate("1.1.0", signal, "takomi")).toBeNull();
+    expect(await findEnvironmentUpdate("1.3.0", signal, "takomi")).toBeNull();
   });
 
   it("walks release pages to find the host's channel", async () => {
@@ -186,7 +191,7 @@ describe("environment release checks", () => {
       )
       .mockResolvedValueOnce(Response.json([{ tag_name: "v1.0.0-preview.20260923.2" }]));
     vi.stubGlobal("fetch", fetchMock);
-    expect(await findEnvironmentUpdate("1.0.0-preview.20260923.1", signal)).toBe(
+    expect(await findEnvironmentUpdate("1.0.0-preview.20260923.1", signal, "takomi")).toBe(
       "1.0.0-preview.20260923.2",
     );
     expect(fetchMock.mock.calls[1]?.[0]).toContain("page=2");
@@ -195,10 +200,35 @@ describe("environment release checks", () => {
 
   it("reports failed checks instead of claiming the server is current", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 403 })));
-    await expect(findEnvironmentUpdate("1.0.0", signal)).rejects.toThrow("403");
+    await expect(findEnvironmentUpdate("1.0.0", signal, "takomi")).rejects.toThrow("403");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json([])));
-    await expect(findEnvironmentUpdate("1.0.0", signal)).rejects.toThrow("No stable release");
+    await expect(findEnvironmentUpdate("1.0.0", signal, "takomi")).rejects.toThrow(
+      "No stable release",
+    );
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "invalid" })));
-    await expect(findEnvironmentUpdate("1.0.0", signal)).rejects.toThrow();
+    await expect(findEnvironmentUpdate("1.0.0", signal, "takomi")).rejects.toThrow();
   });
+});
+
+it.each(["takomi", "t3"] as const)(
+  "discovers %s targets only in that destination's release feed",
+  async (distribution) => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json([{ tag_name: "v0.2.0" }]));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await findEnvironmentUpdate("0.1.0", new AbortController().signal, distribution)).toBe(
+      "0.2.0",
+    );
+    expect(fetchMock.mock.calls[0]?.[0]).toContain(
+      distribution === "takomi" ? "/JStaRFilms/Takomi-Code/" : "/pingdotgg/t3code/",
+    );
+  },
+);
+it("gives unknown hosts manual guidance without querying a guessed feed", async () => {
+  const fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+  expect(supportsEnvironmentUpdate({ serverSelfUpdate: "boot-service" })).toBe(false);
+  await expect(findEnvironmentUpdate("0.1.0", new AbortController().signal)).rejects.toThrow(
+    "Unknown server distribution",
+  );
+  expect(fetchMock).not.toHaveBeenCalled();
 });

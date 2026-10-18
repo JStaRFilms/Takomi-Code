@@ -5,6 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as PlatformError from "effect/PlatformError";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
@@ -14,10 +15,6 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
-
-/** Shared DesktopUpdates test harness: a fully stubbed updater layer whose
-    electron-updater events are driven by hand via `emit`. Used by
-    DesktopUpdates.test.ts and DesktopRemoteUpdates.test.ts. */
 
 export const flushCallbacks = Effect.yieldNow;
 
@@ -36,8 +33,8 @@ export interface UpdatesHarnessOptions {
   readonly startBackend?: Effect.Effect<void>;
   readonly env?: Record<string, string | undefined>;
   readonly platform?: NodeJS.Platform;
-  /** Contents of the resources/package-type marker a Linux package ships. */
   readonly packageType?: string | undefined;
+  readonly installRecord?: string | undefined;
 }
 
 export function makeHarness(options: UpdatesHarnessOptions = {}) {
@@ -221,31 +218,47 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
         ? DesktopAppSettings.layerTest(options.initialSettings)
         : DesktopAppSettings.layer;
 
-  // Tracks the restart markers installs leave, so installs stay free of real
-  // disk I/O that would outrun the tests' settle loops.
   const updateRestartMarkers = new Set<string>();
-  const layerFileSystem = FileSystem.layerNoop({
-    readFileString: (path) =>
-      path === "/missing/resources/package-type" && options.packageType !== undefined
-        ? Effect.succeed(options.packageType)
-        : Effect.fail(
-            PlatformError.systemError({
-              module: "FileSystem",
-              method: "readFileString",
-              _tag: "NotFound",
-              pathOrDescriptor: path,
-            }),
-          ),
-    makeDirectory: () => Effect.void,
-    writeFileString: (path) =>
-      Effect.sync(() => {
-        updateRestartMarkers.add(path);
-      }),
-    remove: (path) =>
-      Effect.sync(() => {
-        updateRestartMarkers.delete(path);
-      }),
-  });
+  const installRecords = new Map<string, string>();
+  let previousInstallRecord = options.installRecord;
+  const isInstallRecord = (path: string) =>
+    path.endsWith(DesktopUpdates.DESKTOP_UPDATE_INSTALL_RECORD_FILE);
+  const layerFileSystem = Layer.unwrap(
+    Effect.gen(function* () {
+      const pathService = yield* Path.Path;
+      const packageTypePath = pathService.join("/missing/resources", "package-type");
+      return FileSystem.layerNoop({
+        readFileString: (path) => {
+          const installRecord = isInstallRecord(path)
+            ? (installRecords.get(path) ?? previousInstallRecord)
+            : undefined;
+          if (installRecord !== undefined) return Effect.succeed(installRecord);
+          return path === packageTypePath && options.packageType !== undefined
+            ? Effect.succeed(options.packageType)
+            : Effect.fail(
+                PlatformError.systemError({
+                  module: "FileSystem",
+                  method: "readFileString",
+                  _tag: "NotFound",
+                  pathOrDescriptor: path,
+                }),
+              );
+        },
+        makeDirectory: () => Effect.void,
+        writeFileString: (path, data) =>
+          Effect.sync(() => {
+            if (isInstallRecord(path)) installRecords.set(path, data);
+            else updateRestartMarkers.add(path);
+          }),
+        remove: (path) =>
+          Effect.sync(() => {
+            updateRestartMarkers.delete(path);
+            installRecords.delete(path);
+            if (isInstallRecord(path)) previousInstallRecord = undefined;
+          }),
+      });
+    }),
+  );
 
   const layer = DesktopUpdates.layer.pipe(
     Layer.provide(layerFileSystem),
@@ -272,6 +285,8 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     quitAndInstalls: () => quitAndInstallCount,
     installSteps,
     updateRestartMarkers,
+    installRecords,
+    previousInstallRecord: () => previousInstallRecord,
     downloadCount: () => downloadCount,
     feedUrls: (): ElectronUpdater.ElectronUpdaterFeedUrl[] => feedUrls,
     fullChangelog: () => fullChangelog,

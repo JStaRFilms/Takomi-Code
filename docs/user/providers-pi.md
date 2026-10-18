@@ -8,24 +8,42 @@ launches an interactive harness, not Pi's RPC mode.
 
 ## Set up Pi
 
-1. Install Pi on the machine running the Takomi Code server. Pi 1.0 is recommended; 0.80.5 is the
-   oldest version Takomi Code supports.
+1. Install [Pi](https://pi.dev) on the machine running the Takomi Code server. Compatibility
+   checks use the installed package and its session format, not an exact-version allowlist.
+   Continuing a CLI session requires a supported v3 session file.
 2. Run Pi once in a terminal and finish the provider login or API-key setup you normally use.
 3. Takomi Code enables Takomi by default, including in existing environments after upgrading.
    Stock Pi remains a separate, optional provider. Use Add provider → Takomi to add another
    Takomi instance if you previously removed the default; disabled or removed instances stay that
    way on later restarts. Keep the existing `pi` instance if you want both available.
 
+For an npm installation, use:
+
+```sh
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+```
+
 If `pi` is not on the server's `PATH`, set Pi's binary path to the executable. Provider environment
 variables and launch arguments are also available for installations that need a custom agent
-directory, endpoint, or model configuration. `--provider` must be paired with `--model`. T3 Code
+directory, endpoint, or model configuration. `--provider` must be paired with `--model`. Takomi Code
 rejects launch arguments that change Pi's execution mode or select a session because Takomi Code owns those
 parts of the process lifecycle.
+
+On a remote or headless server, connect to that machine over SSH and run `pi`, then `/login`.
+Open the authorization URL on your own computer. If the callback cannot reach the server,
+paste the final redirect URL or authorization code back into Pi when prompted. You can also
+set your model provider's API-key environment variable in the Pi instance's settings; mark
+secret values as sensitive.
+
+Update installer-managed Pi with `pi update`. If another package manager owns the installation,
+update it through that manager instead. For example, a Nix profile installation uses
+`nix profile upgrade pi`.
 
 ## What carries over
 
 Takomi Code discovers the models reported by Pi and exposes their supported thinking levels. The
-thinking picker marks Pi's current configured level as the default without overriding it. Threads
+thinking picker marks the discovered active model's configured level as its default without
+overriding it. Other models keep their Pi defaults when no level is selected. Threads
 use Pi's native session files for resume, rollback, and forks within the same Pi instance. Forks
 preserve the native conversation through the selected turn in the destination workspace.
 Switching providers uses portable conversation context. Extension
@@ -43,8 +61,9 @@ The server's `--base-dir` isolates Takomi Code's app database, not Pi. Unless yo
 configure another Pi agent directory, provider instances share the same Pi settings, credentials,
 sessions, and extensions. The Takomi Vault extension also stores its data under your OS user's
 `~/.pi/agent/takomi-vault` directory, so a second Pi instance or a test server does not isolate
-Vault credentials. The private Vault input and export paths have not yet had a live
-browser-to-Pi check in this merge. Use disposable values for testing; do not enter or export real
+Vault credentials. Private input uses a separate one-use response path owned by the live
+Pi request, not an ordinary chat answer. The input and export paths still lack a live
+browser-to-Pi verification. Use disposable values for testing; do not enter or export real
 Vault secrets in the app until that check passes.
 
 ## Permission modes

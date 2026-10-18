@@ -36,7 +36,7 @@ import {
   cliArchiveFileName,
   type CliArchivePlatformKey,
 } from "@t3tools/shared/cliRelease";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import { isCommandAvailable } from "@t3tools/shared/shell";
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
@@ -220,7 +220,10 @@ try {
 }
 
 const executable = join(packageDir, process.platform === "win32" ? "t3.exe" : "t3");
-const result = spawnSync(executable, process.argv.slice(2), { stdio: "inherit" });
+const result = spawnSync(executable, process.argv.slice(2), {
+  stdio: "inherit",
+  env: { ...process.env, T3CODE_NPM_LAUNCHER_PATH: __filename },
+});
 if (result.error) {
   process.stderr.write("takomi-code: failed to start " + executable + ": " + result.error.message + "\\n");
   process.exit(1);
@@ -256,7 +259,7 @@ const runCommand = Effect.fn("runCommand")(function* (
 const extractArchive = Effect.fn("extractArchive")(function* (archive: string, into: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const platform = yield* HostProcessPlatform;
+  const platform = yield* HostProcess.Platform;
   if (!archive.endsWith(".zip")) {
     yield* runCommand(
       ChildProcess.make(platform === "win32" ? windowsSystemTar() : "tar", [
@@ -293,7 +296,7 @@ const extractArchive = Effect.fn("extractArchive")(function* (archive: string, i
 });
 
 /** Tar to build npm tarballs with; see build-cli-archive.ts for why Windows names bsdtar by path. */
-const hostTar = Effect.map(HostProcessPlatform, (platform) =>
+const hostTar = Effect.map(HostProcess.Platform, (platform) =>
   platform === "win32" ? windowsSystemTar() : "tar",
 );
 

@@ -64,7 +64,7 @@ describe("Android release versions", () => {
     expect(staged).toContain("    versionCode: 1003,");
     expect(
       staged
-        .replace('  version: "0.1.2",', '  version: "2.0.0",')
+        .replace('  version: "0.1.2",', '  version: repoEnv.T3CODE_MOBILE_VERSION ?? "2.0.0",')
         .replace("    versionCode: 1003,", "    versionCode: 3,"),
     ).toBe(source);
     expect(() =>

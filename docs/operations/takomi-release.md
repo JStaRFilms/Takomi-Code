@@ -35,9 +35,9 @@ The public npm packages are:
 - `@johnsax/takomi-code-linux-x64`
 - `@johnsax/takomi-code-darwin-arm64`
 
-These names have not been reserved or published by this local setup. Confirm availability
-and access using the existing npm account and `@johnsax` scope. Do not rename that
-account, create an organization, or change the existing `takomi` package.
+Confirm access to these packages using the existing npm account and `@johnsax` scope before
+publishing. Do not rename that account, create an organization, or change the existing `takomi`
+package.
 
 For each of the four packages, configure an npm **GitHub Actions trusted publisher** with:
 
@@ -55,7 +55,8 @@ Publish the three platform tarballs before the launcher tarball with `--tag boot
 using an interactive, 2FA-protected npm login on the owner's machine. Do not use `latest`
 for this preview bootstrap. Then register the trusted publishers and remove the bootstrap
 login or token. Do not put npm tokens in repository secrets. The preview version cannot
-be overwritten. Suggested first stable workflow version: `0.1.0`.
+be overwritten. Source desktop/server `0.1.0` is an upstream default, not the next release.
+Keep published `0.1.2` history intact and choose a newer, unused version for the next publication.
 
 The workflow uses OIDC and provenance for normal npm releases. Its dry run checks
 package layout but is not proof that trusted-publisher authentication will succeed.
@@ -161,8 +162,11 @@ Download the Windows EXE from
 <https://github.com/JStaRFilms/Takomi-Code/releases>. Install this first fork release
 manually to replace an older or feedless build. Subsequent stable builds use the
 existing bottom-left desktop updater with the explicit `JStaRFilms/Takomi-Code` feed.
-Preview builds stay feedless. This is the local desktop updater, not an updater for a
-remote browser or hosted product.
+Saved or requested Nightly is normalized to Stable in this desktop app. Dated local previews
+stay feedless. Connected servers retain their own distribution and channel. Identified Takomi
+hosts use Takomi release/package targets; T3 hosts need an independently proven target, and
+unknown hosts receive manual guidance rather than a guessed update. Restart still requires
+user confirmation.
 
 Download the stable Android APK from the same GitHub release and compare its checksum with
 `SHA256SUMS`. Android asks you to authorize the download source and confirm installation;

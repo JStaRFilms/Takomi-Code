@@ -7,7 +7,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import * as NodeUtil from "node:util";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 export const ANDROID_TOOLCHAIN = {
   gradle: "9.4.1",
@@ -78,13 +78,17 @@ type ReleasePlan = ReturnType<typeof androidReleasePlan>;
 /** Stage literals only in the disposable build checkout, preserving iOS/EAS defaults. */
 export function stageAndroidReleaseConfig(source: string, plan: ReleasePlan): string {
   if (
-    (source.match(/^ {2}version: "[^"]+",$/gmu) ?? []).length !== 1 ||
+    (source.match(/^ {2}version: (?:repoEnv\.T3CODE_MOBILE_VERSION \?\? )?"[^"]+",$/gmu) ?? [])
+      .length !== 1 ||
     (source.match(/^ {4}versionCode: \d+,$/gmu) ?? []).length !== 1
   ) {
     throw new Error("Cannot locate unique mobile version/versionCode literals.");
   }
   return source
-    .replace(/^ {2}version: "[^"]+",$/mu, `  version: "${plan.version}",`)
+    .replace(
+      /^ {2}version: (?:repoEnv\.T3CODE_MOBILE_VERSION \?\? )?"[^"]+",$/mu,
+      `  version: "${plan.version}",`,
+    )
     .replace(/^ {4}versionCode: \d+,$/mu, `    versionCode: ${plan.versionCode},`);
 }
 
@@ -376,7 +380,7 @@ if (import.meta.main) {
     if (values["dry-run"]) {
       process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
     } else {
-      if (!values["build-checkout"] || HostProcessPlatform.defaultValue() !== "linux") {
+      if (!values["build-checkout"] || HostProcess.Platform.defaultValue() !== "linux") {
         throw new Error(
           "Use --build-checkout only in a disposable Linux checkout. This stages mobile config and cleans generated Android files.",
         );

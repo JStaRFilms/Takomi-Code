@@ -8,6 +8,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -24,7 +25,7 @@ import * as RpcClientError from "effect/rpc/RpcClientError";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as Socket from "effect/socket/Socket";
 
-import { makeWsRpcProtocolClient, type WsRpcProtocolClient } from "./protocol.ts";
+import { makeWsRpcProtocolClient, PING_TIMEOUT, type WsRpcProtocolClient } from "./protocol.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { NETWORK_BLOCKING_HINT } from "../errors/network.ts";
 import type {
@@ -59,7 +60,6 @@ export interface RpcSession {
 export interface RpcSessionOptions {
   readonly environmentThemes?: boolean;
   readonly usageLimitSources?: boolean;
-  /** This client answers /usage-limits itself, so the server may advertise it. */
   readonly usageLimitsCommand?: boolean;
 }
 
@@ -180,16 +180,9 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
       return socket;
     };
     const disconnected = yield* Deferred.make<never, ConnectionTransientError>();
-    // Set when the socket closes because pongs stopped, so the failure says so
-    // instead of looking like the server closed the connection.
     const pingTimedOut = yield* Ref.make(false);
     const hooks = RpcClient.ConnectionHooks.of({
-      onPing: Option.match(wakeups, {
-        onNone: () => Effect.void,
-        onSome: (service) => service.beforeHeartbeat ?? Effect.void,
-      }),
       onConnect: Deferred.succeed(connected, undefined).pipe(Effect.asVoid),
-      onPingTimeout: Ref.set(pingTimedOut, true),
       onDisconnect: Effect.all([Deferred.isDone(connected), Ref.get(pingTimedOut)]).pipe(
         Effect.flatMap(([wasConnected, timedOut]) =>
           Deferred.fail(
@@ -212,14 +205,61 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
         Effect.asVoid,
       ),
     });
-    const layerSocket = Socket.layerWebSocket(connection.socketUrl, {
+    const beforeHeartbeat = Option.getOrUndefined(wakeups)?.beforeHeartbeat;
+    const rawSocket = Socket.layerWebSocket(connection.socketUrl, {
       openTimeout: SOCKET_OPEN_TIMEOUT,
     }).pipe(Layer.provide(Layer.succeed(Socket.WebSocketConstructor, trackedWebSocketConstructor)));
+    // Effect's built-in pinger cannot pause while a native app is backgrounded.
+    // Mobile owns a scoped heartbeat using the Socket reader/writer API instead.
+    const layerSocket =
+      beforeHeartbeat === undefined
+        ? rawSocket
+        : Layer.effect(
+            Socket.Socket,
+            Effect.gen(function* () {
+              const socket = yield* Socket.Socket;
+              let frames = 0;
+              const writer = yield* socket.writer;
+              yield* Effect.gen(function* () {
+                yield* Deferred.await(connected);
+                while (true) {
+                  yield* beforeHeartbeat;
+                  const beforePing = frames;
+                  yield* writer.write('{"_tag":"Ping"}');
+                  yield* Effect.sleep(PING_TIMEOUT);
+                  yield* beforeHeartbeat;
+                  if (frames === beforePing) {
+                    yield* Ref.set(pingTimedOut, true);
+                    yield* writer.write(new Socket.CloseEvent(1001, "ping timeout"));
+                    return;
+                  }
+                }
+              }).pipe(Effect.ignore, Effect.forkScoped);
+              return {
+                ...socket,
+                reader: socket.reader.pipe(
+                  Effect.map((reader) => ({
+                    ...reader,
+                    pull: reader.pull.pipe(
+                      Effect.tap(() =>
+                        Effect.sync(() => {
+                          frames++;
+                        }),
+                      ),
+                    ),
+                  })),
+                ),
+              };
+            }),
+          ).pipe(Layer.provide(rawSocket));
     const layerProtocol = Layer.effect(
       RpcClient.Protocol,
       RpcClient.makeProtocolSocket({
+        pingTimeout: PING_TIMEOUT,
+        ...(beforeHeartbeat === undefined ? {} : { pingInterval: Duration.infinity }),
         retryTransientErrors: false,
         retryPolicy: Schedule.recurs(0),
+        onPingTimeout: Ref.set(pingTimedOut, true),
       }),
     ).pipe(
       Layer.provide(

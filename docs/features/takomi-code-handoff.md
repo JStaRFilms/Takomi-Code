@@ -105,7 +105,8 @@ For suite development, set **Takomi suite root** to the VibeCode Protocol Suite 
 
 ## Current local release workflow
 
-Current source versions match the merged upstream: desktop `0.0.45` and mobile `2.0.0`.
+Current source defaults are desktop/server `0.1.0` and mobile `2.0.0`. They do not replace the
+published stable `0.1.2` release or its artifacts. The source merge itself produces no binaries.
 Each attempt reserves a separate output directory:
 
 ```text

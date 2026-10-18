@@ -1,4 +1,4 @@
-import { RuntimeRequestId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, RuntimeRequestId } from "@t3tools/contracts";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -40,6 +40,8 @@ function panel(
   return (
     <ComposerPendingUserInputPanel
       pendingUserInputs={[prompt]}
+      cwd={undefined}
+      threadRef={{ environmentId: EnvironmentId.make("env"), threadId: ThreadId.make("thread") }}
       respondingRequestIds={[]}
       answers={{}}
       questionIndex={0}

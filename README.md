@@ -121,6 +121,10 @@ npm install -g takomi-code@latest
 takomi-code serve
 ```
 
+Connected hosts keep their own distribution. Takomi uses `takomi-code`; T3 hosts
+keep `t3`. Older hosts without distribution metadata require a manual update.
+A Takomi version number is not proof of a matching T3 release.
+
 Update the machine hosting the agents, not just the device you use to control it. Keep your usual host, data-directory, and Tailscale options when restarting. See [app and server updates](./docs/user/updating.md) for connected-environment controls and version compatibility.
 
 ## Documentation

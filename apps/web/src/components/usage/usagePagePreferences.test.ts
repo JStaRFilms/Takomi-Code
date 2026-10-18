@@ -38,6 +38,17 @@ describe("Usage page preferences", () => {
     },
   );
 
+  it("retains both local Takomi and remote Pi filters without changing their keys", () => {
+    values.set(key, '{"metric":"cost","windowDays":0,"hiddenProviders":["takomi","pi"]}');
+    expect(readUsagePagePreferences()).toEqual({
+      metric: "cost",
+      windowDays: 0,
+      hiddenProviders: ["takomi", "pi"],
+    });
+    saveUsagePagePreferences({ metric: "tokens", windowDays: 7, hiddenProviders: ["pi"] });
+    expect(readUsagePagePreferences().hiddenProviders).toEqual(["pi"]);
+  });
+
   it("round-trips hidden providers and reads older saves without them", () => {
     saveUsagePagePreferences({ metric: "cost", windowDays: 7, hiddenProviders: ["codex"] });
     expect(readUsagePagePreferences().hiddenProviders).toEqual(["codex"]);

@@ -18,11 +18,17 @@ For the release checklist and versioning rules, see [`release/README.md`](../../
 | Development protocol      | `takomi-code-dev://`         |
 | Installer prefix          | `Takomi-Code-`               |
 | Runtime data root         | `%USERPROFILE%\.takomi-code` |
-| Electron user data        | `%APPDATA%\takomi-code`      |
+| Electron user data        | `%APPDATA%\takomi-code-v2`   |
 | Development Electron data | `%APPDATA%\takomi-code-dev`  |
 
 Internal package names and compatibility environment variables such as `@t3tools/*` and
-`T3CODE_HOME` remain unchanged intentionally.
+`T3CODE_HOME` remain unchanged intentionally. V2 reads legacy Takomi profiles named
+`Takomi Code (Alpha)` or `takomi-code` without opening their Chromium databases. It does not
+automatically import stock T3 profiles. Development can retain its existing `Takomi Code (Dev)`
+profile.
+
+Desktop updates use the fork's stable feed. Saved or requested Nightly is normalized to Stable
+without changing another host's channel. Dated local previews have no update feed.
 
 Primary identity sources include:
 
@@ -40,7 +46,7 @@ platform assets remain alongside their platform targets.
 
 The current source versions are:
 
-- desktop: `0.0.45` from `apps/desktop/package.json`;
+- desktop/server: `0.1.0` from their package manifests;
 - mobile: `2.0.0` from `apps/mobile/app.config.ts`.
 
 Each local attempt reserves a separate `release/local-<UTC-date>.<build-number>/` directory:

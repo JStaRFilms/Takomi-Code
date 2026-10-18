@@ -4,11 +4,13 @@ import {
   type PiSessionCatalogPage,
   ProviderDriverKind,
   ProviderInstanceId,
+  type ProviderInstanceEnvironment,
   resolveProviderInstanceEnabled,
   type ServerSettings,
 } from "@t3tools/contracts";
 import { PiSettings } from "@t3tools/provider-pi/settings";
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { scanPiSessionCatalog } from "@t3tools/takomi-pi-host/sessionCatalog";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -30,7 +32,7 @@ interface ResolvedPiInstance {
   readonly providerInstanceId: ProviderInstanceId;
   readonly settings: PiSettings;
   readonly enabled: boolean;
-  readonly environment: NodeJS.ProcessEnv;
+  readonly environment: ProviderInstanceEnvironment | undefined;
 }
 
 function catalogError(
@@ -57,7 +59,7 @@ function resolvePiInstance(
         providerInstanceId,
         settings: decodePiSettings(configured.config ?? {}),
         enabled: resolveProviderInstanceEnabled(configured),
-        environment: mergeProviderInstanceEnvironment(configured.environment),
+        environment: configured.environment,
       };
     } catch {
       return catalogError("provider_unavailable", "This Pi provider instance is not configured.");
@@ -70,7 +72,7 @@ function resolvePiInstance(
     providerInstanceId,
     settings: decodePiSettings({}),
     enabled: false,
-    environment: process.env,
+    environment: undefined,
   };
 }
 
@@ -89,9 +91,10 @@ function agentDirectory(
   settings: PiSettings,
   environment: NodeJS.ProcessEnv,
   path: Path.Path,
+  home: string,
 ): string {
   const configured = settings.homePath || environment.PI_CODING_AGENT_DIR || "~/.pi/agent";
-  return path.resolve(expandHomePath(configured));
+  return path.resolve(expandHomePath(configured, home));
 }
 
 export interface PiSessionCatalogRequestContext {
@@ -139,10 +142,15 @@ export const listBoundedPiSessions = Effect.fn("PiSessionCatalog.listBoundedPiSe
     return yield* catalogError("provider_unavailable", "This Pi provider instance is disabled.");
   }
   const path = yield* Path.Path;
+  const home = yield* HostProcess.HomeDirectory;
+  const environment = yield* mergeProviderInstanceEnvironment(
+    instance.environment,
+    yield* HostProcess.Environment,
+  );
   const controller = new AbortController();
   const discovery = Effect.gen(function* () {
     const packageRoot = yield* Effect.tryPromise({
-      try: () => resolvePiPackageFromBinary(instance.settings.binaryPath, instance.environment),
+      try: () => resolvePiPackageFromBinary(instance.settings.binaryPath, environment),
       catch: () => catalogError("provider_unavailable", "Pi session discovery is unavailable."),
     });
     const launchArgs = yield* Effect.try({
@@ -154,11 +162,11 @@ export const listBoundedPiSessions = Effect.fn("PiSessionCatalog.listBoundedPiSe
         scanPiSessionCatalog(
           {
             workspacePath: input.workspaceCanonicalPath,
-            agentDir: agentDirectory(instance.settings, instance.environment, path),
+            agentDir: agentDirectory(instance.settings, environment, path, home),
             packageRoot,
             launchArgs,
-            ...(instance.environment.PI_CODING_AGENT_SESSION_DIR
-              ? { environmentSessionDir: instance.environment.PI_CODING_AGENT_SESSION_DIR }
+            ...(environment.PI_CODING_AGENT_SESSION_DIR
+              ? { environmentSessionDir: environment.PI_CODING_AGENT_SESSION_DIR }
               : {}),
           },
           { signal: controller.signal },

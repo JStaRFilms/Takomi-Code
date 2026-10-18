@@ -127,19 +127,23 @@ describe("electron development launcher", () => {
     ]);
   });
 
-  it("restores execute permissions on an unchanged launcher", () => {
-    const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-launcher-"));
-    const launcherPath = NodePath.join(directory, "launcher");
-    try {
-      writeDevelopmentLauncherScript(launcherPath, "/runtime/Electron");
-      NodeFS.chmodSync(launcherPath, 0o644);
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher script test has no Effect runtime; Windows does not persist POSIX execute bits.
+  it.skipIf(NodeOS.platform() === "win32")(
+    "restores execute permissions on an unchanged launcher",
+    () => {
+      const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-launcher-"));
+      const launcherPath = NodePath.join(directory, "launcher");
+      try {
+        writeDevelopmentLauncherScript(launcherPath, "/runtime/Electron");
+        NodeFS.chmodSync(launcherPath, 0o644);
 
-      assert.isFalse(writeDevelopmentLauncherScript(launcherPath, "/runtime/Electron"));
-      assert.equal(NodeFS.statSync(launcherPath).mode & 0o777, 0o755);
-    } finally {
-      NodeFS.rmSync(directory, { recursive: true, force: true });
-    }
-  });
+        assert.isFalse(writeDevelopmentLauncherScript(launcherPath, "/runtime/Electron"));
+        assert.equal(NodeFS.statSync(launcherPath).mode & 0o777, 0o755);
+      } finally {
+        NodeFS.rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("derives launcher icons from canonical development and production assets", () => {
     const development = resolveMacLauncherIconPaths("/runtime", true);

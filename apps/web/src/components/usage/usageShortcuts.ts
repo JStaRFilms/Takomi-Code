@@ -17,7 +17,6 @@ export const WINDOW_OPTIONS = [
   { days: 0, label: "All time", command: null },
 ] as const;
 
-/** Resolves page shortcuts without taking letters from fields or popup controls. */
 export function resolveUsageShortcut(
   event: ShortcutEventLike & { target: EventTarget | null },
   keybindings: ResolvedKeybindingsConfig,

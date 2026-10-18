@@ -2,8 +2,6 @@ import { EnvironmentId } from "@t3tools/contracts";
 import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-// Pinned so the direction cases below read as fixed versions instead of
-// arithmetic on whatever version this checkout happens to be at.
 const branding = vi.hoisted(() => ({ APP_VERSION: "0.0.34" }));
 vi.mock("./branding", () => branding);
 
@@ -28,21 +26,29 @@ const MISMATCH_HINT =
 
 describe("versionSkew", () => {
   it("updates only the proven npm prefix and safely quotes its path", () => {
-    expect(manualServerUpdateCommand("0.0.45", { kind: "npm-global", prefix: "/opt/node" })).toBe(
-      "npm install --global --prefix '/opt/node' takomi-code@0.0.45",
-    );
     expect(
-      manualServerUpdateCommand("0.0.45", { kind: "npm-global", prefix: "/opt/maria's node" }),
+      manualServerUpdateCommand("0.0.45", { kind: "npm-global", prefix: "/opt/node" }, "takomi"),
+    ).toBe("npm install --global --prefix '/opt/node' takomi-code@0.0.45");
+    expect(
+      manualServerUpdateCommand(
+        "0.0.45",
+        { kind: "npm-global", prefix: "/opt/maria's node" },
+        "takomi",
+      ),
     ).toBe("npm install --global --prefix '/opt/maria'\\''s node' takomi-code@0.0.45");
   });
 
   it("keeps runner and unknown commands as relaunches", () => {
-    expect(manualServerUpdateCommand("0.0.45")).toBe("npx takomi-code@0.0.45");
-    expect(manualServerUpdateCommand("0.0.45", { kind: "npx" })).toBe("npx takomi-code@0.0.45");
-    expect(manualServerUpdateCommand("0.0.45", { kind: "pnpm-dlx" })).toBe(
+    expect(manualServerUpdateCommand("0.0.45", undefined, "takomi")).toBe("npx takomi-code@0.0.45");
+    expect(manualServerUpdateCommand("0.0.45", { kind: "npx" }, "takomi")).toBe(
+      "npx takomi-code@0.0.45",
+    );
+    expect(manualServerUpdateCommand("0.0.45", { kind: "pnpm-dlx" }, "takomi")).toBe(
       "pnpm dlx takomi-code@0.0.45",
     );
-    expect(manualServerUpdateCommand("0.0.45", { kind: "bunx" })).toBe("bunx takomi-code@0.0.45");
+    expect(manualServerUpdateCommand("0.0.45", { kind: "bunx" }, "takomi")).toBe(
+      "bunx takomi-code@0.0.45",
+    );
   });
   beforeEach(() => {
     branding.APP_VERSION = "0.0.34";
@@ -245,4 +251,12 @@ describe("versionSkew", () => {
     expect(serverUpdateGuidance("respawn")).toBe("Update to stay in sync");
     expect(serverUpdateGuidance("desktop-managed")).toBe("Update the desktop app");
   });
+});
+
+it("does not guess an unknown package or apply a fork version to a T3 install", () => {
+  expect(manualServerUpdateCommand("0.1.0")).toBeNull();
+  expect(
+    manualServerUpdateCommand("0.1.0", { kind: "npm-global", prefix: "/opt/node" }, "t3", "0.0.40"),
+  ).toBe("npm install --global --prefix '/opt/node' t3@latest");
+  expect(manualServerUpdateCommand("0.1.0-$(evil)", undefined, "takomi")).toBeNull();
 });

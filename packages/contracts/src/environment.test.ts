@@ -14,6 +14,29 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("keeps distribution optional and treats unknown identities as unknown", () => {
+    expect(decodeDescriptor(descriptor).distribution).toBeUndefined();
+    for (const distribution of ["takomi", "t3"]) {
+      expect(decodeDescriptor({ ...descriptor, distribution }).distribution).toBe(distribution);
+    }
+    for (const distribution of ["future", { npmPackage: "evil" }, "t3;evil"]) {
+      expect(decodeDescriptor({ ...descriptor, distribution }).distribution).toBeUndefined();
+    }
+  });
+  it("keeps settled cleanup optional alongside current worktree capabilities", () => {
+    expect(decodeDescriptor(descriptor).capabilities.settledWorktreeCleanup).toBeUndefined();
+    const capabilities = {
+      settledWorktreeCleanup: true,
+      storageCleanupRun: true,
+      projectWorktreeCleanup: true,
+      worktreesDirectory: true,
+      threadAutoSettlementScope: true,
+    };
+    expect(decodeDescriptor({ ...descriptor, capabilities }).capabilities).toMatchObject(
+      capabilities,
+    );
+  });
+
   it("decodes old, recognized and future manual installation descriptors", () => {
     expect(decodeDescriptor(descriptor).capabilities.serverInstallation).toBeUndefined();
     for (const installation of [{ kind: "npx" }, { kind: "npm-global", prefix: "/opt/node" }]) {

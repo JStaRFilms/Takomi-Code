@@ -29,11 +29,6 @@ const usageCommandOrder = new Map<KeybindingCommand, number>(
 
 const firstUsageCommand = "usage.open";
 
-/**
- * Orders commands by `key`, except Usage page commands, which sort as one
- * block in page order where the first of them would sort. A total order, so
- * adding a binding elsewhere cannot reshuffle the Usage rows.
- */
 function compareCommands(
   left: KeybindingCommand,
   right: KeybindingCommand,
@@ -209,7 +204,6 @@ export interface KeybindingGroup {
   readonly rows: ReadonlyArray<KeybindingRow>;
 }
 
-/** Page sections in display order; a command joins the first group listing its prefix. */
 const KEYBINDING_GROUPS = [
   {
     id: "navigation",
@@ -233,7 +227,6 @@ function keybindingGroupFor(command: KeybindingCommand): { id: string; title: st
   );
 }
 
-/** Splits sorted rows into the page's sections, dropping sections with no rows. */
 export function groupKeybindingRows(
   rows: ReadonlyArray<KeybindingRow>,
 ): ReadonlyArray<KeybindingGroup> {
@@ -372,6 +365,7 @@ export function commandLabel(command: KeybindingCommand): string {
   const usagePeriod = WINDOW_OPTIONS.find((option) => option.command === command);
   if (usagePeriod) return `Usage: Period: ${usagePeriod.label}`;
   if (command === "view.reopenClosed") return "Reopen Closed Tab";
+  if (command === "preview.focusUrl") return "Preview: Focus URL";
   const raw = String(command);
   if (raw.startsWith("script.") && raw.endsWith(".run")) {
     return `Run Script: ${titleCaseCommandSegment(raw.slice("script.".length, -".run".length))}`;
@@ -419,7 +413,6 @@ function normalizeShortcutKeyToken(key: string): string | null {
   return null;
 }
 
-/** Turns a keydown into a binding such as `mod+shift+k` or `tab`. Null for modifier-only presses. */
 export function keybindingFromKeyboardEvent(
   event: Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
   platform: string,

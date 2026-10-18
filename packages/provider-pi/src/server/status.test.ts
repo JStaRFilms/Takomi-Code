@@ -153,7 +153,7 @@ const makeRpcProbe = Effect.gen(function* () {
 describe("PiProvider", () => {
   it.effect("requires the first published Pi version with entries and settlement hooks", () =>
     Effect.gen(function* () {
-      const snapshot = yield* checkPiProviderStatus(settings).pipe(
+      const snapshot = yield* checkPiProviderStatus(settings, {}).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, piProbeSpawner("0.80.3")),
       );
       assert.equal(snapshot.status, "error");
@@ -164,7 +164,7 @@ describe("PiProvider", () => {
 
   it.effect("keeps compatible Pi selectable when optional discovery fails", () =>
     Effect.gen(function* () {
-      const snapshot = yield* checkPiProviderStatus(settings).pipe(
+      const snapshot = yield* checkPiProviderStatus(settings, {}).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, piProbeSpawner("0.84.3")),
       );
       assert.equal(snapshot.status, "ready");

@@ -74,6 +74,7 @@ import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
+  WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
@@ -161,19 +162,16 @@ export function UsagePage() {
     isPartial,
     refresh,
   } = useUsage(window, selectedEnvironmentIds, hiddenProviders);
-  // Until a new window's first answer, the previous one stays on screen, muted.
   const merged = shown?.merged ?? answeredUsage;
   const shownWindow = shown?.window ?? window;
   const shownHourly = shownWindow.resolution === "hour";
   const refreshingUsage = isRefreshing && !showingLimits;
-  // Usage kept from another window is all old, so every figure stays muted.
   const showingKept = shown !== null && shown.window !== window;
   const loading = useMemo(() => {
     if (showingKept) {
       return { partial: true, everyProvider: true, providers: new Set<UsageProviderKind>() };
     }
     const state = usageLoadingState(selectedEnvironments, refreshingUsage);
-    // A hidden provider still refreshing must not add its row or mute the totals.
     const providers = new Set([...state.providers].filter((p) => !hiddenProviders.has(p)));
     return {
       partial: state.everyProvider || providers.size > 0,
@@ -247,7 +245,6 @@ export function UsagePage() {
     [breakdown, merged.models, metric],
   );
   const providersWithData = useMemo(() => providersWithUsage(merged.providers), [merged.providers]);
-  // A provider still refreshing keeps its row and line before its usage lands.
   const activeProviders = useMemo(
     () =>
       PROVIDER_ORDER.filter(
@@ -449,8 +446,6 @@ export function UsagePage() {
             </Toggle>
           ))}
         </ToggleGroup>
-        {/* The period does not apply to Limits, so it stays in place but
-            disabled; unmounting it shifted the metric toggle ~300px. */}
         <ToggleGroup
           aria-label="Usage period"
           variant="segmented"
@@ -605,33 +600,27 @@ export function UsagePage() {
                           ? formatUsd(merged.costUsd)
                           : formatTokens(merged.totalTokens)}
                       </span>
-                      <span className="text-xs text-muted-foreground">
-                        <span className={figureClass(loading.partial)}>
-                          {formatCount(merged.sessions)} sessions
+                      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                        <span>
+                          <span className={figureClass(loading.partial)}>
+                            {formatCount(merged.sessions)} sessions
+                          </span>
+                          {metric === "cost" && " · API estimate"}
                         </span>
-                        {metric === "cost" && (
-                          <>
-                            {" · API estimate"}
-                            {merged.costQuality.unpricedShare > 0 && (
-                              <>
-                                {" "}
-                                <Popover>
-                                  <PopoverTrigger
-                                    openOnHover
-                                    render={<InlineButton tone="muted" />}
-                                    aria-label="Unpriced usage details"
-                                  >
-                                    <InfoIcon className="size-3" aria-hidden />
-                                  </PopoverTrigger>
-                                  <PopoverPopup side="top" tooltipStyle>
-                                    API estimate excludes{" "}
-                                    {formatPercent(merged.costQuality.unpricedShare)} unpriced
-                                    records.
-                                  </PopoverPopup>
-                                </Popover>
-                              </>
-                            )}
-                          </>
+                        {metric === "cost" && merged.costQuality.unpricedShare > 0 && (
+                          <Popover>
+                            <PopoverTrigger
+                              openOnHover
+                              render={<InlineButton tone="muted" />}
+                              aria-label="Unpriced usage details"
+                            >
+                              <InfoIcon className="size-3" aria-hidden />
+                            </PopoverTrigger>
+                            <PopoverPopup side="top" tooltipStyle>
+                              API estimate excludes{" "}
+                              {formatPercent(merged.costQuality.unpricedShare)} unpriced records.
+                            </PopoverPopup>
+                          </Popover>
                         )}
                       </span>
                     </div>
@@ -713,7 +702,6 @@ export function UsagePage() {
                                   : formatTokens(totals?.totalTokens ?? 0)}
                             </span>
                           </div>
-                          {/* Kept while awaiting data so the row does not grow when it lands. */}
                           <span
                             className={cn(
                               "text-xs text-muted-foreground",
@@ -876,8 +864,6 @@ export function UsagePage() {
                               >
                                 <td className="py-2.5 pr-3 text-left text-xs">{index + 1}</td>
                                 <td className="py-2.5 text-left whitespace-normal">
-                                  {/* The button's overlay makes the whole row open the model.
-                                      Focus shows as the row's hover fill, not a ring. */}
                                   <button
                                     type="button"
                                     onClick={() => setSelectedModelKey(key)}
@@ -893,7 +879,6 @@ export function UsagePage() {
                                     <div
                                       className="h-full rounded-full"
                                       style={{
-                                        // A short minimum keeps tiny shares a dash, not a dot.
                                         width:
                                           value > 0 && breakdownPeak > 0
                                             ? `max(0.5rem, ${(value / breakdownPeak) * 100}%)`
@@ -1173,7 +1158,6 @@ function CursorEnableLimits({
   );
 }
 
-/** Brand mark for the harness a row belongs to. */
 function ProviderMark({
   provider,
   className,
@@ -1191,7 +1175,6 @@ function ProviderMark({
   );
 }
 
-/** Mutes a figure that is still coming in. The delay keeps a quick answer from flashing. */
 function figureClass(loading: boolean) {
   return cn("transition-opacity", loading && "opacity-40 delay-150");
 }
@@ -1217,10 +1200,6 @@ function Metric({
   );
 }
 
-/**
- * Explains failed or incompatible environments and deduplicated transcripts.
- * Shown inside the environment filter so arriving results do not move the page.
- */
 function UsageCoverageNotice({
   environments,
   duplicateSources,
@@ -1264,7 +1243,6 @@ function UsageCoverageNotice({
   );
 }
 
-/** Environment selection, with each environment's scan status in the menu. */
 function UsageEnvironmentFilter({
   environments,
   selectedEnvironments,
@@ -1301,7 +1279,7 @@ function UsageEnvironmentFilter({
   return (
     <Menu>
       <MenuTrigger render={<InlineButton />} className="group/usage-environment min-w-0 max-w-full">
-        <span className="min-w-0 truncate">{label}</span>
+        <WorkspaceBreadcrumbText>{label}</WorkspaceBreadcrumbText>
         <span className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground">
           {showUsageStatus && hasIssue ? (
             <CircleAlertIcon
@@ -1401,7 +1379,6 @@ function UsageEnvironmentFilter({
   );
 }
 
-/** Provider visibility shared by every tab. Stored as the hidden set. */
 function UsageProviderFilter({
   hiddenProviders,
   onChange,
@@ -1461,11 +1438,6 @@ function UsageProviderFilter({
   );
 }
 
-/**
- * Stand-in with the loaded page's shape, using the shared `Skeleton` bars so it
- * breathes with the same `animate-skeleton` pulse as every other loading state.
- * Replaced by results as soon as the first environment answers.
- */
 function UsageSkeleton() {
   return (
     <>

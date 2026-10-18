@@ -1,18 +1,14 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
-import {
-  HostProcessArguments,
-  HostProcessEnvironment,
-  HostProcessExecutablePath,
-  HostProcessIsExecutable,
-  HostProcessPlatform,
-} from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import packageJson from "../../package.json" with { type: "json" };
 import {
   formatCliCommand,
+  resolveHostCliCommand,
   resolveRootCliCommand,
   resolveServerInstallation,
 } from "./invocation.ts";
@@ -122,7 +118,6 @@ it("formats serve suggestions to match the launching command", () => {
 });
 
 it.layer(NodeServices.layer)("root CLI commands", (it) => {
-  /** `sudo t3 browser setup` as this process would render it, with `t3` on PATH or not. */
   const rootCommand = (input: {
     readonly node: string;
     readonly entry: string;
@@ -131,14 +126,13 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
     readonly executable?: boolean;
   }) =>
     resolveRootCliCommand("browser setup").pipe(
-      Effect.provideService(HostProcessExecutablePath, input.node),
-      Effect.provideService(HostProcessArguments, [input.node, input.entry]),
-      Effect.provideService(HostProcessIsExecutable, input.executable ?? false),
-      Effect.provideService(HostProcessPlatform, "linux"),
-      Effect.provideService(HostProcessEnvironment, { PATH: input.path ?? "", ...input.env }),
+      Effect.provideService(HostProcess.ExecutablePath, input.node),
+      Effect.provideService(HostProcess.Arguments, [input.node, input.entry]),
+      Effect.provideService(HostProcess.IsExecutable, input.executable ?? false),
+      Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provideService(HostProcess.Environment, { PATH: input.path ?? "", ...input.env }),
     );
 
-  /** A directory holding an executable `t3`, to stand in for one on PATH. */
   const pathWithT3 = Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -181,13 +175,13 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
         entry: "/tmp/.mount_T3abc/resources/app.asar/apps/server/dist/bin.mjs",
         env: { T3CODE_CLI_PATH: shim },
       };
-      // The desktop app's shim, quoted for the shell and run as root as is.
+
       expect(yield* rootCommand(desktop)).toBe(`sudo '${shim}' browser setup`);
-      // A `t3` the person put on PATH still wins.
+
       expect(yield* rootCommand({ ...desktop, path: yield* pathWithT3 })).toBe(
         'sudo env "PATH=$PATH" t3 browser setup',
       );
-      // A standalone binary names itself.
+
       expect(
         yield* rootCommand({
           node: "/opt/t3/t3",
@@ -195,7 +189,7 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
           executable: true,
         }),
       ).toBe("sudo /opt/t3/t3 browser setup");
-      // A stale shim path, then no launcher at all, fall back to plain `t3`.
+
       expect(
         yield* rootCommand({ ...desktop, env: { T3CODE_CLI_PATH: path.join(home, "gone") } }),
       ).toBe('sudo env "PATH=$PATH" t3 browser setup');
@@ -203,8 +197,55 @@ it.layer(NodeServices.layer)("root CLI commands", (it) => {
   );
 });
 
+it.layer(NodeServices.layer)("host CLI commands", (it) => {
+  it.effect("renders a PowerShell command line on Windows", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped();
+      const shim = path.join(home, "t3.cmd");
+      yield* fs.writeFileString(shim, "@echo off\r\n");
+      const hostCommand = (platform: NodeJS.Platform, env: Record<string, string>) =>
+        resolveHostCliCommand("doctor", ["--base-dir", "C:\\Users\\Jane Doe\\.t3"]).pipe(
+          Effect.provideService(HostProcess.ExecutablePath, "C:\\Program Files\\T3 Code\\t3.exe"),
+          Effect.provideService(HostProcess.Arguments, [
+            "C:\\Program Files\\T3 Code\\t3.exe",
+            "C:\\Program Files\\T3 Code\\resources\\app.asar\\apps\\server\\dist\\bin.mjs",
+          ]),
+          Effect.provideService(HostProcess.IsExecutable, false),
+          Effect.provideService(HostProcess.Platform, platform),
+          Effect.provideService(HostProcess.Environment, { PATH: "", ...env }),
+        );
+      // The desktop shim is called through `&`, and each argument is quoted
+      // the PowerShell way: no POSIX single quotes anywhere.
+      expect((yield* hostCommand("win32", { T3CODE_CLI_PATH: shim })).command).toBe(
+        `& "${shim}" doctor "--base-dir" "C:\\Users\\Jane Doe\\.t3"`,
+      );
+      // Without a launcher, plain `t3` with PowerShell-quoted arguments.
+      expect((yield* hostCommand("win32", {})).command).toBe(
+        't3 doctor "--base-dir" "C:\\Users\\Jane Doe\\.t3"',
+      );
+      // Typographic quotes also delimit PowerShell strings; doubling keeps them.
+      expect(
+        (yield* resolveHostCliCommand("doctor", ["--base-dir", "C:\\T3\\\u201CArchive\u201D"]).pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(HostProcess.Environment, { PATH: "" }),
+          Effect.provideService(HostProcess.ExecutablePath, "C:\\t3.exe"),
+          Effect.provideService(HostProcess.Arguments, ["C:\\t3.exe", "C:\\bin.mjs"]),
+          Effect.provideService(HostProcess.IsExecutable, false),
+        )).command,
+      ).toBe('t3 doctor "--base-dir" "C:\\T3\\\u201C\u201CArchive\u201D\u201D"');
+      // POSIX hosts keep single quotes for the same input. The shim prefix is
+      // a host path, so only the arguments are asserted.
+      expect((yield* hostCommand("linux", { T3CODE_CLI_PATH: shim })).command).toMatch(
+        / doctor --base-dir 'C:\\Users\\Jane Doe\\\.t3'$/,
+      );
+    }).pipe(Effect.scoped),
+  );
+});
+
 it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
-  it.effect("recognizes runner caches for both script and executable packages", () =>
+  it.effect("recognizes runner caches for script and native packages", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -213,27 +254,28 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
         ["npm/_npx/hash/node_modules/takomi-code/dist/bin.mjs", "npx"],
         ["npm/_npx/hash/node_modules/@johnsax/takomi-code-linux-x64/t3", "npx"],
         ["pnpm/dlx/hash/node_modules/takomi-code/dist/bin.mjs", "pnpm-dlx"],
-        [".bun/install/cache/t3/dist/bin.mjs", "bunx"],
+        [".bun/install/cache/takomi-code/dist/bin.mjs", "bunx"],
       ] as const) {
         const entry = path.join(root, relative);
         yield* fs.makeDirectory(path.dirname(entry), { recursive: true });
         yield* fs.writeFileString(entry, "");
-        const installation = yield* resolveServerInstallation.pipe(
-          Effect.provideService(HostProcessArguments, ["node", entry]),
-          Effect.provideService(HostProcessExecutablePath, entry),
-          Effect.provideService(HostProcessIsExecutable, entry.endsWith("/t3")),
-        );
-        expect(installation).toEqual({ kind });
+        expect(
+          yield* resolveServerInstallation.pipe(
+            Effect.provideService(HostProcess.Arguments, ["node", entry]),
+            Effect.provideService(HostProcess.IsExecutable, false),
+            Effect.provideService(HostProcess.Environment, {}),
+          ),
+        ).toEqual({ kind });
       }
     }),
   );
 
-  it.effect("requires the npm prefix's bin to point to the running package", () =>
+  it.effect("requires a matching public bin before reporting a script global install", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped();
-      const prefix = path.join(root, "bunx-tools");
+      const prefix = path.join(root, "npm/_npx/tools");
       const packageRoot = path.join(prefix, "lib/node_modules/takomi-code");
       const entry = path.join(packageRoot, "dist/bin.mjs");
       const globalBin = path.join(prefix, "bin/takomi-code");
@@ -242,61 +284,89 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
       yield* fs.writeFileString(entry, "");
       yield* fs.writeFileString(
         path.join(packageRoot, "package.json"),
-        '{"name":"takomi-code","version":"0.0.45","bin":{"takomi-code":"./dist/bin.mjs"}}',
+        JSON.stringify({
+          name: "takomi-code",
+          version: packageJson.version,
+          bin: { "takomi-code": "./dist/bin.mjs" },
+        }),
       );
       const resolve = resolveServerInstallation.pipe(
-        Effect.provideService(HostProcessArguments, ["node", entry]),
-        Effect.provideService(HostProcessIsExecutable, false),
-        Effect.provideService(HostProcessPlatform, "linux"),
+        Effect.provideService(HostProcess.Arguments, ["node", entry]),
+        Effect.provideService(HostProcess.IsExecutable, false),
+        Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provideService(HostProcess.Environment, {}),
       );
       expect(yield* resolve).toBeNull();
       yield* fs.symlink(entry, globalBin);
       expect(yield* resolve).toEqual({ kind: "npm-global", prefix });
-      yield* fs.remove(globalBin);
-      yield* fs.writeFileString(globalBin, "an unrelated t3 command");
-      expect(yield* resolve).toBeNull();
-      expect(yield* resolve.pipe(Effect.provideService(HostProcessPlatform, "win32"))).toBeNull();
     }),
   );
 
-  it.effect("proves the native executable belongs to the npm launcher", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped();
-      const prefix = path.join(root, "bunx-tools");
-      const packageRoot = path.join(prefix, "lib/node_modules/takomi-code");
-      const launcher = path.join(packageRoot, "bin/takomi-code.js");
-      const entry = path.join(packageRoot, "node_modules/@johnsax/takomi-code-linux-x64/t3");
-      yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
-      yield* fs.makeDirectory(path.dirname(entry), { recursive: true });
-      yield* fs.makeDirectory(path.join(prefix, "bin"));
-      yield* fs.writeFileString(launcher, "");
-      yield* fs.writeFileString(entry, "");
-      yield* fs.writeFileString(
-        path.join(packageRoot, "package.json"),
-        '{"name":"takomi-code","version":"0.0.45","bin":{"takomi-code":"./bin/takomi-code.js"},"optionalDependencies":{"@johnsax/takomi-code-linux-x64":"0.0.45"}}',
-      );
-      yield* fs.symlink(launcher, path.join(prefix, "bin/takomi-code"));
-      const resolve = resolveServerInstallation.pipe(
-        Effect.provideService(HostProcessExecutablePath, entry),
-        Effect.provideService(HostProcessIsExecutable, true),
-        Effect.provideService(HostProcessPlatform, "linux"),
-      );
-      for (const [version, expected] of [
-        ["0.0.44", null],
-        ["0.0.45", { kind: "npm-global", prefix }],
-      ]) {
+  it.effect(
+    "proves native package ownership and ignores inherited launchers for another version",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped();
+        const prefix = path.join(root, "bunx-tools");
+        const packageRoot = path.join(prefix, "lib/node_modules/takomi-code");
+        const launcher = path.join(packageRoot, "bin/takomi-code.js");
+        const entry = path.join(packageRoot, "node_modules/@johnsax/takomi-code-linux-x64/t3");
+        yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
+        yield* fs.makeDirectory(path.dirname(entry), { recursive: true });
+        yield* fs.makeDirectory(path.join(prefix, "bin"));
+        yield* fs.writeFileString(launcher, "");
+        yield* fs.writeFileString(entry, "");
+        yield* fs.symlink(launcher, path.join(prefix, "bin/takomi-code"));
+        const resolve = resolveServerInstallation.pipe(
+          Effect.provideService(HostProcess.ExecutablePath, entry),
+          Effect.provideService(HostProcess.Arguments, [entry, entry]),
+          Effect.provideService(HostProcess.IsExecutable, true),
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provideService(HostProcess.Architecture, "x64"),
+          Effect.provideService(HostProcess.Environment, { T3CODE_NPM_LAUNCHER_PATH: launcher }),
+        );
+        for (const [version, expected] of [
+          ["0.0.1", null],
+          [packageJson.version, { kind: "npm-global", prefix }],
+        ] as const) {
+          yield* fs.writeFileString(
+            path.join(packageRoot, "package.json"),
+            JSON.stringify({
+              name: "takomi-code",
+              version,
+              bin: { "takomi-code": "./bin/takomi-code.js" },
+              optionalDependencies: { "@johnsax/takomi-code-linux-x64": packageJson.version },
+            }),
+          );
+          yield* fs.writeFileString(
+            path.join(path.dirname(entry), "package.json"),
+            JSON.stringify({
+              name: "@johnsax/takomi-code-linux-x64",
+              version: packageJson.version,
+            }),
+          );
+          expect(yield* resolve).toEqual(expected);
+        }
         yield* fs.writeFileString(
           path.join(path.dirname(entry), "package.json"),
-          `{"name":"@johnsax/takomi-code-linux-x64","version":"${version}"}`,
+          JSON.stringify({
+            name: "@johnsax/takomi-code-linux-x64",
+            version: "0.0.1",
+          }),
         );
-        expect(yield* resolve).toEqual(expected);
-      }
-    }),
+        expect(yield* resolve).toBeNull();
+        const standalone = path.join(root, "standalone/t3");
+        yield* fs.makeDirectory(path.dirname(standalone));
+        yield* fs.writeFileString(standalone, "");
+        expect(
+          yield* resolve.pipe(Effect.provideService(HostProcess.ExecutablePath, standalone)),
+        ).toBeNull();
+      }),
   );
 
-  it.effect("leaves local, standalone, missing and unreadable installs unknown", () =>
+  it.effect("does not guess for local, standalone, or missing paths", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -314,8 +384,9 @@ it.layer(NodeServices.layer)("manual server installation ownership", (it) => {
         }
         expect(
           yield* resolveServerInstallation.pipe(
-            Effect.provideService(HostProcessArguments, ["node", entry]),
-            Effect.provideService(HostProcessIsExecutable, false),
+            Effect.provideService(HostProcess.Arguments, ["node", entry]),
+            Effect.provideService(HostProcess.IsExecutable, false),
+            Effect.provideService(HostProcess.Environment, {}),
           ),
         ).toBeNull();
       }

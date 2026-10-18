@@ -45,7 +45,7 @@ export const makePiSessionContinuationV2 = Effect.fn("PiSessionContinuationV2.ma
   lifecycle: PiSessionLifecycle,
 ) {
   const crypto = yield* Crypto.Crypto;
-  const connectionGeneration = yield* crypto.randomUUIDv4;
+  const connectionGeneration = yield* crypto.randomUUIDv4();
   const generation = yield* Ref.make({
     epoch: 0,
     expiresAt: (yield* Clock.currentTimeMillis) + PI_CATALOG_GENERATION_TTL_MS,
@@ -126,7 +126,7 @@ export const makePiSessionContinuationV2 = Effect.fn("PiSessionContinuationV2.ma
     });
   const appendHistory: PiSyncDeps["appendHistory"] = (threadId, messages) =>
     Effect.gen(function* () {
-      const commandId = CommandId.make(`pi-history:${yield* crypto.randomUUIDv4}`);
+      const commandId = CommandId.make(`pi-history:${yield* crypto.randomUUIDv4()}`);
       yield* threadManagement.dispatch({
         type: "thread.pi-history.import",
         commandId,
@@ -218,7 +218,7 @@ export const makePiSessionContinuationV2 = Effect.fn("PiSessionContinuationV2.ma
             catch: () => unavailable("Pi session history is unavailable."),
           });
         }).pipe(Effect.scoped);
-        const commandId = CommandId.make(`pi-session:${yield* crypto.randomUUIDv4}`);
+        const commandId = CommandId.make(`pi-session:${yield* crypto.randomUUIDv4()}`);
         yield* threadManagement
           .dispatch({
             type: "thread.pi-session.attach",

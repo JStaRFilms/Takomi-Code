@@ -70,6 +70,7 @@ function renderAction(): ActionElement {
   return ServerUpdateAction({
     environmentId: "env-test" as EnvironmentId,
     serverLabel: "Test server",
+    distribution: "takomi",
     selfUpdate: "boot-service",
     targetVersion: "0.0.31",
   }) as ActionElement;
@@ -154,6 +155,37 @@ describe("ServerUpdateAction", () => {
     expect(testState.updateServer).toHaveBeenCalledOnce();
   });
 
+  it("does not dispatch or copy a guessed command for an unidentified host", async () => {
+    const action = ServerUpdateAction({
+      environmentId: "env-test" as EnvironmentId,
+      serverLabel: "Takomi-labelled older host",
+      selfUpdate: "boot-service",
+      targetVersion: "0.1.0",
+    }) as ActionElement;
+    action.props.onClick?.();
+    await flushPromises();
+    expect(testState.updateServer).not.toHaveBeenCalled();
+    expect(testState.clipboard).not.toHaveBeenCalled();
+  });
+
+  it("keeps a known nightly T3 host manual and copies its own package and channel", async () => {
+    const action = ServerUpdateAction({
+      environmentId: "env-test" as EnvironmentId,
+      serverLabel: "T3 host",
+      distribution: "t3",
+      serverVersion: "0.0.49-nightly.20261001.3",
+      selfUpdate: "boot-service",
+      installation: { kind: "npm-global", prefix: "/opt/t3" },
+      targetVersion: "0.1.0",
+    }) as ActionElement;
+    action.props.onClick?.();
+    await flushPromises();
+    expect(testState.updateServer).not.toHaveBeenCalled();
+    expect(testState.clipboard).toHaveBeenCalledWith(
+      "npm install --global --prefix '/opt/t3' t3@nightly",
+    );
+  });
+
   it("does not dispatch an update after maintenance access is removed", async () => {
     const action = renderAction();
     testState.session = AsyncResult.success({ ...currentSession, scopes: [] });
@@ -167,19 +199,19 @@ describe("ServerUpdateAction", () => {
       { kind: "npm-global", prefix: "/opt/node" },
       "npm install --global --prefix '/opt/node' takomi-code@0.0.45",
       "Update command copied",
-      "Run `npm install --global --prefix '/opt/node' takomi-code@0.0.45` on Test server, then restart t3 with your usual options.",
+      "Run `npm install --global --prefix '/opt/node' takomi-code@0.0.45` on Test server, then restart the server with your usual options.",
     ],
     [
       { kind: "npx" },
       "npx takomi-code@0.0.45",
       "Relaunch command copied",
-      "Stop the server on Test server, then relaunch with `npx takomi-code@0.0.45` using the same subcommand and options. This does not update an installed t3 command.",
+      "Stop the server on Test server, then relaunch with `npx takomi-code@0.0.45` using the same subcommand and options. This does not update an installed server command.",
     ],
     [
       undefined,
       "npx takomi-code@0.0.45",
       "Relaunch command copied",
-      "Stop the server on Test server, then relaunch with `npx takomi-code@0.0.45` using the same subcommand and options. This does not update an installed t3 command.",
+      "Stop the server on Test server, then relaunch with `npx takomi-code@0.0.45` using the same subcommand and options. This does not update an installed server command.",
     ],
   ] satisfies ReadonlyArray<readonly [ServerInstallation | undefined, string, string, string]>)(
     "copies an honest manual command for %j without invoking remote update",
@@ -187,6 +219,7 @@ describe("ServerUpdateAction", () => {
       const action = ServerUpdateAction({
         environmentId: "env-test" as EnvironmentId,
         serverLabel: "Test server",
+        distribution: "takomi",
         selfUpdate: null,
         installation,
         targetVersion: "0.0.45",
@@ -218,7 +251,7 @@ describe("ServerUpdateAction", () => {
     expect(testState.toast).toHaveBeenCalledWith({
       type: "success",
       title: "Test server updated",
-      description: "Reconnected on t3@0.0.31.",
+      description: "Reconnected on takomi-code@0.0.31.",
     });
   });
 
@@ -275,13 +308,12 @@ describe("ServerUpdateAction", () => {
     const action = ServerUpdateAction({
       environmentId: "env-test" as EnvironmentId,
       serverLabel: "Test server",
+      distribution: "takomi",
       selfUpdate: "desktop-managed",
       desktopAppUpdate: true,
       targetVersion: "0.0.31",
     }) as ActionElement;
 
-    // No confirm-dialog host is mounted in this test, which the component
-    // treats as consent: the click itself was the request.
     action.props.onClick?.();
     await flushPromises();
 
@@ -303,6 +335,7 @@ describe("ServerUpdateAction", () => {
     const action = ServerUpdateAction({
       environmentId: "env-test" as EnvironmentId,
       serverLabel: "Test server",
+      distribution: "takomi",
       selfUpdate: "boot-service",
       threadContinuation: true,
       targetVersion: "0.0.31",
@@ -325,6 +358,7 @@ describe("ServerUpdateAction", () => {
     const action = ServerUpdateAction({
       environmentId: "env-test" as EnvironmentId,
       serverLabel: "Test server",
+      distribution: "takomi",
       selfUpdate: "boot-service",
       threadContinuation: true,
       targetVersion: "0.0.31",
@@ -346,6 +380,7 @@ describe("ServerUpdatesAction", () => {
     {
       environmentId: "batch-a" as EnvironmentId,
       serverLabel: "Laptop",
+      distribution: "takomi",
       selfUpdate: "boot-service",
       targetVersion: "0.0.31",
       threadContinuation: true,
@@ -354,6 +389,7 @@ describe("ServerUpdatesAction", () => {
     {
       environmentId: "batch-b" as EnvironmentId,
       serverLabel: "Office",
+      distribution: "takomi",
       selfUpdate: "respawn",
       targetVersion: "0.0.31",
       threadContinuation: true,
@@ -362,6 +398,7 @@ describe("ServerUpdatesAction", () => {
     {
       environmentId: "batch-c" as EnvironmentId,
       serverLabel: "Manual",
+      distribution: "takomi",
       selfUpdate: null,
       targetVersion: "0.0.31",
     },
@@ -461,7 +498,14 @@ describe("ServerUpdatesAction", () => {
     registerConfirmDialogHost();
     const button = await mount(
       targets.map((target, index) =>
-        index < 2 ? { ...target, selfUpdate: "desktop-managed", desktopAppUpdate: true } : target,
+        index < 2
+          ? {
+              ...target,
+              distribution: "takomi",
+              selfUpdate: "desktop-managed",
+              desktopAppUpdate: true,
+            }
+          : target,
       ),
     );
     await act(async () => {
@@ -497,14 +541,11 @@ describe("ServerUpdateProgress", () => {
     );
 
     expect(markup).toContain("Restarting…");
-    // The wait state is monochrome and calm: no versions, no step rail, no
-    // success/warning colors, one duty-cycled pulse on the dot.
     expect(markup).not.toContain("0.0.30");
     expect(markup).not.toContain("Resum");
     expect(markup).not.toContain("text-success");
     expect(markup).not.toContain("text-primary");
-    expect(markup).toContain("animate-status-pulse");
-    expect(markup).not.toContain("animate-spin");
+    expect(markup).not.toContain("animate-");
   });
 
   it("folds the sub-second installing handoff into the download phase", () => {

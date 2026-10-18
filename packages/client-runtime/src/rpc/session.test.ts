@@ -402,6 +402,30 @@ describe("RpcSessionFactory", () => {
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.effect(
+    "does not time out an outstanding mobile heartbeat after moving to the background",
+    () =>
+      Effect.gen(function* () {
+        const resumed = yield* Deferred.make<void>();
+        let foreground = true;
+        const gate = Effect.suspend(() => (foreground ? Effect.void : Deferred.await(resumed)));
+        const { factory, sockets } = yield* makeFactory({}, gate);
+        const session = yield* factory.connect(PREPARED);
+        const socket = yield* awaitSocket(sockets);
+        socket.open();
+        yield* completeInitialConfig(socket);
+        yield* session.ready;
+        const closed = yield* session.closed.pipe(Effect.flip, Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(socket.sent.some((message) => message.includes('"_tag":"Ping"'))).toBe(true);
+        foreground = false;
+        yield* TestClock.adjust("30 seconds");
+        expect(closed.pollUnsafe()).toBeUndefined();
+        expect(socket.readyState).toBe(TestWebSocket.OPEN);
+        yield* Fiber.interrupt(closed);
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.effect("closes the websocket when the session scope is released", () =>
     Effect.gen(function* () {
       const { factory, sockets } = yield* makeFactory();
@@ -575,7 +599,6 @@ describe("RpcSessionFactory", () => {
             Effect.forkChild,
           );
           yield* Deferred.await(started);
-          // A live end marker makes a missing or stale replay event fail without a timeout.
           const marker: ServerConfigStreamEventType = {
             version: 1,
             type: "keybindingsUpdated",
@@ -1138,7 +1161,7 @@ describe("RpcSessionFactory", () => {
     }),
   );
 
-  it.effect("tolerates two missed pong windows before closing the session", () =>
+  it.effect("closes the session after 15 seconds without a frame from the server", () =>
     Effect.gen(function* () {
       const { factory, sockets } = yield* makeFactory();
       const session = yield* factory.connect(PREPARED);
@@ -1178,7 +1201,6 @@ describe("RpcSessionFactory", () => {
       yield* completeInitialConfig(socket);
       yield* Fiber.join(readyFiber);
 
-      // The consumer takes one event and stops pulling, so the stream buffer fills.
       const consuming = yield* Deferred.make<void>();
       const streamFiber = yield* session.client[WS_METHODS.subscribeServerConfig]({}).pipe(
         Stream.runForEach(() =>

@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Evaluates the generated launcher without starting an app.
 import * as NodeVM from "node:vm";
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -51,13 +51,18 @@ it("generates Mac ARM64, Windows and Linux packages without a global t3 alias an
             };
           if (module === "node:child_process")
             return {
-              spawnSync: (executable: string, args: string[], options: { stdio: string }) => {
+              spawnSync: (
+                executable: string,
+                args: string[],
+                options: { stdio: string; env: Record<string, string> },
+              ) => {
                 assert.equal(
                   executable,
                   `/packages/${key}/${platform === "win32" ? "t3.exe" : "t3"}`,
                 );
                 assert.deepStrictEqual(Array.from(args), ["serve", "--port", "1234"]);
                 assert.equal(options.stdio, "inherit");
+                assert.equal(options.env.T3CODE_NPM_LAUNCHER_PATH, "/launcher/bin/takomi-code.js");
                 return childResult;
               },
             };
@@ -74,10 +79,12 @@ it("generates Mac ARM64, Windows and Linux packages without a global t3 alias an
         () =>
           new NodeVM.Script(npmLauncherScript(keys)).runInNewContext({
             require,
+            __filename: "/launcher/bin/takomi-code.js",
             process: {
               platform,
               arch,
               argv: ["node", "launcher", "serve", "--port", "1234"],
+              env: {},
               exit: (code: number) => {
                 exitCode = code;
                 throw stopped;
@@ -167,7 +174,7 @@ const run = Effect.fn("test.run")(function* (
   options: { readonly cwd: string; readonly env?: Record<string, string> },
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const platform = yield* HostProcessPlatform;
+  const platform = yield* HostProcess.Platform;
   const child = yield* spawner.spawn(
     ChildProcess.make(
       platform === "win32" && command === "tar" ? windowsSystemTar() : command,
@@ -246,7 +253,7 @@ it.layer(NodeServices.layer)("build-npm-platform-packages", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const hostPlatform = yield* HostProcessPlatform;
+      const hostPlatform = yield* HostProcess.Platform;
       const fixture = yield* makeFakeArchives();
       const outputs = yield* buildNpmPlatformPackages({
         ...fixture,
@@ -354,7 +361,7 @@ it.layer(NodeServices.layer)("build-npm-platform-packages", (it) => {
 
       // NODE_PATH stands in for node_modules: require.resolve finds the
       // platform package there exactly as it would after `npm install`.
-      const hostArch = yield* HostProcessArchitecture;
+      const hostArch = yield* HostProcess.Architecture;
       const env = { ...process.env, NODE_PATH: fixture.outputDir } as Record<string, string>;
       if (KEYS.some((key) => key === `${hostPlatform}-${hostArch}`)) {
         const passthrough = yield* run(

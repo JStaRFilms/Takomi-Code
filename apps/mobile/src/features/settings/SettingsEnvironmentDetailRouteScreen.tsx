@@ -1,3 +1,4 @@
+import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -9,12 +10,12 @@ import {
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useRef, useState } from "react";
-import { Alert, View } from "react-native";
+import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
-import { ScreenScrollView } from "../../components/ScreenScrollView";
+import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { serverEnvironment } from "../../state/server";
 import { environmentSession, useEnvironmentScope, readEnvironmentScope } from "../../state/session";
@@ -109,9 +110,14 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
 
   function requestServerUpdate() {
     const targetVersion = checkedRelease?.targetVersion;
-    if (disabled || !targetVersion || !capabilities || !supportsEnvironmentUpdate(capabilities))
+    if (
+      disabled ||
+      !targetVersion ||
+      !capabilities ||
+      !supportsEnvironmentUpdate(capabilities, config?.environment.distribution)
+    )
       return;
-    Alert.alert(
+    Dialog.alert(
       `Update ${environment?.environmentLabel ?? "environment"}?`,
       `Install version ${targetVersion}. ${capabilities.serverSelfUpdate === "desktop-managed" ? "The desktop app will close and relaunch." : "The server will restart and reconnect."} Running threads may be interrupted.`,
       [
@@ -248,7 +254,10 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                           : "You are up to date."}
                       </Text>
                     ) : null}
-                    {!supportsEnvironmentUpdate(config.environment.capabilities) ? (
+                    {!supportsEnvironmentUpdate(
+                      config.environment.capabilities,
+                      config.environment.distribution,
+                    ) ? (
                       <Text className="text-sm text-foreground-muted">
                         {capabilities?.serverSelfUpdate === "desktop-managed"
                           ? "Update the desktop app on this machine."
@@ -271,6 +280,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                           const targetVersion = await findEnvironmentUpdate(
                             config.environment.serverVersion,
                             controller.signal,
+                            config.environment.distribution,
                           );
                           setRelease({
                             fromVersion: config.environment.serverVersion,
@@ -284,7 +294,10 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                     }}
                   />
                   {checkedRelease?.targetVersion &&
-                  supportsEnvironmentUpdate(config.environment.capabilities) ? (
+                  supportsEnvironmentUpdate(
+                    config.environment.capabilities,
+                    config.environment.distribution,
+                  ) ? (
                     <SettingsActionRow
                       icon="arrow.up.circle"
                       label={`Update to ${checkedRelease.targetVersion}`}

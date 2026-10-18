@@ -2,7 +2,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synchronous native build orchestration.
 // @effect-diagnostics globalDate:off -- Output reservation uses wall-clock timestamps outside Effect.
 
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -215,7 +215,7 @@ function run(
     encoding: "utf8",
     maxBuffer: 32 * 1024 * 1024,
     shell:
-      HostProcessPlatform.defaultValue() === "win32" &&
+      HostProcess.Platform.defaultValue() === "win32" &&
       (command === "vp" ||
         command === "pnpm" ||
         command.endsWith(".bat") ||
@@ -246,7 +246,7 @@ function sourceRoot(): string {
 function samePath(left: string, right: string): boolean {
   const normalize = (value: string) => {
     const normalized = NodePath.normalize(value);
-    return HostProcessPlatform.defaultValue() === "win32" ? normalized.toLowerCase() : normalized;
+    return HostProcess.Platform.defaultValue() === "win32" ? normalized.toLowerCase() : normalized;
   };
   return normalize(left) === normalize(right);
 }
@@ -576,7 +576,7 @@ function buildAndroid(root: string, dryRun: boolean, output: LocalBuildOutput): 
 function main(): void {
   const options = parseOptions(process.argv.slice(2));
   if (!options) return;
-  if (HostProcessPlatform.defaultValue() !== "win32") {
+  if (HostProcess.Platform.defaultValue() !== "win32") {
     throw new Error(
       "Local desktop and Android builds are Windows-only. Use GitHub CI/EAS for other platforms.",
     );

@@ -1,0 +1,34 @@
+# Task 30: Diagnose Vault limitations and build handoff
+
+## Objective
+User says new UI is decent and requests autonomous fixes, needed authoritative VibeCode Protocol Suite changes reflected globally, then desktop and Android builds with root-cause-led retries. No publication/commit/push/install/restart authorization. Do not keep asking ordinary retry questions. Diagnose before modifying policy.
+
+## Prime context and workspaces
+Parent thread remains bound to app checkout C:/CreativeOS/01_Projects/Code/Clones/2026-07-22_t3code. Read its AGENTS, docs/features/takomi-pi-provider.md, installed-code/native fixtures and local build scripts. External suite is CONFIRMED C:/CreativeOS/01_Projects/Code/Personal_Stuff/2025-12-02_VibeCode-Protocol-Suite, AGENTS read by parent and must be read by you. Its .pi/extensions/takomi-vault is authoritative; scripts/test-vault-grants.js, test-vault-input.js, test-vault-transfer.js and sync-pi-global.ps1 exist. Keep explicit absolute file paths and explicit shell working directories for suite commands; this child inherits app cwd, never assume task prose changed it.
+
+Suite is dirty in unrelated assets/.agent/skills/ai-media paths, docs/features/Lean_Unified_Skills_Architecture.md and scripts/test-skill-selection.js; preserve all. Installed C:/Users/johno/.pi/agent/extensions/takomi-vault contains reviewed newer ownership/notify/display/readability work not yet mirrored to suite. No storage reads: actual runtime data is C:/Users/johno/.pi/agent/takomi-vault, NOT the extension code directory. Global SDK1.1.0, suite devDependencies pin0.99.1. Don't blindly upgrade packages; assess compatibility and focused types/conformance against actual host.
+
+## Report and likely causes
+Dummy login request service/operation/purpose/label I am happy, host login-demo.example.invalid, scopeonce. Env call used target terminal and username/password mappings. It failed; uses stayed0. File call first used terminal grant/targetterminal; then new tool=file grant but targetfile, still failed with generic existing-files message, actual proposed path absent. All calls may also omit operation, whose use default is use, while approved operation was I am happy. Verify actual code: target must match grant host, tool must match terminal/file, operation must exactly match, allowed fields/scope/expiry enforced. Do NOT accept tool names as target, silently bypass operation or infer existing-file defect from a generic catch.
+
+Unsaved credential requested scopesession returnedonce. Current code intentionally requires once for Do not save; selection can misleadingly offer broader durations then error. Existing-credential file grant response tells model to use vault_use_env incorrectly. Generic catches hide actionable denial reason. Current tool schemas barely explain target/operation; grant result doesn't include enough authoritative use parameters. These are likely guidance/diagnostic defects even where denial is correct.
+
+## Scope
+Read only at this stage. Reproduce deterministic synthetic failures and correct env/stdin/temp-file success using existing isolated suite tests or test loader, NEVER the real Vault data/keys/grants/audit, live native session/auth/model or feedback handles. Use scoped owned temp/mock persistence. Identify safe reason codes/messages, authoritative non-secret grant metadata and appropriate tool-specific usage copy, temporary-vs-saved scope clarity without widening privileges. Don't add abstractions or unrelated security fixes. File errors must distinguish target/tool/operation/expiry/field policy, missing/unwritable parent/existing destination/start failure while unknown exceptions stay redacted. Report confirmed bugs, not speculative cleanup.
+
+Compare suite tools.ts/secret-input.ts to installed reviewed source; plan minimal reconciliation preserving both unrelated source edits and actual guarded RPC/public display context/masking/lifecycle. Global reflection should copy only confirmed changed Vault code/docs as needed, never run whole sync that overwrites unrelated extensions/settings/skills. User has now authorized required Vault suite/global CODE changes beyond the previous two-file limit; declare exact affected paths, still no data or global SDK/credential/account changes without genuine necessity.
+
+## Build planning
+Desktop local builder normally compiles the root checkout and overwrites apps/server/dist/apps/web/dist. Those outputs and R2/R3/R4 preview trees may be RUNNING. Plan isolated native desktop build, preferably approved disposable managed C:/takomi-local-build only after marker/registration/commonGit checks, overlay current tracked/staged changes as current scripts do, then execute desktop there. Preserve C:/tp cache. Copy/promote verified completed installer to root release before any managed worktree reset for Android. Android managed build remains existing debug-signed arm64 Preview, current Send/splash/accessibility edits included. User approved local desktop/mobile builds, not stable signing/publication/install. Existing Windows dependency ancestry guard must stay; command scoped TEMP/TMP/TMPDIR C:/Windows/Temp is proven clean, no deleting global node_modules. No broad process kills.
+
+## Definition Of Done
+Return ignored .t3/vault-code-backups/round5-operations/diagnosis.md with exact failure predicates, intended behavior versus bugs, safe minimal change/test list, authoritative/global source reconciliation, and a concrete native build path preserving all active trees. Tests use actual native conformance with mock persistence plus real isolated operation tests, no real credentials or UI. Source diagnosis can run focused checks, no broad suite/remote auth. No writer/build agent spawned.
+
+## Expected Artifacts
+Read-only plan/report under app's ignored .t3 folder, source comparisons/hashes/baseline paths only. New authored implementation/build packets handled by parent after this result. Need no new top-level thread or worktree beyond the approved disposable build target.
+
+## Constraints
+No product/suite/global code changes at this planning stage, no real state/transcript/env/.npmrc/signing files, model/Vault/auth/session/browser/device/server/app launch/stop/restart, account picker/install/network/commit/push/CI/npm/GHpub/agents. Only report inside parent workspace. Never touch feat/pi-debrand, unrelated worktrees or suite media edits. Network if unavoidable fails noninteractively; GIT_TERMINAL_PROMPT0 GCM_INTERACTIVEnever GCM_GUI_PROMPT0 GH_PROMPT_DISABLED1, Git credential.interactive=never credential.guiPrompt=false usernameJStaRFilms. No remote operation needed.
+
+## Review checkpoint
+Parent accepts scoped implementation plan, one writer and one focused review, then serial desktop/Android builds with automatic safe diagnosed retries. User is away; only genuinely unsafe ambiguity should stop, not normal local validation/build failures.

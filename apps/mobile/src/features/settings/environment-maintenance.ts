@@ -4,12 +4,10 @@ import {
   type AuthSessionState,
   type ExecutionEnvironmentCapabilities,
   type ServerProvider,
+  type ServerDistribution,
 } from "@t3tools/contracts";
-import {
-  cliReleaseChannelOf,
-  cliReleaseIndexPageUrl,
-  newestCliReleaseVersion,
-} from "@t3tools/shared/cliRelease";
+import { cliReleaseChannelOf, newestCliReleaseVersion } from "@t3tools/shared/cliRelease";
+import { SERVER_DISTRIBUTIONS } from "@t3tools/shared/cliRelease";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
 
@@ -23,8 +21,10 @@ export function canMaintainEnvironment(session: AuthSessionState | null, connect
 
 export function supportsEnvironmentUpdate(
   capabilities: Pick<ExecutionEnvironmentCapabilities, "serverSelfUpdate" | "desktopAppUpdate">,
+  distribution?: ServerDistribution,
 ) {
   return (
+    distribution !== undefined &&
     capabilities.serverSelfUpdate !== undefined &&
     (capabilities.serverSelfUpdate !== "desktop-managed" || capabilities.desktopAppUpdate === true)
   );
@@ -53,11 +53,19 @@ const Releases = Schema.Array(
 );
 const decodeReleases = Schema.decodeUnknownSync(Releases);
 
-/** Preserve the host's release channel and never offer a downgrade. */
-export async function findEnvironmentUpdate(currentVersion: string, signal: AbortSignal) {
+export async function findEnvironmentUpdate(
+  currentVersion: string,
+  signal: AbortSignal,
+  distribution?: ServerDistribution,
+) {
+  if (distribution === undefined)
+    throw new Error("Unknown server distribution. Update it manually on that machine.");
   const channel = cliReleaseChannelOf(currentVersion);
   for (let page = 1; ; page++) {
-    const response = await fetch(cliReleaseIndexPageUrl(page), { signal });
+    const response = await fetch(
+      `https://api.github.com/repos/${SERVER_DISTRIBUTIONS[distribution].repository}/releases?per_page=100&page=${page}`,
+      { signal },
+    );
     if (!response.ok) throw new Error(`Could not check releases (${response.status}). Try again.`);
     const releases = decodeReleases(await response.json());
     const version = newestCliReleaseVersion(releases, channel);

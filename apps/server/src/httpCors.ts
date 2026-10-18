@@ -9,3 +9,10 @@ export const browserApiCorsAllowedHeaders = [
   "dpop",
   ORCHESTRATION_PROTOCOL_HEADER,
 ] as const;
+
+export const DESKTOP_RENDERER_ORIGINS = [
+  "takomi-code://app",
+  "takomi-code-dev://app",
+  "t3code://app",
+  "t3code-dev://app",
+] as const;

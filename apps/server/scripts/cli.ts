@@ -12,6 +12,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { DEVELOPMENT_ICON_OVERRIDES } from "../../../scripts/lib/brand-assets.ts";
 import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-executable-imports.ts";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { publishPlatformsThenLauncher } from "./publishOrder.ts";
 import {
   ServerCliBuildAssetMissingError,
   ServerCliCommandExitError,
@@ -19,7 +20,6 @@ import {
   ServerCliDevelopmentIconTargetMissingError,
   ServerCliExecutableImportError,
 } from "./cliErrors.ts";
-import { publishPlatformsThenLauncher } from "./publishOrder.ts";
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("../../..", import.meta.url))),
@@ -64,10 +64,6 @@ const applyDevelopmentIconOverrides = Effect.fn("applyDevelopmentIconOverrides")
   yield* Effect.log("[cli] Applied development icon overrides to dist/client");
 });
 
-// ---------------------------------------------------------------------------
-// build subcommand
-// ---------------------------------------------------------------------------
-
 const buildCmd = Command.make(
   "build",
   {
@@ -102,10 +98,6 @@ const buildCmd = Command.make(
       }
     }),
 ).pipe(Command.withDescription("Build the server package (tsdown + bundle web client)."));
-
-// ---------------------------------------------------------------------------
-// build-exe subcommand
-// ---------------------------------------------------------------------------
 
 const buildExeCmd = Command.make(
   "build-exe",
@@ -162,10 +154,6 @@ const buildExeCmd = Command.make(
   ),
 );
 
-// ---------------------------------------------------------------------------
-// publish subcommand
-// ---------------------------------------------------------------------------
-
 /**
  * Publishes the tarballs scripts/build-npm-platform-packages.ts produced:
  * every `@johnsax/takomi-code-<platform>.tgz` first, `takomi-code.tgz` (the launcher) last, so
@@ -177,7 +165,7 @@ const publishCmd = Command.make(
   "publish",
   {
     packagesDir: Flag.String("packages-dir").pipe(
-      Flag.withDescription("Output dir of scripts/build-npm-platform-packages.ts."),
+      Flag.withDescription("Output dir of scripts/build-npm-launcher.ts."),
     ),
     tag: Flag.String("tag").pipe(Flag.withDefault("latest")),
     access: Flag.String("access").pipe(Flag.withDefault("public")),
@@ -189,8 +177,6 @@ const publishCmd = Command.make(
     Effect.gen(function* () {
       const path = yield* Path.Path;
       const fs = yield* FileSystem.FileSystem;
-      // npm runs with cwd set to the packages dir below, so tarball paths are
-      // resolved once here rather than joined twice.
       const packagesDir = path.resolve(config.packagesDir);
       const scopeDir = path.join(packagesDir, "@johnsax");
       const launcherTarball = path.join(packagesDir, "takomi-code.tgz");
@@ -212,7 +198,6 @@ const publishCmd = Command.make(
       const args = ["publish", "--access", config.access, "--tag", config.tag];
       if (config.provenance) args.push("--provenance");
       if (config.dryRun) args.push("--dry-run");
-
       const publish = Effect.fn("publish")(function* (tarball: string) {
         const spawnCommand = yield* resolveSpawnCommand("npm", [...args, tarball]);
         yield* Effect.log(`[cli] npm ${args.join(" ")} ${path.basename(tarball)}`);
@@ -225,8 +210,6 @@ const publishCmd = Command.make(
           }),
         );
       });
-
-      // Each publish takes about 17s, so the platform packages go at once.
       yield* publishPlatformsThenLauncher({ platformTarballs, launcherTarball, publish });
     }),
 ).pipe(

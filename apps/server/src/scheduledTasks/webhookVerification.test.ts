@@ -1,4 +1,4 @@
-// Effect's Crypto has no createHmac.
+// @effect-diagnostics nodeBuiltinImport:off - Effect's Crypto has no createHmac.
 import * as NodeCrypto from "node:crypto";
 
 import { assert, describe, it } from "@effect/vitest";
