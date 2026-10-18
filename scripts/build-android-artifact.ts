@@ -160,7 +160,7 @@ export function verifyAndroidApk(input: {
   }
   const digests = [
     ...input.certificates.matchAll(
-      /(?:Signer #\d+ certificate|V3\.0 Signer: certificate) SHA-256 digest: ([a-f\d:]+)/giu,
+      /(?:Signer #\d+ certificate|(?:V2|V3\.0) Signer: certificate) SHA-256 digest: ([a-f\d:]+)/giu,
     ),
   ].map((match) => match[1]?.replaceAll(":", "").toLowerCase());
   if (digests.length !== 1 || digests[0] !== input.expectedCertificate.toLowerCase()) {
