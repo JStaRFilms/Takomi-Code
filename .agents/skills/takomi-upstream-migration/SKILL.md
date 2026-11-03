@@ -7,6 +7,8 @@ description: Safely migrate the Takomi-Code fork onto the latest upstream T3 Cod
 
 Run from the repository root. Preserve upstream architecture and stability fixes; reapply Takomi behavior as the narrowest provider- or brand-specific delta.
 
+For a fresh weekly run, use [the reusable migration prompt](weekly-prompt.md) together with this procedure. It records the user's authorized scope and the steps for starting from a clean stable checkout on another machine. An unfinished merge is local state, not something a commit or pull transfers. Do not treat the prompt as permission to discard such state or to push.
+
 ## Branch model (read first)
 
 - `Takomi-Code` — the live branch; upstream merges target it. Confirm this branch is checked out before making changes. The parity branches are historical work branches, not migration targets.
