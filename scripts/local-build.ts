@@ -7,6 +7,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
+import { loadRepoEnv } from "./lib/public-config.ts";
 
 const scriptRoot = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 const localWorktree = "C:\\takomi-local-build";
@@ -429,10 +430,13 @@ function readDesktopVersion(root: string): string {
   return match[1];
 }
 
-function readMobileVersion(root: string): string {
+export function readMobileVersion(
+  root: string,
+  environment = loadRepoEnv({ repoRoot: root }),
+): string {
   const config = NodeFS.readFileSync(NodePath.join(root, "apps/mobile/app.config.ts"), "utf8");
-  const match = /^\s+version:\s*"([^"]+)"/mu.exec(config);
-  const version = match?.[1];
+  const match = /^\s+version:\s*(?:repoEnv\.T3CODE_MOBILE_VERSION \?\? )?"([^"]+)"/mu.exec(config);
+  const version = environment.T3CODE_MOBILE_VERSION ?? match?.[1];
   if (!version) {
     throw new Error("Could not read the mobile version from apps/mobile/app.config.ts.");
   }

@@ -55,7 +55,7 @@ Publish the three platform tarballs before the launcher tarball with `--tag boot
 using an interactive, 2FA-protected npm login on the owner's machine. Do not use `latest`
 for this preview bootstrap. Then register the trusted publishers and remove the bootstrap
 login or token. Do not put npm tokens in repository secrets. The preview version cannot
-be overwritten. Source desktop/server `0.1.0` is an upstream default, not the next release.
+be overwritten. Source desktop/server `0.1.7` is an upstream default, not the next release.
 Keep published `0.1.2` history intact and choose a newer, unused version for the next publication.
 
 The workflow uses OIDC and provenance for normal npm releases. Its dry run checks
@@ -119,7 +119,7 @@ checkout. Generated `apps/mobile/android` files are not maintained release sourc
 local-build short-path workarounds are unchanged and do not apply to Linux CI.
 
 Only the runner checkout stages the mobile version literal and Android version code. Source
-mobile `2.0.0`, Android code `3`, iOS build number, and EAS numbering defaults stay unchanged.
+mobile `2.2.0`, Android code `3`, iOS build number, and EAS numbering defaults stay unchanged.
 Stable Android codes use `1 + major * 1000000 + minor * 1000 + patch`, so `0.1.2` is code `1003`.
 Minor and patch must each be below 1000; components must be safe integers and the resulting
 code must not exceed 2100000000. Choose an unused version newer than the previous stable
@@ -175,7 +175,7 @@ uses `com.jstarstudios.takomicode.preview`, so both can stay installed with sepa
 Keep the preview until you have verified the production connection and settings. A historical
 preview with another package ID or certificate is not an in-place production upgrade. Later
 production APKs retain the package ID and signing key and use increasing version codes.
-In-app APK update notification is a separate client task, not part of this packaging change.
+The stable Android app also offers APK update notifications and manual checks from About.
 
 Windows downloads are unsigned. SmartScreen may warn or block them according to local
 policy. Verify the repository and checksum before choosing to run an installer.

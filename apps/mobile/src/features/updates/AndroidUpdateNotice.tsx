@@ -10,6 +10,7 @@ import {
 const RECHECK_MS = 60 * 60 * 1000;
 
 export function AndroidUpdateNotice() {
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Subscribe to native AppState and offer update alerts only while mounted and foregrounded.
   useEffect(() => {
     if (!getAndroidUpdateInstallation()) return;
     let active = true;

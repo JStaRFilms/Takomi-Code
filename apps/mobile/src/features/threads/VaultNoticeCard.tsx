@@ -1,4 +1,5 @@
 import { AsyncResult } from "effect/reactivity";
+import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useRef, useState } from "react";
 import { View } from "react-native";
@@ -6,7 +7,7 @@ import { View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
 import { piVaultExportTake } from "../../state/piVaultTransfer";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { RequestActionButton } from "./RequestActionButton";
+import { Button as RequestActionButton } from "../../components/ui/Button";
 
 export function VaultNoticeCard(props: {
   readonly message: string;
@@ -14,6 +15,7 @@ export function VaultNoticeCard(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
+  const canExport = useAtomValue(piVaultExportTake.permissionAtom(props.environmentId));
   const takeExport = useAtomCommand(piVaultExportTake, {
     reportFailure: false,
     reportDefect: false,
@@ -24,7 +26,7 @@ export function VaultNoticeCard(props: {
   const [error, setError] = useState(false);
 
   const share = async () => {
-    if (!props.transferId || busy) return;
+    if (!props.transferId || !canExport || busy) return;
     setBusy(true);
     setError(false);
     try {
@@ -77,7 +79,7 @@ export function VaultNoticeCard(props: {
           label={
             busy ? "Preparing archive…" : key ? "Save archive again" : "Save archive and show key"
           }
-          disabled={busy}
+          disabled={!canExport || busy}
           onPress={() => void share()}
         />
       ) : null}

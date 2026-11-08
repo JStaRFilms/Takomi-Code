@@ -60,15 +60,15 @@ builds manually.
 
    - **Mobile:** local previews use `version` from `apps/mobile/app.config.ts` in their filename.
      GitHub stable releases stage the explicit workflow `X.Y.Z` version and its derived Android
-     code only in the disposable runner checkout. Do not bump source mobile `2.0.0`, Android
+     code only in the disposable runner checkout. Do not bump source mobile `2.2.0`, Android
      code `3`, or the iOS build number just to publish a GitHub APK. EAS continues to own its
      separate remote build numbers through `apps/mobile/eas.json`.
 
 4. Review public configuration in the repository-root `.env` or `.env.local` when the build needs
    T3 Connect, Clerk, or relay configuration. Never commit secrets.
 
-Current source versions follow the incoming upstream source: desktop/server `0.1.0` and mobile
-`2.0.0`. These defaults are not the public stable release version. Published `0.1.2` history and
+Current source versions follow the incoming upstream source: desktop/server `0.1.7` and mobile
+`2.2.0`. These defaults are not the public stable release version. Published `0.1.2` history and
 assets are unchanged; this source merge builds no replacement artifacts. Choose a new, unused
 stable version above the installed release when publishing. Dated local previews remain feedless.
 
@@ -241,7 +241,7 @@ Expo/Gradle/bundling, and never uploads the key. Build-only runs remain debug-si
 receive no stable secrets.
 
 Stable version codes use `1 + major * 1000000 + minor * 1000 + patch`; `0.1.2` maps to `1003`.
-Minor and patch must be below 1000 and the code must not exceed 2100000000. Source `2.0.0` is not
+Minor and patch must be below 1000 and the code must not exceed 2100000000. Source `2.2.0` is not
 the GitHub release version and remains unchanged. Preview codes do not promise stable upgrade
 ordering. Android requires user confirmation to install the downloaded APK. In-app APK notification
 work is separate from release packaging.

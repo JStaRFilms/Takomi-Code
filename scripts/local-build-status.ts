@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off
 
-import * as ChildProcess from "node:child_process";
-import * as Path from "node:path";
-import * as URL from "node:url";
+import * as NodeChildProcess from "node:child_process";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 
-const repoRoot = Path.resolve(Path.dirname(URL.fileURLToPath(import.meta.url)), "..");
+const repoRoot = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
 
 type VersionSource = "desktop" | "mobile";
 
@@ -25,7 +25,7 @@ and ahead/behind counts. This command never merges, resets, or changes the worki
 }
 
 function runGit(args: ReadonlyArray<string>): string {
-  const result = ChildProcess.spawnSync("git", args, {
+  const result = NodeChildProcess.spawnSync("git", args, {
     cwd: repoRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],

@@ -178,7 +178,7 @@ jobs:
           cp "native/resource-monitor/target/${{ matrix.rust_target }}/release/$binary" "cli-resource-monitor/${{ matrix.key }}/$binary"
       - name: Build self-contained CLI
         env:
-          VP_NODE_VERSION: "26.8.2"
+          VP_NODE_VERSION: "26.12.1"
         run: node apps/server/scripts/cli.ts build-exe --verbose
       - name: Package CLI with upstream native staging
         env:

@@ -157,7 +157,13 @@ export const resolvePiSessionRecord = Effect.fn("PiSessionAttach.resolvePiSessio
         "The Pi session file changed. List Pi sessions again and retry.",
       );
     }
-    if (inspection.headerId !== record.nativeSessionId || inspection.headerVersion !== 3) {
+    if (inspection.headerId !== record.nativeSessionId) {
+      return yield* fail(
+        "invalid_cursor",
+        "The Pi session file changed. List Pi sessions again and retry.",
+      );
+    }
+    if (inspection.headerVersion !== 3) {
       return yield* fail("unavailable", "This Pi session format cannot be continued in T3.");
     }
     if (inspection.headerCwdRealpath !== input.workspaceCanonicalPath) {

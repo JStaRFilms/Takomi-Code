@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Read-only package/declaration compatibility probe.
-import * as Crypto from "node:crypto";
-import * as FileSystem from "node:fs/promises";
-import * as Path from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 
 const MAX_JSONL_RECORD_BYTES = 1024 * 1024;
 const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
@@ -152,14 +152,14 @@ export function activePiSessionBranch(
 async function packageRootFromDirectory(directory: string): Promise<string | undefined> {
   let current = directory;
   while (true) {
-    const packageJsonPath = Path.join(current, "package.json");
+    const packageJsonPath = NodePath.join(current, "package.json");
     try {
-      const metadata: unknown = JSON.parse(await FileSystem.readFile(packageJsonPath, "utf8"));
+      const metadata: unknown = JSON.parse(await NodeFSP.readFile(packageJsonPath, "utf8"));
       if (isRecord(metadata) && metadata.name === PI_PACKAGE_NAME) return current;
     } catch {
       // Keep walking toward the filesystem root.
     }
-    const parent = Path.dirname(current);
+    const parent = NodePath.dirname(current);
     if (parent === current) return undefined;
     current = parent;
   }
@@ -169,42 +169,43 @@ async function packageRootFromDirectory(directory: string): Promise<string | und
 export async function resolvePiPackageFromBinary(
   binaryPath: string,
   environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
 ): Promise<string> {
   const extensions =
-    process.platform === "win32"
+    platform === "win32"
       ? ["", ...(environment.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")]
       : [""];
-  const names = Path.extname(binaryPath)
+  const names = NodePath.extname(binaryPath)
     ? [binaryPath]
     : extensions.map((ext) => `${binaryPath}${ext.toLowerCase()}`);
   const candidates =
-    Path.isAbsolute(binaryPath) || binaryPath.includes("/") || binaryPath.includes("\\")
+    NodePath.isAbsolute(binaryPath) || binaryPath.includes("/") || binaryPath.includes("\\")
       ? names
       : (environment.PATH ?? "")
-          .split(Path.delimiter)
+          .split(NodePath.delimiter)
           .filter(Boolean)
-          .flatMap((directory) => names.map((name) => Path.join(directory, name)));
+          .flatMap((directory) => names.map((name) => NodePath.join(directory, name)));
   for (const candidate of candidates) {
     let executable: string;
     try {
-      executable = await FileSystem.realpath(candidate);
+      executable = await NodeFSP.realpath(candidate);
     } catch {
       continue;
     }
-    const directPackage = await packageRootFromDirectory(Path.dirname(executable));
+    const directPackage = await packageRootFromDirectory(NodePath.dirname(executable));
     if (directPackage !== undefined) return directPackage;
-    const npmPackage = Path.join(
-      Path.dirname(executable),
+    const npmPackage = NodePath.join(
+      NodePath.dirname(executable),
       "node_modules",
       "@earendil-works",
       "pi-coding-agent",
     );
     try {
       const metadata: unknown = JSON.parse(
-        await FileSystem.readFile(Path.join(npmPackage, "package.json"), "utf8"),
+        await NodeFSP.readFile(NodePath.join(npmPackage, "package.json"), "utf8"),
       );
       if (isRecord(metadata) && metadata.name === PI_PACKAGE_NAME) {
-        return await FileSystem.realpath(npmPackage);
+        return await NodeFSP.realpath(npmPackage);
       }
     } catch {
       // This candidate is not an npm Pi launcher.
@@ -499,12 +500,18 @@ export function assertPiRpcOperations(
 }
 
 export async function probePiProtocol(packagePath: string): Promise<PiProtocolCompatibilityProbe> {
-  const resolvedPackagePath = await FileSystem.realpath(packagePath);
-  const packageJsonPath = Path.join(resolvedPackagePath, "package.json");
-  const declarationsPath = Path.join(resolvedPackagePath, "dist", "modes", "rpc", "rpc-types.d.ts");
+  const resolvedPackagePath = await NodeFSP.realpath(packagePath);
+  const packageJsonPath = NodePath.join(resolvedPackagePath, "package.json");
+  const declarationsPath = NodePath.join(
+    resolvedPackagePath,
+    "dist",
+    "modes",
+    "rpc",
+    "rpc-types.d.ts",
+  );
   const [packageJson, declarations] = await Promise.all([
-    FileSystem.readFile(packageJsonPath),
-    FileSystem.readFile(declarationsPath, "utf8"),
+    NodeFSP.readFile(packageJsonPath),
+    NodeFSP.readFile(declarationsPath, "utf8"),
   ]);
   const metadata: unknown = JSON.parse(packageJson.toString("utf8"));
   if (
@@ -527,9 +534,9 @@ export async function probePiProtocol(packagePath: string): Promise<PiProtocolCo
   return {
     packagePath: resolvedPackagePath,
     version: metadata.version,
-    packageJsonSha256: Crypto.createHash("sha256").update(packageJson).digest("hex"),
+    packageJsonSha256: NodeCrypto.createHash("sha256").update(packageJson).digest("hex"),
     rpcDeclarationsPath: declarationsPath,
-    rpcDeclarationsSha256: Crypto.createHash("sha256").update(declarations).digest("hex"),
+    rpcDeclarationsSha256: NodeCrypto.createHash("sha256").update(declarations).digest("hex"),
     rpcCommands,
   };
 }

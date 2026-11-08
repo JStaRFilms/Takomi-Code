@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import { PiSettings } from "../settings.ts";
 import { piUsageFormat, piUsageReader } from "./usage.ts";
 
+const decodePiSettings = Schema.decodeSync(PiSettings);
 const state = () => ({ sessionId: "", model: "" });
 const when = "2026-08-01T10:00:05Z";
 
@@ -148,7 +149,7 @@ it.effect(
           .directories({
             instanceId: ProviderInstanceId.make("takomi"),
             configured: true,
-            config: Schema.decodeSync(PiSettings)({ homePath }),
+            config: decodePiSettings({ homePath }),
             environment,
           })
           .pipe(Effect.provideService(HostProcess.HomeDirectory, home));

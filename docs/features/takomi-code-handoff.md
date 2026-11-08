@@ -1,10 +1,10 @@
 # Takomi Code handoff
 
-**Updated:** 2026-10-09
+**Updated:** 2026-11-04
 
 **Branch:** `Takomi-Code`
 
-**Repository:** `C:\CreativeOS\01_Projects\Code\Clones\2026-07-22_t3code`
+**Repository:** `JStaRFilms/Takomi-Code`
 
 ## Read this first
 
@@ -66,8 +66,8 @@ branding stays in the clients and desktop identity modules.
 
 ### Deliberately incomplete
 
-- Pi permission modes use upstream\'s blocking tool hook, not an OS sandbox. Trusted extension
-  code outside a tool call still follows Pi\'s trust policy. Utility text generation uses
+- Pi permission modes use upstream's blocking tool hook, not an OS sandbox. Trusted extension
+  code outside a tool call still follows Pi's trust policy. Utility text generation uses
   upstream\'s restricted Pi helper rather than the interactive suite-enabled process.
 - Pi session listing follows Pi's documented storage layout; attach/fork require a v3 file.
   Continuation includes visible CLI history hydration (user/assistant text); tool-call history
@@ -82,6 +82,8 @@ branding stays in the clients and desktop identity modules.
   override.
 - Mobile has no native Takomi semantic tool cards or inspector.
 - Mobile does not yet expose the Pi session catalog or CLI continuation flow.
+- The V2 client currently hides the older **Release Pi session to CLI** action. Do not
+  concurrently open an attached file in a terminal; fork it or stop the owning environment first.
 - Mobile names, icons, package IDs, and schemes are Takomi-specific. Expo/EAS releases remain
   gated on Takomi-owned configuration; updates are disabled without that project ID.
 - The local Android preview APK is debug-signed and cannot be uploaded to the Play Store.
@@ -105,7 +107,7 @@ For suite development, set **Takomi suite root** to the VibeCode Protocol Suite 
 
 ## Current local release workflow
 
-Current source defaults are desktop/server `0.1.0` and mobile `2.0.0`. They do not replace the
+Current source defaults are desktop/server `0.1.7` and mobile `2.2.0`. They do not replace the
 published stable `0.1.2` release or its artifacts. The source merge itself produces no binaries.
 Each attempt reserves a separate output directory:
 

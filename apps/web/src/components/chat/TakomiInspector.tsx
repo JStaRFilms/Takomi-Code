@@ -1,5 +1,3 @@
-import { useMemo } from "react";
-
 import type { WorkLogEntry } from "../../session-logic";
 
 function takomiToolName(entry: WorkLogEntry): string | null {
@@ -12,6 +10,7 @@ function takomiToolName(entry: WorkLogEntry): string | null {
 export function isTakomiInspectorEntry(entry: WorkLogEntry): boolean {
   const toolName = takomiToolName(entry);
   return (
+    entry.structuredPayload?.nativeItemRef?.driver === "pi" &&
     toolName !== null &&
     /(?:takomi|todo|subagent|board|workflow)/iu.test(toolName) &&
     !/vault|secret/iu.test(toolName)
@@ -39,7 +38,7 @@ export function TakomiInspector({
   sessionLive: boolean;
   onSelectToolCallId: (id: string | null) => void;
 }) {
-  const tools = useMemo(() => entries.filter(isTakomiInspectorEntry), [entries]);
+  const tools = entries.filter(isTakomiInspectorEntry);
   const selected =
     tools.find((entry) => (entry.toolCallId ?? entry.id) === selectedToolCallId) ?? tools.at(-1);
 

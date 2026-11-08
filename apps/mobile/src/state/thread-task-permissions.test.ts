@@ -1,20 +1,37 @@
 import {
   AuthOrchestrationOperateScope,
+  DEFAULT_SERVER_SETTINGS,
+  MessageId,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   RuntimeRequestId,
-  type ServerProvider,
+  TurnItemId,
+  type ModelSelection,
+  type OrchestrationV2ThreadProjection,
+  type ServerConfig,
 } from "@t3tools/contracts";
+import {
+  v2Now,
+  v2Projection,
+} from "../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import type { PendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
+import { sendApprovalFeedback } from "@t3tools/client-runtime/state/thread-requests";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   grantedEnvironments: new Set<string>(),
   connectionState: "connected",
-  providers: [] as ServerProvider[],
-  draft: { text: "Keep my draft", attachments: [] as DraftComposerImageAttachment[] },
+  draft: {
+    text: "Keep my draft",
+    attachments: [] as DraftComposerImageAttachment[],
+    modelSelection: undefined as ModelSelection | undefined,
+  },
+  serverConfig: null as ServerConfig | null,
+  projection: null as OrchestrationV2ThreadProjection | null,
   pendingRequests: { approvals: [], userInputs: [] } as PendingThreadRequests,
   enqueue: vi.fn(async () => undefined),
   clearDraft: vi.fn(),
@@ -32,6 +49,7 @@ const state = vi.hoisted(() => ({
   thread: {
     id: "thread",
     environmentId: "secondary",
+    projectId: "project",
     modelSelection: { instanceId: "codex", model: "gpt-5.4" },
     runtimeMode: "full-access",
     interactionMode: "default",
@@ -43,6 +61,7 @@ const state = vi.hoisted(() => ({
 vi.mock("react", () => ({
   useCallback: <A>(callback: A) => callback,
   useEffect: () => {},
+  useLayoutEffect: () => {},
   useRef: <A>(current: A) => ({ current }),
   useMemo: <A>(factory: () => A) => factory(),
   useState: <A>(initial: A | (() => A)) => [
@@ -77,15 +96,13 @@ vi.mock("./use-thread-selection", () => ({
     selectedThreadCreation: null,
     selectedEnvironmentRuntime: {
       connectionState: state.connectionState,
-      serverConfig: {
-        providers: state.providers,
-        environment: { capabilities: {} },
-      },
+      serverConfig: state.serverConfig,
     },
   }),
 }));
 vi.mock("./use-thread-detail", () => ({
-  useSelectedThreadProjection: () => null,
+  useSelectedThreadProjection: () =>
+    state.projection === null ? null : { projection: state.projection },
   useSelectedThreadVisibleTurnItems: () => [],
   useSelectedThreadPendingRequests: () => state.pendingRequests,
 }));
@@ -97,7 +114,12 @@ vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: {} }));
 vi.mock("./threads", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
-    environmentThreadDetails: { queueWorkflowAtom: () => Atom.make(null) },
+    environmentThreadDetails: {
+      queueWorkflowAtom: () => Atom.make(null),
+      checkpointSummariesAtom: () => Atom.make([]),
+      sequenceAtom: () => Atom.make(0),
+      pendingRequestsAtom: () => Atom.make(state.pendingRequests),
+    },
     threadEnvironment: {
       respondToApproval: state.approve,
       respondToUserInput: state.answer,
@@ -137,11 +159,12 @@ vi.mock("./use-composer-drafts", async () => {
     mergeComposerDraftContent: vi.fn(),
     removeComposerDraftAttachment: vi.fn(),
     useComposerDraft: () => state.draft,
+    useComposerDraftSettings: () => state.draft,
+    questionAttachmentDraftsAtom: () => Atom.make({}),
   };
 });
 vi.mock("../lib/composerImages", () => ({
   convertPastedImagesToAttachments: vi.fn(),
-  pasteComposerClipboard: vi.fn(),
   pickComposerFiles: vi.fn(),
   pickComposerMedia: vi.fn(),
 }));
@@ -161,25 +184,12 @@ import { useSelectedThreadRequests } from "./use-selected-thread-requests";
 beforeEach(() => {
   state.grantedEnvironments = new Set(["primary"]);
   state.connectionState = "connected";
-  state.thread.modelSelection = { instanceId: "codex", model: "gpt-5.4" };
-  state.thread.runtimeMode = "full-access";
-  state.thread.interactionMode = "default";
-  state.providers = [
-    {
-      instanceId: ProviderInstanceId.make("codex"),
-      driver: ProviderDriverKind.make("codex"),
-      enabled: true,
-      installed: true,
-      version: null,
-      status: "ready",
-      auth: { status: "authenticated" },
-      checkedAt: "2026-09-05T00:00:00.000Z",
-      models: [],
-      slashCommands: [],
-      skills: [],
-    },
-  ];
-  state.draft = { text: "Keep my draft", attachments: [] };
+  state.draft = { text: "Keep my draft", attachments: [], modelSelection: undefined };
+  state.projection = null;
+  state.serverConfig = {
+    providers: [{ instanceId: "codex", driver: "codex", enabled: true }],
+    environment: { capabilities: {} },
+  } as unknown as ServerConfig;
   state.pendingRequests = {
     approvals: [
       {
@@ -198,90 +208,41 @@ beforeEach(() => {
 });
 
 describe("mobile task permissions", () => {
-  it.each([
-    { connectionState: "connected", runtimeMode: "full-access", sentMode: "full-access" },
-    {
-      connectionState: "connected",
-      runtimeMode: "approval-required",
-      sentMode: "approval-required",
-    },
-    {
-      connectionState: "connected",
-      runtimeMode: "auto-accept-edits",
-      sentMode: "auto-accept-edits",
-    },
-    { connectionState: "disconnected", runtimeMode: "full-access", sentMode: "full-access" },
-    { connectionState: "disconnected", runtimeMode: "auto", sentMode: "approval-required" },
-  ])(
-    "queues the exact Takomi model and clears its draft when $connectionState in $runtimeMode",
-    async ({ connectionState, runtimeMode, sentMode }) => {
-      state.connectionState = connectionState;
-      state.grantedEnvironments.add("secondary");
-      state.thread.modelSelection = {
-        instanceId: "takomi",
-        model: "openai-codex/gpt-6.1-sol",
-      };
-      state.thread.runtimeMode = runtimeMode;
-      state.thread.interactionMode = "plan";
-      // Published by provider-pi/status.ts: session capabilities coexist with
-      // the older top-level mode fields, without nested mode capabilities.
-      state.providers = state.providers.map((provider) => ({
-        ...provider,
-        instanceId: ProviderInstanceId.make("takomi"),
-        driver: ProviderDriverKind.make("pi"),
-        capabilities: { sessions: { list: true, attach: true, clone: true } },
-        supportedRuntimeModes: ["approval-required", "auto-accept-edits", "full-access"],
-        showInteractionModeToggle: false,
-      }));
-      const composer = useThreadComposerState();
-      expect(await composer.onSendMessage()).toBe("message");
-      expect(state.enqueue).toHaveBeenCalledWith(
-        expect.objectContaining({
-          environmentId: "secondary",
-          threadId: "thread",
-          text: "Keep my draft",
-          modelSelection: state.thread.modelSelection,
-          runtimeMode: sentMode,
-          interactionMode: "default",
-        }),
-      );
-      expect(state.clearDraft).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it.each(["runtimeModes", "interactionModes"] as const)(
-    "does not override explicitly unsupported Pi %s",
-    async (modeField) => {
-      state.grantedEnvironments.add("secondary");
-      state.thread.modelSelection = {
-        instanceId: "takomi",
-        model: "openai-codex/gpt-6.1-sol",
-      };
-      state.providers = state.providers.map((provider) => ({
-        ...provider,
-        instanceId: ProviderInstanceId.make("takomi"),
-        driver: ProviderDriverKind.make("pi"),
-        capabilities: { [modeField]: [] },
-        supportedRuntimeModes: ["full-access"],
-        showInteractionModeToggle: false,
-      }));
-      expect(await useThreadComposerState().onSendMessage()).toBeNull();
-      expect(state.enqueue).not.toHaveBeenCalled();
-      expect(state.clearDraft).not.toHaveBeenCalled();
-    },
-  );
-
-  it("does not apply Pi's older mode fields to another provider", async () => {
+  it("consumes an approval reply without queueing a parent message", async () => {
     state.grantedEnvironments.add("secondary");
-    state.providers = state.providers.map((provider) => ({
-      ...provider,
-      capabilities: { sessions: { list: true } },
-      supportedRuntimeModes: ["full-access"],
-      showInteractionModeToggle: false,
-    }));
-    expect(await useThreadComposerState().onSendMessage()).toBeNull();
+    const composer = useThreadComposerState();
+    const requests = useSelectedThreadRequests();
+    const approval = { ...state.pendingRequests.approvals[0]!, supportsFeedback: true };
+    const messageId = await composer.onSendMessage(undefined, async (text) =>
+      (await sendApprovalFeedback(approval, text, requests.onRespondToApproval))
+        ? "responded"
+        : false,
+    );
+    expect(messageId).toBeNull();
+    expect(state.approve).toHaveBeenCalledWith({
+      environmentId: "secondary",
+      input: {
+        threadId: "thread",
+        requestId: "approval",
+        decision: "decline",
+        feedback: "Keep my draft",
+      },
+    });
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a draft changed during an approval reply and never sends it to the parent", async () => {
+    state.grantedEnvironments.add("secondary");
+    const composer = useThreadComposerState();
+    const beforeDispatch = async () => {
+      state.draft = { ...state.draft, text: "New feedback" };
+      return "responded" as const;
+    };
+    expect(await composer.onSendMessage(undefined, beforeDispatch)).toBeNull();
     expect(state.enqueue).not.toHaveBeenCalled();
     expect(state.clearDraft).not.toHaveBeenCalled();
+    expect(state.draft.text).toBe("New feedback");
   });
 
   it("keeps a connected read-only task's draft instead of queueing it with another environment's grant", async () => {
@@ -313,17 +274,6 @@ describe("mobile task permissions", () => {
         text: "Keep my draft",
       }),
     );
-  });
-
-  it("preserves offline queueing without dispatching feedback through the queue action", async () => {
-    state.connectionState = "disconnected";
-    expect(await useThreadComposerState().onSendMessage()).toBe("message");
-    expect(state.enqueue).toHaveBeenCalledTimes(1);
-    state.draft.text = "/feedback The agent stopped early.";
-    expect(await useThreadComposerState().onSendMessage()).toBeNull();
-    expect(state.feedback).not.toHaveBeenCalled();
-    expect(state.enqueue).toHaveBeenCalledTimes(1);
-    expect(state.clearDraft).toHaveBeenCalledTimes(1);
   });
 
   it("rechecks the target environment before an approval response", async () => {
@@ -370,5 +320,115 @@ describe("mobile task permissions", () => {
       environmentId: "secondary",
       input: { threadId: "thread", requestId: "input", answers: { language: "TypeScript" } },
     });
+  });
+});
+
+describe("mobile handoff preview and submission", () => {
+  it("follows project enablement and provider availability for the selected destination", async () => {
+    state.grantedEnvironments.add("secondary");
+    const instanceId = ProviderInstanceId.make("antigravity");
+    const projectId = ProjectId.make(state.thread.projectId);
+    const selection = { instanceId, model: "gemini" };
+    const provider = {
+      instanceId,
+      driver: ProviderDriverKind.make("antigravity"),
+      enabled: false,
+      installed: true,
+      auth: { status: "authenticated" as const },
+      availability: "available" as "available" | "unavailable",
+      models: [{ slug: selection.model }],
+    };
+    const projectOverride = { enabled: false };
+    state.serverConfig = {
+      ...state.serverConfig,
+      providers: [provider],
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: { [instanceId]: { driver: provider.driver, enabled: false } },
+        projectSettingsOverrides: {
+          [projectId]: { providerInstances: { [instanceId]: projectOverride } },
+        },
+      },
+    } as unknown as ServerConfig;
+    state.draft.modelSelection = selection;
+    const source = v2Projection.thread.modelSelection;
+    state.projection = {
+      ...v2Projection,
+      runs: [
+        {
+          id: RunId.make("source-run"),
+          threadId: v2Projection.thread.id,
+          ordinal: 1,
+          providerInstanceId: source.instanceId,
+          modelSelection: source,
+          providerThreadId: null,
+          userMessageId: MessageId.make("source-message"),
+          rootNodeId: null,
+          activeAttemptId: null,
+          status: "completed",
+          requestedAt: v2Now,
+          startedAt: v2Now,
+          completedAt: v2Now,
+          checkpointId: null,
+          contextHandoffId: null,
+        },
+      ],
+      visibleTurnItems: [
+        {
+          position: 0,
+          visibility: "local",
+          sourceThreadId: v2Projection.thread.id,
+          sourceItemId: TurnItemId.make("reply"),
+          item: {
+            id: TurnItemId.make("reply"),
+            threadId: v2Projection.thread.id,
+            runId: RunId.make("source-run"),
+            nodeId: null,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 1,
+            type: "assistant_message",
+            messageId: MessageId.make("reply"),
+            status: "completed",
+            title: null,
+            text: "Task started",
+            streaming: false,
+            startedAt: v2Now,
+            completedAt: v2Now,
+            updatedAt: v2Now,
+          },
+        },
+      ],
+    };
+
+    const disabled = useThreadComposerState();
+    expect(disabled.pendingHandoff).toBeNull();
+    expect(await disabled.onSendMessage()).toBeNull();
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).not.toHaveBeenCalled();
+
+    projectOverride.enabled = true;
+    expect(useThreadComposerState().pendingHandoff).toEqual({ from: [source], to: selection });
+
+    provider.availability = "unavailable";
+    const unavailable = useThreadComposerState();
+    expect(unavailable.pendingHandoff).toBeNull();
+    expect(await unavailable.onSendMessage()).toBeNull();
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).not.toHaveBeenCalled();
+
+    provider.availability = "available";
+    const available = useThreadComposerState();
+    expect(available.pendingHandoff).toEqual({ from: [source], to: selection });
+    expect(await available.onSendMessage()).toBe("message");
+    expect(state.enqueue).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        modelSelection: selection,
+        text: "Keep my draft",
+      }),
+    );
+    expect(state.clearDraft).toHaveBeenCalledTimes(1);
   });
 });

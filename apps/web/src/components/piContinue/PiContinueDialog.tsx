@@ -14,7 +14,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { AsyncResult, Atom } from "effect/reactivity";
 import * as Option from "effect/Option";
-import { useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { useContext, useState } from "react";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { formatEnvironmentQueryError } from "~/state/query";
@@ -58,6 +58,12 @@ const piContinueDialogTargetAtom = Atom.make<PiContinueDialogTarget | null>(null
 );
 
 export function openPiContinueDialog(target: PiContinueDialogTarget): void {
+  appAtomRegistry.refresh(
+    piSessionCatalog({
+      environmentId: target.environmentId,
+      input: { providerInstanceId: target.providerInstanceId, projectId: target.projectId },
+    }),
+  );
   appAtomRegistry.set(piContinueDialogTargetAtom, target);
 }
 
@@ -74,21 +80,12 @@ export function PiContinueDialogHost() {
 
 function usePiContinueCatalog(target: PiContinueDialogTarget) {
   const registry = useContext(RegistryContext);
-  const queryAtom = useMemo(
-    () =>
-      piSessionCatalog({
-        environmentId: target.environmentId,
-        input: { providerInstanceId: target.providerInstanceId, projectId: target.projectId },
-      }),
-    [target.environmentId, target.projectId, target.providerInstanceId],
-  );
+  const queryAtom = piSessionCatalog({
+    environmentId: target.environmentId,
+    input: { providerInstanceId: target.providerInstanceId, projectId: target.projectId },
+  });
   const result = useAtomValue(queryAtom);
-  const refresh = useCallback(() => registry.refresh(queryAtom), [queryAtom, registry]);
-  // A rename in the terminal minutes ago must show up now: the catalog
-  // query caches, so every dialog open starts with a fresh scan.
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
+  const refresh = () => registry.refresh(queryAtom);
   return {
     entries: Option.getOrNull(AsyncResult.value(result))?.entries ?? null,
     nextPageAvailable: Option.getOrNull(AsyncResult.value(result))?.nextPageAvailable ?? false,
@@ -201,6 +198,8 @@ function PiSessionRow({
 
 function PiContinueDialog({ target }: { readonly target: PiContinueDialogTarget }) {
   const navigate = useNavigate();
+  const canContinue = useAtomValue(piSessionAttach.permissionAtom(target.environmentId));
+  const canFork = useAtomValue(piSessionFork.permissionAtom(target.environmentId));
   const { entries, nextPageAvailable, error, isPending, refresh } = usePiContinueCatalog(target);
   const createThread = useAtomCommand(threadEnvironment.create, { reportFailure: false });
   const attachSession = useAtomCommand(piSessionAttach, { reportFailure: false });
@@ -210,110 +209,107 @@ function PiContinueDialog({ target }: { readonly target: PiContinueDialogTarget 
     null,
   );
 
-  const onContinue = useCallback(
-    async (
-      entry: PiSessionCatalogEntry,
-      mode: "attach" | "fork",
-      maxRecords?: number,
-      seedPrompt?: string,
-    ) => {
-      if (busy !== null) return;
-      setBusy({ handle: entry.id, mode });
-      setActionError(null);
-      const threadId = newThreadId();
-      const createdAt = new Date().toISOString();
-      let threadCreated = false;
-      try {
-        const created = await createThread({
-          environmentId: target.environmentId,
-          input: {
-            threadId,
-            projectId: target.projectId,
-            title: buildPiContinueThreadTitle(entry.name, mode === "fork" ? "forked" : "attached"),
-            modelSelection: {
-              instanceId: target.providerInstanceId,
-              model: target.model,
-            },
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: null,
-            createdAt,
-          },
-        });
-        if (created._tag === "Failure") {
-          throw new Error(
-            isAtomCommandInterrupted(created)
-              ? "Connection interrupted while creating the thread. Check your thread list before retrying."
-              : "Could not create the thread for this session.",
-          );
-        }
-        threadCreated = true;
-        const continueInput = {
-          providerInstanceId: target.providerInstanceId,
-          projectId: target.projectId,
+  const onContinue = async (
+    entry: PiSessionCatalogEntry,
+    mode: "attach" | "fork",
+    maxRecords?: number,
+    seedPrompt?: string,
+  ) => {
+    if (busy !== null || !canContinue || (mode === "fork" && !canFork)) return;
+    setBusy({ handle: entry.id, mode });
+    setActionError(null);
+    const threadId = newThreadId();
+    const createdAt = new Date().toISOString();
+    let threadCreated = false;
+    try {
+      const created = await createThread({
+        environmentId: target.environmentId,
+        input: {
           threadId,
-          sessionHandle: entry.id,
-        };
-        const continued =
-          mode === "fork"
-            ? await forkSession({
-                environmentId: target.environmentId,
-                input: {
-                  ...continueInput,
-                  ...(maxRecords !== undefined ? { maxRecords } : {}),
-                },
-              })
-            : await attachSession({ environmentId: target.environmentId, input: continueInput });
-        if (continued._tag === "Failure") {
-          throw new Error(
-            isAtomCommandInterrupted(continued)
-              ? "Connection interrupted while continuing the session."
-              : describePiContinueError(
-                  squashAtomCommandFailure(continued),
-                  mode === "fork"
-                    ? "Could not fork this session."
-                    : "Could not continue this session.",
-                ),
-          );
-        }
-        closePiContinueDialog();
-        // Pi-style branching: forking from your own message keeps everything
-        // before it and hands the text back to the composer, unsent.
-        if (seedPrompt !== undefined) {
-          useComposerDraftStore
-            .getState()
-            .setPrompt(scopeThreadRef(target.environmentId, threadId), seedPrompt);
-        }
-        await navigate({
-          to: "/$environmentId/$threadId",
-          params: { environmentId: target.environmentId, threadId },
-        });
-        const hydrated = continued._tag === "Success" ? (continued.value.hydratedMessages ?? 0) : 0;
-        toastManager.add(
-          stackedThreadToast({
-            type: "success",
-            title:
-              mode === "fork" ? "Forked CLI session into a new thread" : "Continuing CLI session",
-            description:
-              seedPrompt !== undefined
-                ? "Your message is back in the composer, unsent — edit it and send to branch off."
-                : hydrated > 0
-                  ? `Showing ${hydrated} earlier message${hydrated === 1 ? "" : "s"} — send a message to pick up where the CLI left off.`
-                  : "Send a message to pick up where the CLI left off. The model has the full CLI context.",
-          }),
+          projectId: target.projectId,
+          title: buildPiContinueThreadTitle(entry.name, mode === "fork" ? "forked" : "attached"),
+          modelSelection: {
+            instanceId: target.providerInstanceId,
+            model: target.model,
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        },
+      });
+      if (created._tag === "Failure") {
+        throw new Error(
+          isAtomCommandInterrupted(created)
+            ? "Connection interrupted while creating the thread. Check your thread list before retrying."
+            : "Could not create the thread for this session.",
         );
-      } catch (failure) {
-        setActionError({
-          message: describePiContinueError(failure, "Could not continue this session."),
-          ...(threadCreated ? { threadId } : {}),
-        });
-      } finally {
-        setBusy(null);
       }
-    },
-    [attachSession, busy, createThread, forkSession, navigate, target],
-  );
+      threadCreated = true;
+      const continueInput = {
+        providerInstanceId: target.providerInstanceId,
+        projectId: target.projectId,
+        threadId,
+        sessionHandle: entry.id,
+      };
+      const continued =
+        mode === "fork"
+          ? await forkSession({
+              environmentId: target.environmentId,
+              input: {
+                ...continueInput,
+                ...(maxRecords !== undefined ? { maxRecords } : {}),
+              },
+            })
+          : await attachSession({ environmentId: target.environmentId, input: continueInput });
+      if (continued._tag === "Failure") {
+        throw new Error(
+          isAtomCommandInterrupted(continued)
+            ? "Connection interrupted while continuing the session."
+            : describePiContinueError(
+                squashAtomCommandFailure(continued),
+                mode === "fork"
+                  ? "Could not fork this session."
+                  : "Could not continue this session.",
+              ),
+        );
+      }
+      closePiContinueDialog();
+      // Pi-style branching: forking from your own message keeps everything
+      // before it and hands the text back to the composer, unsent.
+      if (seedPrompt !== undefined) {
+        useComposerDraftStore
+          .getState()
+          .setPrompt(scopeThreadRef(target.environmentId, threadId), seedPrompt);
+      }
+      await navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: target.environmentId, threadId },
+      });
+      const hydrated = continued._tag === "Success" ? (continued.value.hydratedMessages ?? 0) : 0;
+      toastManager.add(
+        stackedThreadToast({
+          type: "success",
+          title:
+            mode === "fork" ? "Forked CLI session into a new thread" : "Continuing CLI session",
+          description:
+            seedPrompt !== undefined
+              ? "Your message is back in the composer, unsent. Edit it and send to branch off."
+              : hydrated > 0
+                ? `Showing ${hydrated} earlier message${hydrated === 1 ? "" : "s"}. Send a message to pick up where the CLI left off.`
+                : "Send a message to pick up where the CLI left off. The model has the full CLI context.",
+        }),
+      );
+    } catch (failure) {
+      setActionError({
+        message: describePiContinueError(failure, "Could not continue this session."),
+        ...(threadCreated ? { threadId } : {}),
+      });
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const failedThreadId = actionError?.threadId;
   return (
@@ -364,8 +360,8 @@ function PiContinueDialog({ target }: { readonly target: PiContinueDialogTarget 
                     key={entry.id}
                     entry={entry}
                     target={target}
-                    canFork={target.canFork}
-                    busy={busy !== null}
+                    canFork={target.canFork && canFork}
+                    busy={busy !== null || !canContinue}
                     activeMode={busy?.handle === entry.id ? busy.mode : null}
                     onContinue={onContinue}
                   />

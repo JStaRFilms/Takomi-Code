@@ -41,28 +41,16 @@ function getProviderSnapshot(
   return providers.find((candidate) => candidate.instanceId === defaultInstanceId);
 }
 
-// Pi reports its supported modes per instance. Keep these selectors data-driven
-// so an unavailable or future provider does not inherit Pi's restrictions.
-export function getProviderInteractionModeToggle(
-  providers: ReadonlyArray<ServerProvider>,
-  provider: ProviderDriverKind | ProviderInstanceId,
-): boolean {
-  const snapshot = getProviderSnapshot(providers, provider);
-  if (snapshot?.capabilities) {
-    return snapshot.capabilities.interactionModes?.includes("plan") === true;
-  }
-  return snapshot?.showInteractionModeToggle ?? true;
-}
-
 export function getProviderRuntimeModes(
   providers: ReadonlyArray<ServerProvider>,
   provider: ProviderDriverKind | ProviderInstanceId,
 ): ReadonlyArray<RuntimeMode> {
   const snapshot = getProviderSnapshot(providers, provider);
-  return snapshot?.capabilities ? (snapshot.capabilities.runtimeModes ?? []) : runtimeModeFallback;
+  return (
+    snapshot?.capabilities?.runtimeModes ?? snapshot?.supportedRuntimeModes ?? runtimeModeFallback
+  );
 }
 
-/** A persisted draft must not claim a mode its selected provider cannot run. */
 export function normalizeProviderRuntimeMode(
   runtimeMode: RuntimeMode,
   supportedModes: ReadonlyArray<RuntimeMode>,

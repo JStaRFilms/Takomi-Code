@@ -36,7 +36,7 @@ const scopeBinding = (workspace: string): PiLifecycleBinding => ({
   projectId: ProjectId.make("project-a"),
   workspaceCanonicalPath: workspace,
   serverGeneration: "server-a:connection-a",
-  expiresAt: Date.now() + 60_000,
+  expiresAt: 60_000,
 });
 
 interface Fixture {
@@ -163,7 +163,7 @@ const withLiveHandle = <A, E, R>(
   withFixture((value) => {
     const scope = scopeBinding(value.workspace);
     const lifecycle = new PiSessionLifecycle();
-    const page = lifecycle.createCatalogPage(scan(value), scope, 10, Date.now());
+    const page = lifecycle.createCatalogPage(scan(value), scope, 10, 0);
     return run({ value, lifecycle, scope, handle: page.entries[0]!.id });
   });
 

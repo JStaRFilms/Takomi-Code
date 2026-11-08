@@ -20,10 +20,10 @@ flowchart LR
 - **Driver:** `packages/provider-pi/src/server/driver.ts`
 - **Provider snapshot and health probe:** `packages/provider-pi/src/server/status.ts`
 - **JSON-RPC process adapter:** `packages/provider-pi/src/server/adapter.ts`
-- **Driver registration:** `apps/server/src/provider/ProviderDriverRegistry.ts`
+- **Driver registration:** `apps/server/src/provider/builtInDrivers.ts`
 - **Settings schema:** `packages/provider-pi/src/settings.ts`
-- **Runtime event contracts:** `packages/contracts/src/providerRuntime.ts`
-- **Web metadata:** `apps/web/src/components/settings/providerDriverMeta.ts`
+- **Runtime event contracts:** `packages/contracts/src/orchestrationV2.ts`
+- **Web metadata:** `packages/provider-pi/src/client.ts`
 - **Web icon mapping:** `apps/web/src/components/chat/providerIconUtils.ts`
 - **Session logic:** `apps/web/src/session-logic.ts`
 - **Session catalog boundary:** `apps/server/src/provider/PiSessionCatalog.ts`
@@ -77,13 +77,13 @@ T3 sends Pi's abort command and then terminates the RPC process after settlement
 
 Pi `extension_ui_request` messages are mapped as follows:
 
-| Pi method | T3 event/UI                  | Response to Pi                    |
-| --------- | ---------------------------- | --------------------------------- |
-| `select`  | `user-input.requested`       | `extension_ui_response.value`     |
-| `input`   | `user-input.requested`       | `extension_ui_response.value`     |
-| `editor`  | `user-input.requested`       | `extension_ui_response.value`     |
-| `confirm` | `request.opened` approval UI | `extension_ui_response.confirmed` |
-| `notify`  | `runtime.warning`            | none                              |
+| Pi method | T3 event/UI           | Response to Pi                    |
+| --------- | --------------------- | --------------------------------- |
+| `select`  | `user_input_request`  | `extension_ui_response.value`     |
+| `input`   | `user_input_request`  | `extension_ui_response.value`     |
+| `editor`  | `user_input_request`  | `extension_ui_response.value`     |
+| `confirm` | `approval_request` UI | `extension_ui_response.confirmed` |
+| `notify`  | `system_notice`       | none                              |
 
 This also carries Takomi's `ask_user_question` RPC fallback. It presents questions one at a time through Pi's `select` and `input` dialogs.
 
@@ -95,7 +95,7 @@ Concurrent invocations have separate cancellation signals and request IDs. A `cl
 
 This protocol trusts installed extensions and the Pi process. It does not authenticate against a malicious installed extension or compromised local process that can forge protocol messages. Correlation IDs are not bearer credentials. A title prefix or claimed tool name without live ownership must fail closed.
 
-Web, desktop, and mobile collect an admitted value in a masked field and call `provider.respondPiSecretInput` directly on the owning environment. The authenticated server checks the live Pi request and sends a one-use `extension_ui_response` to that process. It records a resolution with empty answers and a `privateResponse` marker on successful entry, never the value. The work log distinguishes that from cancellation. Ordinary `thread.user-input.respond` commands cannot answer a sensitive question. The Pi host opts into private entry through `T3_TAKOMI_VAULT_SECRET_UI`; other RPC hosts keep the vault's TUI-only secret entry. Ownership adds no database schema change or credential-store migration. The adapter and installed Vault extension must both support the notify protocol. The new extension emits no owned envelope or placeholder when that versioned hint is missing, even if an old host sets `T3_TAKOMI_VAULT_SECRET_UI`. Slash commands and TUI entry keep their existing behavior. The new adapter consumes legacy direct ownership records without admitting model-driven input. An old extension under Pi's stdout guard still cannot deliver its assertions, so updating the adapter alone is insufficient.
+Web, desktop, and mobile collect an admitted value in a masked field and call `provider.respondPiSecretInput` directly on the owning environment. The authenticated server checks the live Pi request and sends a one-use `extension_ui_response` to that process. It records the request and turn item as resolved with no answer content, never the value. The work log distinguishes that from cancellation. Ordinary `thread.user-input.respond` commands cannot answer a sensitive question. The Pi host opts into private entry through `T3_TAKOMI_VAULT_SECRET_UI`; other RPC hosts keep the vault's TUI-only secret entry. Ownership adds no database schema change or credential-store migration. The adapter and installed Vault extension must both support the notify protocol. The new extension emits no owned envelope or placeholder when that versioned hint is missing, even if an old host sets `T3_TAKOMI_VAULT_SECRET_UI`. Slash commands and TUI entry keep their existing behavior. The new adapter consumes legacy direct ownership records without admitting model-driven input. An old extension under Pi's stdout guard still cannot deliver its assertions, so updating the adapter alone is insufficient.
 
 `T3_TAKOMI_VAULT_TRANSFER_UI` also enables GUI transfer. Import takes an encrypted file through a private one-use response, then asks for the key in a masked field. Export sends a private `takomi_vault_export` JSONL record that the adapter intercepts before native logging. The thread receives only a transfer ID; an authorized client retrieves the key and bounded archive once through `provider.takePiVaultExport`. Neither value enters the thread projector or RPC tracing. Replacing the Pi process invalidates the transfer. The environment host and its authorized connected clients can access the transfer; the key is not hidden from the server.
 
@@ -146,11 +146,11 @@ Suite mode also discovers globally installed Pi companion packages from Pi setti
 
 ## Commands, prompts, and skills
 
-The web and mobile command menus use Pi's `get_commands` response for the selected project. Extension commands, prompt templates, and skills are shown in Pi's first-wins order. Pi terminal-only built-ins are not shown because they cannot be invoked through RPC. Pi handles registered vault commands without starting an agent run, so the adapter settles those command-only turns when Pi acknowledges their `prompt` RPC. The adapter marks notifications from an active discovered vault command; both clients display their redacted metadata in a separate timeline row instead of hiding it in the work log. This row never becomes a Pi assistant message. Deletion uses a single "Delete credential" confirmation rather than a reusable approval. Other extension commands may start an agent run and still settle on its lifecycle event.
+The web and mobile command menus use Pi's `get_commands` response for the selected project. Extension commands, prompt templates, and skills are shown in Pi's first-wins order. Pi terminal-only built-ins are not shown because they cannot be invoked through RPC. Pi handles registered vault commands without starting an agent run, so the adapter settles those command-only turns when Pi acknowledges their `prompt` RPC. Vault export readiness becomes a separate redacted timeline row on both clients, carrying only the one-time transfer ID. Other notifications use canonical system notices. Neither becomes a Pi assistant message. Deletion uses a single "Delete credential" confirmation rather than a reusable approval. Other extension commands may start an agent run and still settle on its lifecycle event.
 
 Project resources follow Pi's project-trust decision. Explicit `--approve` and `--no-approve` launch arguments take precedence. In non-interactive RPC mode, the default `ask` behavior cannot display Pi's own trust prompt, so protected resources may remain unavailable until Pi has a saved decision or another supported trust policy applies. Extensions can also decide trust; when that effective result is not observable, Takomi Code reports the trust information as partial rather than claiming an approval or rejection.
 
-Resource snapshots are isolated by environment, provider instance, and exact project path. Upstream\'s shared workspace snapshot expiry controls five-minute refreshes and settings invalidation. Failed Pi discovery reports an error rather than publishing an empty successful catalog or falling back to another workspace.
+Resource snapshots are isolated by environment, provider instance, and exact project path. Upstream's shared workspace snapshot expiry controls five-minute refreshes and settings invalidation. Failed Pi discovery reports an error rather than publishing an empty successful catalog or falling back to another workspace.
 
 ## Session catalog
 
@@ -194,9 +194,9 @@ pi --session "C:\path\to\session.jsonl"
 ```
 
 Do not open the same session file in terminal Pi while Takomi Code is actively writing it.
-Attached threads hold the live file: stop the thread's provider session (releasing it to the
-CLI) before working the same file in a terminal, then send the next T3 message to pick up the
-CLI's appended records through the normal session-recovery path.
+Attached threads hold the live file. The V2 client currently hides the older release action;
+stop the owning environment and wait for its Pi processes to exit before working the same file
+in a terminal. After restarting the environment, the next message resumes the bound file.
 
 Compatible terminal Pi sessions can be listed in the Pi session catalog and continued in
 Takomi Code: attach binds the live file, fork clones it first so the two sides diverge cleanly.
@@ -206,7 +206,7 @@ the next message continues with full CLI context.
 
 ## Known limitations
 
-- utility text generation uses upstream\'s restricted Pi helper, separate from the interactive suite-enabled session
+- utility text generation uses upstream's restricted Pi helper, separate from the interactive suite-enabled session
 - Pi session attach, full-file fork, point-split fork, message preview, and visible CLI
   history hydration are supported into fresh threads
 - session continuation requires a compatible v3 file; changed storage conventions need a reader update

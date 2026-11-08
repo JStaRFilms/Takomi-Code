@@ -1,13 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off - This protocol harness launches only its synthetic stdio peer.
-// @effect-diagnostics globalTimers:off - Peer deadlines are cleared on response, exit, and disposal.
-import assert from "node:assert/strict";
-import * as ChildProcess from "node:child_process";
-import * as Crypto from "node:crypto";
-import * as FileSystem from "node:fs/promises";
-import * as Os from "node:os";
-import * as Path from "node:path";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import { describe, expect, it } from "vite-plus/test";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import {
   activePiSessionBranch,
@@ -37,10 +37,10 @@ const PI_REQUIRED_RPC_OPERATIONS = [
   "clone",
 ] as const;
 
-const fixtures = Path.join(import.meta.dirname, "../testFixtures");
-const rpcPeer = Path.join(fixtures, "piMockPeer.mjs");
-const sessionManagerProbe = Path.join(fixtures, "piSessionManagerConformance.mjs");
-const sessionFixture = Path.join(fixtures, "pi-v0.84.4-session.v3.jsonl");
+const fixtures = NodePath.join(import.meta.dirname, "../testFixtures");
+const rpcPeer = NodePath.join(fixtures, "piMockPeer.mjs");
+const sessionManagerProbe = NodePath.join(fixtures, "piSessionManagerConformance.mjs");
+const sessionFixture = NodePath.join(fixtures, "pi-v0.84.4-session.v3.jsonl");
 
 function records(frames: ReadonlyArray<PiJsonlFrame>): ReadonlyArray<PiRpcRecord> {
   return frames.flatMap((frame) => (frame.type === "record" ? [frame.record] : []));
@@ -60,9 +60,9 @@ interface PeerOptions {
 }
 
 async function openPeer(options: PeerOptions = {}) {
-  const directory = await FileSystem.mkdtemp(Path.join(Os.tmpdir(), "t3-pi-conformance-"));
-  const transcript = Path.join(directory, "transcript.jsonl");
-  const child = ChildProcess.spawn(process.execPath, [rpcPeer], {
+  const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-pi-conformance-"));
+  const transcript = NodePath.join(directory, "transcript.jsonl");
+  const child = NodeChildProcess.spawn(process.execPath, [rpcPeer], {
     env: {
       ...process.env,
       T3_PI_CONFORMANCE_TRANSCRIPT: transcript,
@@ -74,9 +74,9 @@ async function openPeer(options: PeerOptions = {}) {
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
-  assert.notEqual(child.stdin, null);
-  assert.notEqual(child.stdout, null);
-  assert.notEqual(child.stderr, null);
+  NodeAssert.notEqual(child.stdin, null);
+  NodeAssert.notEqual(child.stdout, null);
+  NodeAssert.notEqual(child.stderr, null);
   let stderrText = "";
   child.stderr.on("data", (chunk: Buffer) => {
     stderrText += chunk.toString("utf8");
@@ -87,14 +87,12 @@ async function openPeer(options: PeerOptions = {}) {
     readonly predicate: (record: PiRpcRecord) => boolean;
     readonly resolve: (record: PiRpcRecord) => void;
     readonly reject: (error: Error) => void;
-    readonly timer: NodeJS.Timeout;
   }>();
   let transportError: Error | undefined;
   let exitCode: number | null | undefined;
   const rejectWaiters = (error: Error) => {
     transportError = error;
     for (const waiter of waiters) {
-      clearTimeout(waiter.timer);
       waiter.reject(error);
     }
     waiters.clear();
@@ -103,7 +101,6 @@ async function openPeer(options: PeerOptions = {}) {
     for (const waiter of waiters) {
       const match = records(frames).find(waiter.predicate);
       if (match !== undefined) {
-        clearTimeout(waiter.timer);
         waiters.delete(waiter);
         waiter.resolve(match);
       }
@@ -135,58 +132,29 @@ async function openPeer(options: PeerOptions = {}) {
       throw transportError ?? new Error("Synthetic Pi peer stdin is closed.");
     child.stdin!.write(encodePiJsonlRecord(record));
   };
-  const waitFor = (
-    predicate: (record: PiRpcRecord) => boolean,
-    timeoutMs = 2_000,
-  ): Promise<PiRpcRecord> => {
+  const waitFor = (predicate: (record: PiRpcRecord) => boolean): Promise<PiRpcRecord> => {
     const match = records(frames).find(predicate);
     if (match !== undefined) return Promise.resolve(match);
     if (transportError !== undefined) return Promise.reject(transportError);
     return new Promise((resolve, reject) => {
-      const waiter = {
-        predicate,
-        resolve,
-        reject,
-        timer: setTimeout(() => {
-          waiters.delete(waiter);
-          reject(new Error(`Timed out after ${timeoutMs}ms waiting for synthetic Pi RPC output.`));
-        }, timeoutMs),
-      };
-      waiters.add(waiter);
+      waiters.add({ predicate, resolve, reject });
     });
-  };
-  const exitsWithin = (timeoutMs: number) =>
-    new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(false), timeoutMs);
-      void exited.then(() => {
-        clearTimeout(timer);
-        resolve(true);
-      });
-    });
-  const ensureExited = async () => {
-    if (exitCode !== undefined) return exitCode;
-    if (await exitsWithin(2_000)) return exitCode ?? null;
-    child.kill();
-    if (await exitsWithin(2_000)) return exitCode ?? null;
-    throw new Error(
-      `Synthetic Pi peer did not terminate after kill${stderrText ? `: ${stderrText.trim()}` : "."}`,
-    );
   };
   const close = async () => {
     if (!child.stdin!.destroyed) child.stdin!.end();
-    const code = await ensureExited();
+    const code = await exited;
     return {
       exitCode: code,
       frames: [...frames],
-      transcript: await FileSystem.readFile(transcript, "utf8").catch(() => ""),
+      transcript: await NodeFSP.readFile(transcript, "utf8").catch(() => ""),
       stderr: stderrText,
     };
   };
   const dispose = async () => {
     if (!child.stdin!.destroyed) child.stdin!.end();
     if (exitCode === undefined) child.kill();
-    await ensureExited();
-    await FileSystem.rm(directory, { recursive: true, force: true });
+    await exited;
+    await NodeFSP.rm(directory, { recursive: true, force: true });
   };
   return { frames, send, waitFor, close, dispose, child };
 }
@@ -386,7 +354,11 @@ describe("Pi 0.84.4 protocol conformance", () => {
   });
 
   it("binds compatibility to the resolved Pi package declarations, not slash-command discovery", async () => {
-    const packagePath = await resolvePiPackageFromBinary("pi", process.env);
+    const packagePath = await resolvePiPackageFromBinary(
+      "pi",
+      process.env,
+      HostProcess.Platform.defaultValue(),
+    );
     const probe = await probePiProtocol(packagePath);
     expect(probe.version).toMatch(/^\d+\.\d+\.\d+/);
     expect(probe.packagePath).toBe(packagePath);
@@ -420,26 +392,30 @@ describe("Pi 0.84.4 protocol conformance", () => {
   });
 
   it("continues a copied fixture through Pi's public SessionManager and preserves its branch state", async () => {
-    const packagePath = await resolvePiPackageFromBinary("pi", process.env);
-    const source = await FileSystem.readFile(sessionFixture);
-    const sourceChecksum = Crypto.createHash("sha256").update(source).digest("hex");
+    const packagePath = await resolvePiPackageFromBinary(
+      "pi",
+      process.env,
+      HostProcess.Platform.defaultValue(),
+    );
+    const source = await NodeFSP.readFile(sessionFixture);
+    const sourceChecksum = NodeCrypto.createHash("sha256").update(source).digest("hex");
     const fixture = parsePiSessionV3(source);
     expect(fixture.highWaterId).toBe("active-label");
     expect(activePiSessionBranch(fixture.entries, fixture.highWaterId).at(-1)?.id).toBe(
       fixture.highWaterId,
     );
 
-    const directory = await FileSystem.mkdtemp(Path.join(Os.tmpdir(), "t3-pi-session-"));
-    const copiedFixture = Path.join(directory, "pi-v0.84.4-session.v3.jsonl");
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-pi-session-"));
+    const copiedFixture = NodePath.join(directory, "pi-v0.84.4-session.v3.jsonl");
     try {
-      await FileSystem.copyFile(sessionFixture, copiedFixture);
+      await NodeFSP.copyFile(sessionFixture, copiedFixture);
       expect(
-        Crypto.createHash("sha256")
-          .update(await FileSystem.readFile(copiedFixture))
+        NodeCrypto.createHash("sha256")
+          .update(await NodeFSP.readFile(copiedFixture))
           .digest("hex"),
       ).toBe(sourceChecksum);
       const result = await new Promise<string>((resolve, reject) => {
-        ChildProcess.execFile(
+        NodeChildProcess.execFile(
           process.execPath,
           [sessionManagerProbe, packagePath, directory, copiedFixture],
           { timeout: 45_000 },
@@ -486,16 +462,16 @@ describe("Pi 0.84.4 protocol conformance", () => {
         treeEntryIds: [...evidence.source.treeEntryIds, evidence.appended.promptEntryId],
       });
       expect(
-        Crypto.createHash("sha256")
-          .update(await FileSystem.readFile(copiedFixture))
+        NodeCrypto.createHash("sha256")
+          .update(await NodeFSP.readFile(copiedFixture))
           .digest("hex"),
       ).not.toBe(sourceChecksum);
     } finally {
-      await FileSystem.rm(directory, { recursive: true, force: true });
+      await NodeFSP.rm(directory, { recursive: true, force: true });
     }
     expect(
-      Crypto.createHash("sha256")
-        .update(await FileSystem.readFile(sessionFixture))
+      NodeCrypto.createHash("sha256")
+        .update(await NodeFSP.readFile(sessionFixture))
         .digest("hex"),
     ).toBe(sourceChecksum);
   });

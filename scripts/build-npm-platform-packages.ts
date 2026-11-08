@@ -1,23 +1,7 @@
 #!/usr/bin/env node
 /**
- * Turns the per-platform CLI archives of one release into the npm packages
- * behind `npx takomi-code` / `npm i -g takomi-code`: one `@johnsax/takomi-code-<platformKey>` package per
- * archive holding the archive's contents verbatim, plus the `takomi-code` launcher
- * that lists them as optionalDependencies and execs the one npm installed.
- * The bytes a user gets from npm are therefore the release archive's, and
- * running them needs neither a Node runtime, npm, nor a native build.
- *
- * Output layout under `--output-dir`:
- *
- *   @johnsax/takomi-code-<platformKey>/      archive contents flattened + package.json
- *   @johnsax/takomi-code-<platformKey>.tgz   the same tree as an npm tarball
- *   takomi-code/                    launcher: package.json, bin/takomi-code.js, README.md
- *   takomi-code.tgz                 the launcher as an npm tarball
- *
- * The tarballs are what gets published. `npm publish <dir>` always drops
- * `node_modules/` (npm-packlist ignores it whatever `files` says, and
- * bundleDependencies needs an arborist tree these flattened installs are
- * not), whereas `npm publish <tarball>` uploads the bytes as given.
+ * Ship release archive bytes unchanged in optional platform packages plus the Takomi launcher.
+ * Publish tarballs: directory publication strips node_modules from these flattened installs.
  */
 import { legacyCliLauncherScript } from "@t3tools/shared/legacyCliLauncher";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -41,7 +25,7 @@ import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 import { isCommandAvailable } from "@t3tools/shared/shell";
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
-import { windowsSystemTar } from "./build-cli-archive.ts";
+import { windowsSystemTar } from "./lib/windows-tar.ts";
 
 export const NPM_PLATFORM_PACKAGE_SCOPE = "@johnsax";
 export const NPM_LAUNCHER_PACKAGE_NAME = "takomi-code";
@@ -90,13 +74,8 @@ export function npmPlatformPackageName(platformKey: CliArchivePlatformKey): stri
 }
 
 /**
- * package.json for one platform package; `os`/`cpu` let npm skip the other
- * platforms. The archive's runtime `node_modules` (native addons and their
- * loaders) ships inside the tarball, and npm only keeps a nested tree it can
- * account for: anything not declared is extraneous and pruned on the next
- * `npm install` in that project, which then breaks the executable. Declaring
- * every bundled package as a bundled dependency at the exact version on disk
- * makes npm treat the tree as part of this package and leave it alone.
+ * Declare every bundled native addon and loader at its on-disk version.
+ * Otherwise npm prunes the nested runtime tree as extraneous on a later install.
  */
 export function npmPlatformPackageManifest(
   platformKey: CliArchivePlatformKey,

@@ -1,46 +1,23 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { AsyncResult } from "effect/reactivity";
+import type { ScopedThreadRef } from "@t3tools/contracts";
+import { AsyncResult, Atom } from "effect/reactivity";
 import * as Option from "effect/Option";
-import { useEffect, useMemo, type Dispatch, type SetStateAction } from "react";
 
 import { piSessionUpdateCheck } from "~/state/piSessions";
 
-export interface PiSyncUpdate {
-  readonly newMessages: number;
-  readonly updateKey: string;
-}
+const noUpdate = Atom.make(null);
 
-/**
- * Background poll for CLI advances on a continued thread. Mounted only while
- * eligible (Pi thread with backfilled history); reports through onUpdate so
- * the composer banner stack can offer one-click Sync. Renders nothing.
- */
-export function PiSyncCheckGate({
-  environmentId,
-  threadId,
-  onUpdate,
-}: {
-  readonly environmentId: EnvironmentId;
-  readonly threadId: ThreadId;
-  readonly onUpdate: Dispatch<SetStateAction<PiSyncUpdate | null>>;
-}) {
-  const queryAtom = useMemo(
-    () => piSessionUpdateCheck({ environmentId, input: { threadId } }),
-    [environmentId, threadId],
+export function usePiSyncUpdate(target: ScopedThreadRef | null) {
+  const result = useAtomValue(
+    target
+      ? piSessionUpdateCheck({
+          environmentId: target.environmentId,
+          input: { threadId: target.threadId },
+        })
+      : noUpdate,
   );
-  const result = useAtomValue(queryAtom);
-  const data = Option.getOrNull(AsyncResult.value(result));
-  useEffect(() => {
-    const next: PiSyncUpdate | null =
-      data && data.available && data.newMessages > 0 && data.updateKey
-        ? { newMessages: data.newMessages, updateKey: data.updateKey }
-        : null;
-    onUpdate((previous) =>
-      previous?.updateKey === next?.updateKey && previous?.newMessages === next?.newMessages
-        ? previous
-        : next,
-    );
-  }, [data, onUpdate]);
-  return null;
+  const data = result === null ? null : Option.getOrNull(AsyncResult.value(result));
+  return data && data.available && data.newMessages > 0 && data.updateKey
+    ? { newMessages: data.newMessages, updateKey: data.updateKey }
+    : null;
 }

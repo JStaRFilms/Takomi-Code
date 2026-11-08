@@ -1,10 +1,10 @@
-# Continuing a CLI session in T3 Code
+# Continuing a CLI session in Takomi Code
 
 This flow is available in the web and desktop clients. The mobile client does
 not yet expose session discovery or continuation.
 
 If you started work in a terminal with `pi` (Takomi), you can continue the same
-session in T3 Code — and hand it back to the terminal later.
+session in Takomi Code, or fork it to keep the app and terminal independent.
 
 ## Continue a session
 
@@ -26,18 +26,16 @@ context-only and are not shown as messages.
 ## Hand it back to the terminal
 
 While a continued thread holds the live session file, leave that file alone in
-other terminals. When you want to work in the terminal:
-
-1. Open the thread's menu (sidebar right-click or chat header) and choose
-   **Release Pi session to CLI**.
-2. Work in the terminal.
-3. Send your next message in the thread — it re-attaches automatically and
-   picks up what the CLI added.
+other terminals. The V2 client does not currently expose **Release Pi session to CLI**.
+To use that same file in a terminal, stop the owning environment and wait for its Pi
+processes to exit first. Restart the environment when terminal work is finished;
+the next message resumes the bound file. Prefer **Fork** when you need both sides
+available independently.
 
 ## Sync new CLI messages into the open thread
 
 If the session file moves forward while the thread is open (you worked in the
-terminal without releasing, or another process appended), a banner appears
+terminal while the environment was stopped, or another process appended), a banner appears
 above the composer: **N new CLI messages**, with a **Sync** action. Syncing
 appends the new messages to the thread's visible history — the same thread,
 nothing abandoned. The banner reappears on its own when more work lands, and

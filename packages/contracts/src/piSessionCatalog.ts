@@ -58,12 +58,8 @@ export const PiSessionCatalogPage = Schema.Struct({
 export type PiSessionCatalogPage = typeof PiSessionCatalogPage.Type;
 
 /**
- * Continue a terminal Pi session inside a fresh, empty T3 thread.
- *
- * `sessionHandle` is an opaque catalog handle: never a native id, filename,
- * or path token. The server resolves it against the bound workspace and
- * starts the thread's provider session from the resolved file, so the raw
- * session path never crosses the wire to the client.
+ * Opaque workspace-bound handles never expose session paths or native IDs to clients.
+ * Attach resolves the file server-side and requires a fresh, empty thread.
  */
 export const PiSessionAttachInput = Schema.Struct({
   providerInstanceId: ProviderInstanceId,

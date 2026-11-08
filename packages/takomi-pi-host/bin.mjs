@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeURL from "node:url";
 
-const child = spawn(
+const child = NodeChildProcess.spawn(
   process.execPath,
   [
     "--experimental-strip-types",
-    fileURLToPath(new URL("./src/bin.ts", import.meta.url)),
+    NodeURL.fileURLToPath(new URL("./src/bin.ts", import.meta.url)),
     ...process.argv.slice(2),
   ],
   {

@@ -4,7 +4,7 @@
 
 Takomi Code uses upstream's V2 turn items and work-log rendering. Desktop and web share that React UI. Mobile consumes the same canonical items through its native feed.
 
-The optional web/desktop Takomi inspector lists persisted tools whose names identify Takomi, Todo, boards, workflows, or subagents. Selecting a call shows its recorded status and non-secret details. Closing the inspector does not remove the inline work-log entry. Vault and secret calls are excluded from the inspector.
+Use **Inspect** on a matching Pi work-log row to open the web/desktop Takomi inspector. It lists persisted Pi tools whose names identify Takomi, Todo, boards, workflows, or subagents. Selecting a call shows its recorded status and non-secret details. Closing the inspector does not remove the inline work-log entry. Vault and secret calls are excluded from the inspector.
 
 The inspector does not reconstruct the older board dashboard or invocation-first child history described in historical task notes. Those notes are not current implementation guidance.
 

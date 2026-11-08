@@ -74,7 +74,7 @@ The app does not bundle the separate Takomi suite or Vault extension. Install th
 
 The host computer must stay running and reachable. Pairing does not move your projects or agents onto the phone.
 
-For a desktop host, open **Settings → Connections**, enable **Network access**, and create a pairing link using an address your other device can reach. Enabling network access restarts the desktop app, so finish active work first. Scan the QR code or open the pairing link in the Android app.
+For a desktop host, open **Settings → Sharing & access**, enable **Network access**, and create a pairing link using an address your other device can reach. Enabling network access restarts the desktop app, so finish active work first. Scan the QR code or open the pairing link in the Android app.
 
 For a command-line host over Tailscale, connect both devices to the same tailnet and run:
 
@@ -141,7 +141,7 @@ Some inherited guides still use T3 Code names and commands. Use this README's do
 
 ## Build from source
 
-Install [Vite+](https://viteplus.dev/guide/) and Node.js 24, then clone this fork:
+Install [Vite+](https://viteplus.dev/guide/) and Node.js 26.12.1, then clone this fork:
 
 ```sh
 git clone https://github.com/JStaRFilms/Takomi-Code.git

@@ -9,7 +9,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -44,8 +44,8 @@ const unavailable = (message: string) =>
 export const makePiSessionContinuationV2 = Effect.fn("PiSessionContinuationV2.make")(function* (
   lifecycle: PiSessionLifecycle,
 ) {
-  const crypto = yield* Crypto.Crypto;
-  const connectionGeneration = yield* crypto.randomUUIDv4();
+  const crypto = yield* SecureRandom.SecureRandom;
+  const connectionGeneration = yield* crypto.uuidV4();
   const generation = yield* Ref.make({
     epoch: 0,
     expiresAt: (yield* Clock.currentTimeMillis) + PI_CATALOG_GENERATION_TTL_MS,
@@ -76,64 +76,66 @@ export const makePiSessionContinuationV2 = Effect.fn("PiSessionContinuationV2.ma
         }),
       ),
     );
-  const context = (projectId: ProjectId) =>
-    Effect.gen(function* () {
-      const current = yield* catalogGeneration;
-      return {
-        serverSettings: yield* settingsService.getSettings.pipe(
-          Effect.mapError(() => unavailable("Pi session discovery is unavailable.")),
-        ),
-        workspaceCanonicalPath: yield* workspace(projectId),
-        environmentId: (yield* serverEnvironment.getDescriptor).environmentId,
-        serverGeneration: `${lifecycle.serverGeneration}:${connectionGeneration}:${current.epoch}`,
-        expiresAt: current.expiresAt,
-        lifecycle,
-      };
-    });
+  const context = Effect.fn("PiSessionContinuationV2.context")(function* (projectId: ProjectId) {
+    const current = yield* catalogGeneration;
+    return {
+      serverSettings: yield* settingsService.getSettings.pipe(
+        Effect.mapError(() => unavailable("Pi session discovery is unavailable.")),
+      ),
+      workspaceCanonicalPath: yield* workspace(projectId),
+      environmentId: (yield* serverEnvironment.getDescriptor).environmentId,
+      serverGeneration: `${lifecycle.serverGeneration}:${connectionGeneration}:${current.epoch}`,
+      expiresAt: current.expiresAt,
+      lifecycle,
+    };
+  });
 
-  const list = (input: PiSessionCatalogInput) =>
-    Effect.gen(function* () {
-      return yield* listBoundedPiSessions({ catalog: input, ...(yield* context(input.projectId)) });
+  const list = Effect.fn("PiSessionContinuationV2.list")(function* (input: PiSessionCatalogInput) {
+    return yield* listBoundedPiSessions({ catalog: input, ...(yield* context(input.projectId)) });
+  });
+  const preview = Effect.fn("PiSessionContinuationV2.preview")(function* (
+    input: PiSessionMessagePreviewInput,
+  ) {
+    return yield* previewPiSessionMessages({
+      handle: input.sessionHandle,
+      providerInstanceId: input.providerInstanceId,
+      projectId: input.projectId,
+      ...(input.limit === undefined ? {} : { limit: input.limit }),
+      ...(yield* context(input.projectId)),
     });
-  const preview = (input: PiSessionMessagePreviewInput) =>
-    Effect.gen(function* () {
-      return yield* previewPiSessionMessages({
-        handle: input.sessionHandle,
-        providerInstanceId: input.providerInstanceId,
-        projectId: input.projectId,
-        ...(input.limit === undefined ? {} : { limit: input.limit }),
-        ...(yield* context(input.projectId)),
-      });
-    });
-  const diagnostics = (input: {
+  });
+  const diagnostics = Effect.fn("PiSessionContinuationV2.diagnostics")(function* (input: {
     readonly projectId: ProjectId;
     readonly providerInstanceId: PiSessionCatalogInput["providerInstanceId"];
-  }) =>
-    Effect.gen(function* () {
-      const current = yield* context(input.projectId);
-      yield* validatePiSessionProvider(current.serverSettings, input.providerInstanceId);
-      return lifecycle.diagnostics(
-        {
-          environmentId: current.environmentId,
-          providerInstanceId: input.providerInstanceId,
-          projectId: input.projectId,
-          workspaceCanonicalPath: current.workspaceCanonicalPath,
-          serverGeneration: current.serverGeneration,
-          expiresAt: current.expiresAt,
-        },
-        yield* Clock.currentTimeMillis,
-      );
-    });
-  const appendHistory: PiSyncDeps["appendHistory"] = (threadId, messages) =>
-    Effect.gen(function* () {
-      const commandId = CommandId.make(`pi-history:${yield* crypto.randomUUIDv4()}`);
+  }) {
+    const current = yield* context(input.projectId);
+    yield* validatePiSessionProvider(current.serverSettings, input.providerInstanceId);
+    return lifecycle.diagnostics(
+      {
+        environmentId: current.environmentId,
+        providerInstanceId: input.providerInstanceId,
+        projectId: input.projectId,
+        workspaceCanonicalPath: current.workspaceCanonicalPath,
+        serverGeneration: current.serverGeneration,
+        expiresAt: current.expiresAt,
+      },
+      yield* Clock.currentTimeMillis,
+    );
+  });
+  const appendHistory: PiSyncDeps["appendHistory"] = Effect.fn(
+    "PiSessionContinuationV2.appendHistory",
+  )(
+    function* (threadId, messages) {
+      const commandId = CommandId.make(`pi-history:${yield* crypto.uuidV4()}`);
       yield* threadManagement.dispatch({
         type: "thread.pi-history.import",
         commandId,
         threadId,
         messages,
       });
-    }).pipe(Effect.mapError(() => unavailable("Importing Pi session history failed.")));
+    },
+    Effect.mapError(() => unavailable("Importing Pi session history failed.")),
+  );
   const syncDeps: PiSyncDeps = {
     readThread: (threadId) =>
       threadManagement.getThreadRecords(threadId, ["messages"]).pipe(
@@ -159,47 +161,46 @@ export const makePiSessionContinuationV2 = Effect.fn("PiSessionContinuationV2.ma
       ),
     appendHistory,
   };
-  const continueSession = (
+  const continueSession = Effect.fn("PiSessionContinuationV2.continueSession")(function* (
     input: PiSessionAttachInput | PiSessionForkInput,
     mode: "attach" | "fork",
-  ) =>
-    Effect.gen(function* () {
-      const records = yield* threadManagement
-        .getThreadRecords(input.threadId, ["providerThreads", "runs"])
-        .pipe(Effect.mapError(() => unavailable("The thread is unavailable.")));
-      if (
-        records.thread.projectId !== input.projectId ||
-        records.thread.providerInstanceId !== input.providerInstanceId ||
-        records.thread.deletedAt !== null ||
-        records.providerThreads.length > 0 ||
-        records.runs.length > 0 ||
-        (yield* threadManagement
-          .getMessageCount(input.threadId)
-          .pipe(Effect.mapError(() => unavailable("The thread is unavailable.")))) > 0
-      ) {
-        return yield* unavailable(
-          "Only a fresh thread with this Pi provider can continue the session.",
-        );
-      }
-      const current = yield* context(input.projectId);
-      const resolution = yield* continuePiSessionInThread({
-        handle: input.sessionHandle,
-        threadId: input.threadId,
-        mode,
-        ...("maxRecords" in input && input.maxRecords !== undefined
-          ? { maxRecords: input.maxRecords }
-          : {}),
-        providerInstanceId: input.providerInstanceId,
-        projectId: input.projectId,
-        threadProjectId: records.thread.projectId,
-        threadHasSession: false,
-        threadHasTurns: false,
-        hasPersistedBinding: false,
-        ...current,
-      });
-      return yield* Effect.gen(function* () {
-        // V2 records may outlive a process. Prevent a second live thread from using the same file.
-        const bound = yield* sql<{ readonly threadId: string }>`
+  ) {
+    const records = yield* threadManagement
+      .getThreadRecords(input.threadId, ["providerThreads", "runs"])
+      .pipe(Effect.mapError(() => unavailable("The thread is unavailable.")));
+    if (
+      records.thread.projectId !== input.projectId ||
+      records.thread.providerInstanceId !== input.providerInstanceId ||
+      records.thread.deletedAt !== null ||
+      records.providerThreads.length > 0 ||
+      records.runs.length > 0 ||
+      (yield* threadManagement
+        .getMessageCount(input.threadId)
+        .pipe(Effect.mapError(() => unavailable("The thread is unavailable.")))) > 0
+    ) {
+      return yield* unavailable(
+        "Only a fresh thread with this Pi provider can continue the session.",
+      );
+    }
+    const current = yield* context(input.projectId);
+    const resolution = yield* continuePiSessionInThread({
+      handle: input.sessionHandle,
+      threadId: input.threadId,
+      mode,
+      ...("maxRecords" in input && input.maxRecords !== undefined
+        ? { maxRecords: input.maxRecords }
+        : {}),
+      providerInstanceId: input.providerInstanceId,
+      projectId: input.projectId,
+      threadProjectId: records.thread.projectId,
+      threadHasSession: false,
+      threadHasTurns: false,
+      hasPersistedBinding: false,
+      ...current,
+    });
+    return yield* Effect.gen(function* () {
+      // V2 records may outlive a process. Prevent a second live thread from using the same file.
+      const bound = yield* sql<{ readonly threadId: string }>`
           SELECT provider_thread.thread_id AS threadId
           FROM orchestration_v2_projection_provider_threads AS provider_thread
           JOIN orchestration_v2_projection_threads AS thread ON thread.thread_id = provider_thread.thread_id
@@ -208,42 +209,40 @@ export const makePiSessionContinuationV2 = Effect.fn("PiSessionContinuationV2.ma
             AND thread.deleted_at IS NULL
           LIMIT 1
         `;
-        if (bound.length > 0)
-          return yield* unavailable("This Pi session is already bound to another thread.");
-        // Extract before binding so a failed read cannot leave an empty, non-retryable thread.
-        const extraction = yield* Effect.gen(function* () {
-          const signal = yield* Effect.abortSignal;
-          return yield* Effect.tryPromise({
-            try: () => extractPiHistory({ file: resolution.sessionFile }, { signal }),
-            catch: () => unavailable("Pi session history is unavailable."),
-          });
-        }).pipe(Effect.scoped);
-        const commandId = CommandId.make(`pi-session:${yield* crypto.randomUUIDv4()}`);
-        yield* threadManagement
-          .dispatch({
-            type: "thread.pi-session.attach",
-            commandId,
-            threadId: input.threadId,
-            providerInstanceId: input.providerInstanceId,
-            sessionFile: resolution.sessionFile,
-            messages: toHistoryImportMessages(input.threadId, extraction.messages),
-          })
-          .pipe(
-            Effect.mapError(() => unavailable("Could not bind the Pi session to this thread.")),
-          );
-        const hydratedMessages = extraction.messages.length;
-        return {
-          mode: mode === "attach" ? ("attached" as const) : ("forked" as const),
-          name: resolution.display.name,
-          modifiedAt: resolution.display.modifiedAt,
-          entryCount: resolution.display.entryCount,
-          entryCountExact: resolution.display.entryCountExact,
-          ...(resolution.display.model === undefined ? {} : { model: resolution.display.model }),
-          source: "pi-jsonl" as const,
-          hydratedMessages,
-        };
-      }).pipe(Effect.ensuring(Effect.sync(resolution.releaseReservation)));
-    });
+      if (bound.length > 0)
+        return yield* unavailable("This Pi session is already bound to another thread.");
+      // Extract before binding so a failed read cannot leave an empty, non-retryable thread.
+      const extraction = yield* Effect.gen(function* () {
+        const signal = yield* Effect.abortSignal;
+        return yield* Effect.tryPromise({
+          try: () => extractPiHistory({ file: resolution.sessionFile }, { signal }),
+          catch: () => unavailable("Pi session history is unavailable."),
+        });
+      }).pipe(Effect.scoped);
+      const commandId = CommandId.make(`pi-session:${yield* crypto.uuidV4()}`);
+      yield* threadManagement
+        .dispatch({
+          type: "thread.pi-session.attach",
+          commandId,
+          threadId: input.threadId,
+          providerInstanceId: input.providerInstanceId,
+          sessionFile: resolution.sessionFile,
+          messages: toHistoryImportMessages(input.threadId, extraction.messages),
+        })
+        .pipe(Effect.mapError(() => unavailable("Could not bind the Pi session to this thread.")));
+      const hydratedMessages = extraction.messages.length;
+      return {
+        mode: mode === "attach" ? ("attached" as const) : ("forked" as const),
+        name: resolution.display.name,
+        modifiedAt: resolution.display.modifiedAt,
+        entryCount: resolution.display.entryCount,
+        entryCountExact: resolution.display.entryCountExact,
+        ...(resolution.display.model === undefined ? {} : { model: resolution.display.model }),
+        source: "pi-jsonl" as const,
+        hydratedMessages,
+      };
+    }).pipe(Effect.ensuring(Effect.sync(resolution.releaseReservation)));
+  });
   const checkUpdates = (threadId: ThreadId) =>
     checkPiSessionUpdates(threadId, syncDeps).pipe(
       Effect.map((result) => ({ ...result, source: "pi-jsonl" as const })),

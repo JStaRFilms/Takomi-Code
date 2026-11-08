@@ -143,14 +143,14 @@ export const listBoundedPiSessions = Effect.fn("PiSessionCatalog.listBoundedPiSe
   }
   const path = yield* Path.Path;
   const home = yield* HostProcess.HomeDirectory;
+  const platform = yield* HostProcess.Platform;
   const environment = yield* mergeProviderInstanceEnvironment(
     instance.environment,
     yield* HostProcess.Environment,
   );
-  const controller = new AbortController();
   const discovery = Effect.gen(function* () {
     const packageRoot = yield* Effect.tryPromise({
-      try: () => resolvePiPackageFromBinary(instance.settings.binaryPath, environment),
+      try: () => resolvePiPackageFromBinary(instance.settings.binaryPath, environment, platform),
       catch: () => catalogError("provider_unavailable", "Pi session discovery is unavailable."),
     });
     const launchArgs = yield* Effect.try({
@@ -158,7 +158,7 @@ export const listBoundedPiSessions = Effect.fn("PiSessionCatalog.listBoundedPiSe
       catch: () => catalogError("provider_unavailable", "Pi launch arguments are invalid."),
     });
     const scan = yield* Effect.tryPromise({
-      try: () =>
+      try: (signal) =>
         scanPiSessionCatalog(
           {
             workspacePath: input.workspaceCanonicalPath,
@@ -169,13 +169,13 @@ export const listBoundedPiSessions = Effect.fn("PiSessionCatalog.listBoundedPiSe
               ? { environmentSessionDir: environment.PI_CODING_AGENT_SESSION_DIR }
               : {}),
           },
-          { signal: controller.signal },
+          { signal },
         ),
       catch: () =>
         catalogError("security_rejected", "Pi session discovery rejected this workspace."),
     });
     return input.lifecycle.createCatalogPage(scan, lifecycleBinding, limit, now);
-  }).pipe(Effect.ensuring(Effect.sync(() => controller.abort())));
+  });
   return yield* discovery.pipe(
     Effect.timeoutOption(CATALOG_DEADLINE),
     Effect.flatMap(

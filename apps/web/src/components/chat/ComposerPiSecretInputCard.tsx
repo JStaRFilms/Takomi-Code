@@ -73,16 +73,22 @@ export function ComposerPiSecretInputCard({
     }
   };
 
+  const paragraphs: { text: string; offset: number }[] = [];
+  for (const text of question.split(/\r?\n\s*\r?\n/)) {
+    const previous = paragraphs.at(-1);
+    paragraphs.push({ text, offset: previous ? previous.offset + previous.text.length + 1 : 0 });
+  }
+
   return (
     <div className="px-3 py-2.5 sm:px-4" data-pi-secret-input>
       <div className="text-xs font-medium text-muted-foreground">{header}</div>
       <div id={questionId}>
-        {question.split(/\r?\n\s*\r?\n/).map((paragraph, index) => (
+        {paragraphs.map((paragraph) => (
           <p
-            key={index}
+            key={paragraph.offset}
             className="mt-1 text-sm whitespace-pre-wrap text-foreground/85 wrap-anywhere"
           >
-            {paragraph}
+            {paragraph.text}
           </p>
         ))}
       </div>
@@ -117,7 +123,7 @@ export function ComposerPiSecretInputCard({
                 void respond({ value });
               }}
               disabled={unavailable || submitting}
-              className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-1 focus-visible:ring-primary"
+              className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary"
             />
             <Button
               type="button"

@@ -46,8 +46,8 @@ platform assets remain alongside their platform targets.
 
 The current source versions are:
 
-- desktop/server: `0.1.0` from their package manifests;
-- mobile: `2.0.0` from `apps/mobile/app.config.ts`.
+- desktop/server: `0.1.7` from their package manifests;
+- mobile: `2.2.0` from `apps/mobile/app.config.ts`.
 
 Each local attempt reserves a separate `release/local-<UTC-date>.<build-number>/` directory:
 

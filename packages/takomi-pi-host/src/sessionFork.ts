@@ -145,11 +145,8 @@ export async function forkPiSessionFile(
     parentSession: realFile,
   };
   const out = [`${JSON.stringify(forkedHeader)}\n`];
-  // No per-record cap: a fork carries records verbatim, mirroring Pi's
-  // native fork. The total-size cap above bounds memory. Every non-empty
-  // post-header line consumes one maxRecords unit (matching extraction's
-  // recordIndex); stray session-type lines consume budget but are dropped,
-  // exactly like the native fork.
+  // Preserve records verbatim, bounded by total size rather than per-record size.
+  // Every non-empty line consumes the extraction recordIndex budget, even discarded session headers.
   let recordCount = 0;
   for (const entry of lines.slice(1)) {
     if (entry.length === 0) continue;

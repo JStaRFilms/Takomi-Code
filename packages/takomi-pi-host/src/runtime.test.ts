@@ -1,13 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off - The test creates isolated on-disk runtime fixtures.
-import assert from "node:assert/strict";
-import * as ChildProcess from "node:child_process";
-import * as FileSystem from "node:fs/promises";
-import * as Os from "node:os";
-import * as Path from "node:path";
-import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
-import * as Zlib from "node:zlib";
-import { test } from "node:test";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeModule from "node:module";
+import * as NodeURL from "node:url";
+import * as NodeZlib from "node:zlib";
+import * as NodeTest from "node:test";
 
 import { probePiHost } from "./host.ts";
 import {
@@ -20,23 +20,23 @@ import {
 const PI_PACKAGE = "@earendil-works/pi-coding-agent";
 
 async function writeJson(path: string, value: unknown): Promise<void> {
-  await FileSystem.mkdir(Path.dirname(path), { recursive: true });
-  await FileSystem.writeFile(path, `${JSON.stringify(value, undefined, 2)}\n`);
+  await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
+  await NodeFSP.writeFile(path, `${JSON.stringify(value, undefined, 2)}\n`);
 }
 
 async function writePackage(root: string): Promise<void> {
-  await writeJson(Path.join(root, "package.json"), {
+  await writeJson(NodePath.join(root, "package.json"), {
     name: "takomi",
     version: "2.5.15",
     license: "ISC",
     dependencies: { "pi-subagents": "0.31.0" },
     devDependencies: { [PI_PACKAGE]: "0.84.4" },
   });
-  await FileSystem.writeFile(Path.join(root, "LICENSE"), "ISC\n");
-  await FileSystem.writeFile(Path.join(root, ".gitignore"), "node_modules/\n");
-  await FileSystem.writeFile(Path.join(root, "runtime.mjs"), "export {};\n");
+  await NodeFSP.writeFile(NodePath.join(root, "LICENSE"), "ISC\n");
+  await NodeFSP.writeFile(NodePath.join(root, ".gitignore"), "node_modules/\n");
+  await NodeFSP.writeFile(NodePath.join(root, "runtime.mjs"), "export {};\n");
   await writeJson(
-    Path.join(root, ".pi", "extensions", "takomi-subagents", "pi-subagents-compatibility.json"),
+    NodePath.join(root, ".pi", "extensions", "takomi-subagents", "pi-subagents-compatibility.json"),
     {
       schemaVersion: 1,
       piVersion: "0.84.4",
@@ -52,17 +52,17 @@ async function writePackage(root: string): Promise<void> {
 }
 
 async function writePiDependency(root: string, loaderError?: string): Promise<void> {
-  const piRoot = Path.join(root, "node_modules", "@earendil-works", "pi-coding-agent");
-  await writeJson(Path.join(piRoot, "package.json"), {
+  const piRoot = NodePath.join(root, "node_modules", "@earendil-works", "pi-coding-agent");
+  await writeJson(NodePath.join(piRoot, "package.json"), {
     name: PI_PACKAGE,
     version: "0.84.4",
     type: "module",
     exports: { ".": { import: "./index.js" } },
   });
-  await FileSystem.writeFile(
-    Path.join(piRoot, "index.js"),
+  await NodeFSP.writeFile(
+    NodePath.join(piRoot, "index.js"),
     `import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import * as NodeURL from "node:url";
 const loaderError = ${JSON.stringify(loaderError ?? null)};
 export class DefaultResourceLoader {
   constructor(options) { this.options = options; this.errors = []; }
@@ -75,7 +75,7 @@ export class DefaultResourceLoader {
       try {
         let source = await readFile(path, "utf8");
         for (const match of source.matchAll(/from "(file:[^"]+)";/g)) {
-          const moduleSource = await readFile(fileURLToPath(match[1]), "utf8");
+          const moduleSource = await readFile(NodeURL.fileURLToPath(match[1]), "utf8");
           source = source.replace(match[0], "from " + JSON.stringify("data:text/javascript," + encodeURIComponent(moduleSource)) + ";");
         }
         const extension = await import("data:text/javascript," + encodeURIComponent(source));
@@ -93,13 +93,19 @@ export class DefaultResourceLoader {
 }
 
 async function writeDependencies(root: string): Promise<void> {
-  await writeJson(Path.join(root, "node_modules", "pi-subagents", "package.json"), {
+  await writeJson(NodePath.join(root, "node_modules", "pi-subagents", "package.json"), {
     name: "pi-subagents",
     version: "0.31.0",
   });
-  const privateApiPath = Path.join(root, "node_modules", "pi-subagents", "src", "private-api.ts");
-  await FileSystem.mkdir(Path.dirname(privateApiPath), { recursive: true });
-  await FileSystem.writeFile(privateApiPath, "export const createPrivateApi = () => undefined;\n");
+  const privateApiPath = NodePath.join(
+    root,
+    "node_modules",
+    "pi-subagents",
+    "src",
+    "private-api.ts",
+  );
+  await NodeFSP.mkdir(NodePath.dirname(privateApiPath), { recursive: true });
+  await NodeFSP.writeFile(privateApiPath, "export const createPrivateApi = () => undefined;\n");
   await writePiDependency(root);
 }
 
@@ -166,26 +172,26 @@ async function pack(source: string, artifact: string, options: PackOptions = {})
   for (const relativePath of [...PACKED_FILES, ...(options.additionalPaths ?? [])]) {
     const pax = options.paxEntries?.[relativePath];
     if (pax !== undefined) appendTarEntry(entries, `PaxHeader/${relativePath}`, pax, "x");
-    const content = await FileSystem.readFile(Path.join(source, relativePath));
+    const content = await NodeFSP.readFile(NodePath.join(source, relativePath));
     appendTarEntry(entries, `package/${relativePath}`, content);
   }
-  await FileSystem.writeFile(
+  await NodeFSP.writeFile(
     artifact,
-    Zlib.gzipSync(Buffer.concat([...entries, Buffer.alloc(1024)])),
+    NodeZlib.gzipSync(Buffer.concat([...entries, Buffer.alloc(1024)])),
   );
 }
 
 async function copyPackedFiles(source: string, destination: string): Promise<void> {
   for (const relativePath of PACKED_FILES) {
-    const target = Path.join(destination, relativePath);
-    await FileSystem.mkdir(Path.dirname(target), { recursive: true });
-    await FileSystem.copyFile(Path.join(source, relativePath), target);
+    const target = NodePath.join(destination, relativePath);
+    await NodeFSP.mkdir(NodePath.dirname(target), { recursive: true });
+    await NodeFSP.copyFile(NodePath.join(source, relativePath), target);
   }
 }
 
 async function git(root: string, args: ReadonlyArray<string>): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    ChildProcess.execFile("git", ["-C", root, ...args], (error, _stdout, stderr) => {
+    NodeChildProcess.execFile("git", ["-C", root, ...args], (error, _stdout, stderr) => {
       if (error === null) resolve();
       else reject(new Error(stderr || error.message));
     });
@@ -199,11 +205,11 @@ async function writeFixture(): Promise<{
   readonly extractedPackage: string;
   readonly installedPackage: string;
 }> {
-  const root = await FileSystem.mkdtemp(Path.join(Os.tmpdir(), "takomi-pi-host-"));
-  const canonicalSource = Path.join(root, "canonical");
-  const extractedPackage = Path.join(root, "extracted", "package");
-  const installedPackage = Path.join(root, "isolated", "node_modules", "takomi");
-  const packedArtifact = Path.join(root, "takomi-2.5.15.tgz");
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "takomi-pi-host-"));
+  const canonicalSource = NodePath.join(root, "canonical");
+  const extractedPackage = NodePath.join(root, "extracted", "package");
+  const installedPackage = NodePath.join(root, "isolated", "node_modules", "takomi");
+  const packedArtifact = NodePath.join(root, "takomi-2.5.15.tgz");
   await writePackage(canonicalSource);
   await writeDependencies(canonicalSource);
   await git(canonicalSource, ["init"]);
@@ -226,9 +232,9 @@ async function writeFixture(): Promise<{
 
 async function runCli(args: ReadonlyArray<string>): Promise<unknown> {
   const { stdout } = await new Promise<{ readonly stdout: string }>((resolve, reject) => {
-    ChildProcess.execFile(
+    NodeChildProcess.execFile(
       process.execPath,
-      [fileURLToPath(new URL("../bin.mjs", import.meta.url)), ...args],
+      [NodeURL.fileURLToPath(new URL("../bin.mjs", import.meta.url)), ...args],
       (error, output, stderr) => {
         if (error === null) resolve({ stdout: output });
         else reject(new Error(stderr || error.message));
@@ -239,9 +245,9 @@ async function runCli(args: ReadonlyArray<string>): Promise<unknown> {
 }
 
 async function probeChild(packageRoot: string, manifestPath: string): Promise<unknown> {
-  const child = ChildProcess.spawn(
+  const child = NodeChildProcess.spawn(
     process.execPath,
-    [fileURLToPath(new URL("../bin.mjs", import.meta.url)), "serve"],
+    [NodeURL.fileURLToPath(new URL("../bin.mjs", import.meta.url)), "serve"],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   if (child.stdin === null || child.stdout === null) {
@@ -254,34 +260,48 @@ async function probeChild(packageRoot: string, manifestPath: string): Promise<un
     child.once("close", (exitCode) => resolve(exitCode));
     child.stdin?.end(`${JSON.stringify({ method: "probe", packageRoot, manifestPath })}\n`);
   });
-  assert.equal(code, 0);
+  NodeAssert.equal(code, 0);
   return JSON.parse(Buffer.concat(output).toString("utf8"));
 }
 
-test("verifies canonical, packed, extracted, and isolated provenance then probes read-only", async () => {
-  const fixture = await writeFixture();
-  try {
-    const manifest = await createRuntimePackageManifest(fixture);
-    const cliManifestPath = Path.join(fixture.root, "cli-runtime-manifest.json");
-    const cliResult = await runCli([
-      "verify",
-      fixture.canonicalSource,
-      fixture.packedArtifact,
-      fixture.extractedPackage,
-      fixture.installedPackage,
-      "--manifest",
-      cliManifestPath,
-    ]);
-    assert.deepEqual(JSON.parse(await FileSystem.readFile(cliManifestPath, "utf8")), manifest);
-    assert.deepEqual(cliResult, {
-      manifest,
-      diagnostics: {
-        pi: {
-          candidates: [
-            {
+NodeTest.test(
+  "verifies canonical, packed, extracted, and isolated provenance then probes read-only",
+  async () => {
+    const fixture = await writeFixture();
+    try {
+      const manifest = await createRuntimePackageManifest(fixture);
+      const cliManifestPath = NodePath.join(fixture.root, "cli-runtime-manifest.json");
+      const cliResult = await runCli([
+        "verify",
+        fixture.canonicalSource,
+        fixture.packedArtifact,
+        fixture.extractedPackage,
+        fixture.installedPackage,
+        "--manifest",
+        cliManifestPath,
+      ]);
+      NodeAssert.deepEqual(JSON.parse(await NodeFSP.readFile(cliManifestPath, "utf8")), manifest);
+      NodeAssert.deepEqual(cliResult, {
+        manifest,
+        diagnostics: {
+          pi: {
+            candidates: [
+              {
+                ...manifest.dependencies.pi,
+                path: await NodeFSP.realpath(
+                  NodePath.join(
+                    fixture.installedPackage,
+                    "node_modules",
+                    "@earendil-works",
+                    "pi-coding-agent",
+                  ),
+                ),
+              },
+            ],
+            selected: {
               ...manifest.dependencies.pi,
-              path: await FileSystem.realpath(
-                Path.join(
+              path: await NodeFSP.realpath(
+                NodePath.join(
                   fixture.installedPackage,
                   "node_modules",
                   "@earendil-works",
@@ -289,91 +309,88 @@ test("verifies canonical, packed, extracted, and isolated provenance then probes
                 ),
               ),
             },
-          ],
-          selected: {
-            ...manifest.dependencies.pi,
-            path: await FileSystem.realpath(
-              Path.join(
-                fixture.installedPackage,
-                "node_modules",
-                "@earendil-works",
-                "pi-coding-agent",
-              ),
-            ),
           },
-        },
-        piSubagents: {
-          candidates: [
-            {
+          piSubagents: {
+            candidates: [
+              {
+                ...manifest.dependencies.piSubagents,
+                path: await NodeFSP.realpath(
+                  NodePath.join(fixture.installedPackage, "node_modules", "pi-subagents"),
+                ),
+              },
+            ],
+            selected: {
               ...manifest.dependencies.piSubagents,
-              path: await FileSystem.realpath(
-                Path.join(fixture.installedPackage, "node_modules", "pi-subagents"),
+              path: await NodeFSP.realpath(
+                NodePath.join(fixture.installedPackage, "node_modules", "pi-subagents"),
               ),
             },
-          ],
-          selected: {
-            ...manifest.dependencies.piSubagents,
-            path: await FileSystem.realpath(
-              Path.join(fixture.installedPackage, "node_modules", "pi-subagents"),
-            ),
           },
         },
-      },
-    });
-    assert.equal(manifest.provenance.dirty, false);
-    assert.equal(manifest.compatibility.piVersion, "0.84.4");
-    assert.match(manifest.compatibility.privateModules[0]?.contentSha256 ?? "", /^[a-f0-9]{64}$/);
-    const manifestPath = Path.join(fixture.root, "takomi-runtime-manifest.json");
-    await writeJson(manifestPath, manifest);
+      });
+      NodeAssert.equal(manifest.provenance.dirty, false);
+      NodeAssert.equal(manifest.compatibility.piVersion, "0.84.4");
+      NodeAssert.match(
+        manifest.compatibility.privateModules[0]?.contentSha256 ?? "",
+        /^[a-f0-9]{64}$/,
+      );
+      const manifestPath = NodePath.join(fixture.root, "takomi-runtime-manifest.json");
+      await writeJson(manifestPath, manifest);
 
-    const probe = await probePiHost({ packageRoot: fixture.installedPackage, manifestPath });
-    assert.deepEqual(probe.capabilities, ["capability-probe"]);
-    assert.equal(probe.session, "not-opened");
-    assert.equal(probe.package.path, await FileSystem.realpath(fixture.installedPackage));
-    assert.equal(probe.package.packageJsonSha256, manifest.package.packageJsonSha256);
-    assert.equal(probe.dependencies.pi.version, "0.84.4");
-    assert.equal(
-      probe.dependencies.pi.packageJsonSha256,
-      manifest.dependencies.pi.packageJsonSha256,
-    );
-    assert.equal(
-      probe.dependencies.pi.path,
-      await FileSystem.realpath(
-        Path.join(fixture.installedPackage, "node_modules", "@earendil-works", "pi-coding-agent"),
-      ),
-    );
-    assert.equal(probe.dependencies.piSubagents.version, "0.31.0");
-    assert.equal(
-      probe.dependencies.piSubagents.packageJsonSha256,
-      manifest.dependencies.piSubagents.packageJsonSha256,
-    );
-    assert.deepEqual(await probeChild(fixture.installedPackage, manifestPath), probe);
-  } finally {
-    await FileSystem.rm(fixture.root, {
-      recursive: true,
-      force: true,
-      maxRetries: 3,
-      retryDelay: 100,
-    });
-  }
-});
+      const probe = await probePiHost({ packageRoot: fixture.installedPackage, manifestPath });
+      NodeAssert.deepEqual(probe.capabilities, ["capability-probe"]);
+      NodeAssert.equal(probe.session, "not-opened");
+      NodeAssert.equal(probe.package.path, await NodeFSP.realpath(fixture.installedPackage));
+      NodeAssert.equal(probe.package.packageJsonSha256, manifest.package.packageJsonSha256);
+      NodeAssert.equal(probe.dependencies.pi.version, "0.84.4");
+      NodeAssert.equal(
+        probe.dependencies.pi.packageJsonSha256,
+        manifest.dependencies.pi.packageJsonSha256,
+      );
+      NodeAssert.equal(
+        probe.dependencies.pi.path,
+        await NodeFSP.realpath(
+          NodePath.join(
+            fixture.installedPackage,
+            "node_modules",
+            "@earendil-works",
+            "pi-coding-agent",
+          ),
+        ),
+      );
+      NodeAssert.equal(probe.dependencies.piSubagents.version, "0.31.0");
+      NodeAssert.equal(
+        probe.dependencies.piSubagents.packageJsonSha256,
+        manifest.dependencies.piSubagents.packageJsonSha256,
+      );
+      NodeAssert.deepEqual(await probeChild(fixture.installedPackage, manifestPath), probe);
+    } finally {
+      await NodeFSP.rm(fixture.root, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
+    }
+  },
+);
 
-test("loads Pi 0.84.4's import-only public export", async () => {
+NodeTest.test("loads Pi 0.84.4's import-only public export", async () => {
   const fixture = await writeFixture();
   try {
-    const piRoot = Path.join(
+    const piRoot = NodePath.join(
       fixture.installedPackage,
       "node_modules",
       "@earendil-works",
       "pi-coding-agent",
     );
-    const requireFromPi = createRequire(Path.join(piRoot, "conformance.cjs"));
-    assert.throws(() => requireFromPi.resolve(PI_PACKAGE), {
+    const requireFromPi = NodeModule.createRequire(NodePath.join(piRoot, "conformance.cjs"));
+    NodeAssert.throws(() => requireFromPi.resolve(PI_PACKAGE), {
       code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
     });
-    await assert.doesNotReject(createRuntimePackageManifest(fixture));
+    await NodeAssert.doesNotReject(createRuntimePackageManifest(fixture));
   } finally {
-    await FileSystem.rm(fixture.root, {
+    await NodeFSP.rm(fixture.root, {
       recursive: true,
       force: true,
       maxRetries: 3,
@@ -382,43 +399,51 @@ test("loads Pi 0.84.4's import-only public export", async () => {
   }
 });
 
-test("anchors conformance to the isolated Pi package instead of canonical or nearby installs", async () => {
+NodeTest.test(
+  "anchors conformance to the isolated Pi package instead of canonical or nearby installs",
+  async () => {
+    const fixture = await writeFixture();
+    try {
+      await Promise.all([
+        writePiDependency(fixture.canonicalSource, "canonical Pi installation was loaded"),
+        writePiDependency(fixture.root, "nearby alternate Pi installation was loaded"),
+      ]);
+      const manifest = await createRuntimePackageManifest(fixture);
+
+      const verification = await verifyRuntimeProvenance(fixture, manifest);
+      NodeAssert.equal(
+        verification.diagnostics.pi.selected.path,
+        await NodeFSP.realpath(
+          NodePath.join(
+            fixture.installedPackage,
+            "node_modules",
+            "@earendil-works",
+            "pi-coding-agent",
+          ),
+        ),
+      );
+    } finally {
+      await NodeFSP.rm(fixture.root, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
+    }
+  },
+);
+
+NodeTest.test("represents a dirty canonical tree instead of claiming a clean commit", async () => {
   const fixture = await writeFixture();
   try {
-    await Promise.all([
-      writePiDependency(fixture.canonicalSource, "canonical Pi installation was loaded"),
-      writePiDependency(fixture.root, "nearby alternate Pi installation was loaded"),
-    ]);
-    const manifest = await createRuntimePackageManifest(fixture);
-
-    const verification = await verifyRuntimeProvenance(fixture, manifest);
-    assert.equal(
-      verification.diagnostics.pi.selected.path,
-      await FileSystem.realpath(
-        Path.join(fixture.installedPackage, "node_modules", "@earendil-works", "pi-coding-agent"),
-      ),
-    );
-  } finally {
-    await FileSystem.rm(fixture.root, {
-      recursive: true,
-      force: true,
-      maxRetries: 3,
-      retryDelay: 100,
-    });
-  }
-});
-
-test("represents a dirty canonical tree instead of claiming a clean commit", async () => {
-  const fixture = await writeFixture();
-  try {
-    await FileSystem.writeFile(
-      Path.join(fixture.canonicalSource, "review-note.txt"),
+    await NodeFSP.writeFile(
+      NodePath.join(fixture.canonicalSource, "review-note.txt"),
       "uncommitted\n",
     );
     const manifest = await createRuntimePackageManifest(fixture);
-    assert.equal(manifest.provenance.dirty, true);
+    NodeAssert.equal(manifest.provenance.dirty, true);
   } finally {
-    await FileSystem.rm(fixture.root, {
+    await NodeFSP.rm(fixture.root, {
       recursive: true,
       force: true,
       maxRetries: 3,
@@ -427,7 +452,7 @@ test("represents a dirty canonical tree instead of claiming a clean commit", asy
   }
 });
 
-test("accepts npm-style UTF-8 PAX paths and global headers", async () => {
+NodeTest.test("accepts npm-style UTF-8 PAX paths and global headers", async () => {
   const fixture = await writeFixture();
   const relativePath = "assets/Legacy/2✨ ULTIMATE ORCHESTRATION PROMPT✨.md";
   try {
@@ -436,9 +461,9 @@ test("accepts npm-style UTF-8 PAX paths and global headers", async () => {
       fixture.extractedPackage,
       fixture.installedPackage,
     ]) {
-      const path = Path.join(root, relativePath);
-      await FileSystem.mkdir(Path.dirname(path), { recursive: true });
-      await FileSystem.writeFile(path, "PAX fixture\n");
+      const path = NodePath.join(root, relativePath);
+      await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
+      await NodeFSP.writeFile(path, "PAX fixture\n");
     }
     await pack(fixture.canonicalSource, fixture.packedArtifact, {
       additionalPaths: [relativePath],
@@ -447,9 +472,9 @@ test("accepts npm-style UTF-8 PAX paths and global headers", async () => {
     });
 
     const manifest = await createRuntimePackageManifest(fixture);
-    assert.match(manifest.files[relativePath] ?? "", /^[a-f0-9]{64}$/);
+    NodeAssert.match(manifest.files[relativePath] ?? "", /^[a-f0-9]{64}$/);
   } finally {
-    await FileSystem.rm(fixture.root, {
+    await NodeFSP.rm(fixture.root, {
       recursive: true,
       force: true,
       maxRetries: 3,
@@ -458,7 +483,7 @@ test("accepts npm-style UTF-8 PAX paths and global headers", async () => {
   }
 });
 
-test("rejects malformed, oversized, and traversal PAX records", async () => {
+NodeTest.test("rejects malformed, oversized, and traversal PAX records", async () => {
   const fixture = await writeFixture();
   try {
     for (const [pax, expected] of [
@@ -469,10 +494,10 @@ test("rejects malformed, oversized, and traversal PAX records", async () => {
       await pack(fixture.canonicalSource, fixture.packedArtifact, {
         paxEntries: { "package.json": pax },
       });
-      await assert.rejects(createRuntimePackageManifest(fixture), expected);
+      await NodeAssert.rejects(createRuntimePackageManifest(fixture), expected);
     }
   } finally {
-    await FileSystem.rm(fixture.root, {
+    await NodeFSP.rm(fixture.root, {
       recursive: true,
       force: true,
       maxRetries: 3,
@@ -481,21 +506,21 @@ test("rejects malformed, oversized, and traversal PAX records", async () => {
   }
 });
 
-test("rejects fabricated provenance and artifact hash mismatches", async () => {
+NodeTest.test("rejects fabricated provenance and artifact hash mismatches", async () => {
   const fixture = await writeFixture();
   try {
     const manifest = await createRuntimePackageManifest(fixture);
-    await assert.rejects(
+    await NodeAssert.rejects(
       verifyRuntimeProvenance(fixture, {
         ...manifest,
         provenance: { ...manifest.provenance, sourceCommit: "0".repeat(40) },
       }),
       /commit\/tree state/,
     );
-    await FileSystem.appendFile(fixture.packedArtifact, "tampered");
-    await assert.rejects(verifyRuntimeProvenance(fixture, manifest), /SHA-256/);
+    await NodeFSP.appendFile(fixture.packedArtifact, "tampered");
+    await NodeAssert.rejects(verifyRuntimeProvenance(fixture, manifest), /SHA-256/);
   } finally {
-    await FileSystem.rm(fixture.root, {
+    await NodeFSP.rm(fixture.root, {
       recursive: true,
       force: true,
       maxRetries: 3,
@@ -504,47 +529,65 @@ test("rejects fabricated provenance and artifact hash mismatches", async () => {
   }
 });
 
-test("rejects canonical private-module drift even when the isolated installation is unchanged", async () => {
-  const fixture = await writeFixture();
-  try {
-    const manifest = await createRuntimePackageManifest(fixture);
-    const isolatedPrivateModule = Path.join(
-      fixture.installedPackage,
-      "node_modules",
-      "pi-subagents",
-      "src",
-      "private-api.ts",
-    );
-    const isolatedContents = await FileSystem.readFile(isolatedPrivateModule, "utf8");
-    await FileSystem.writeFile(
-      Path.join(fixture.canonicalSource, "node_modules", "pi-subagents", "src", "private-api.ts"),
-      "export const createPrivateApi = () => 'canonical drift';\n",
-    );
+NodeTest.test(
+  "rejects canonical private-module drift even when the isolated installation is unchanged",
+  async () => {
+    const fixture = await writeFixture();
+    try {
+      const manifest = await createRuntimePackageManifest(fixture);
+      const isolatedPrivateModule = NodePath.join(
+        fixture.installedPackage,
+        "node_modules",
+        "pi-subagents",
+        "src",
+        "private-api.ts",
+      );
+      const isolatedContents = await NodeFSP.readFile(isolatedPrivateModule, "utf8");
+      await NodeFSP.writeFile(
+        NodePath.join(
+          fixture.canonicalSource,
+          "node_modules",
+          "pi-subagents",
+          "src",
+          "private-api.ts",
+        ),
+        "export const createPrivateApi = () => 'canonical drift';\n",
+      );
 
-    await assert.rejects(verifyRuntimeProvenance(fixture, manifest), /Canonical package metadata/);
-    assert.equal(await FileSystem.readFile(isolatedPrivateModule, "utf8"), isolatedContents);
-  } finally {
-    await FileSystem.rm(fixture.root, {
-      recursive: true,
-      force: true,
-      maxRetries: 3,
-      retryDelay: 100,
-    });
-  }
-});
+      await NodeAssert.rejects(
+        verifyRuntimeProvenance(fixture, manifest),
+        /Canonical package metadata/,
+      );
+      NodeAssert.equal(await NodeFSP.readFile(isolatedPrivateModule, "utf8"), isolatedContents);
+    } finally {
+      await NodeFSP.rm(fixture.root, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
+    }
+  },
+);
 
-test("rejects a private export missing behind a textual comment", async () => {
+NodeTest.test("rejects a private export missing behind a textual comment", async () => {
   const fixture = await writeFixture();
   try {
     const missingExport =
       "// createPrivateApi remains mentioned, but is not exported.\nexport const anotherApi = () => undefined;\n";
     await Promise.all([
-      FileSystem.writeFile(
-        Path.join(fixture.canonicalSource, "node_modules", "pi-subagents", "src", "private-api.ts"),
+      NodeFSP.writeFile(
+        NodePath.join(
+          fixture.canonicalSource,
+          "node_modules",
+          "pi-subagents",
+          "src",
+          "private-api.ts",
+        ),
         missingExport,
       ),
-      FileSystem.writeFile(
-        Path.join(
+      NodeFSP.writeFile(
+        NodePath.join(
           fixture.installedPackage,
           "node_modules",
           "pi-subagents",
@@ -554,12 +597,12 @@ test("rejects a private export missing behind a textual comment", async () => {
         missingExport,
       ),
     ]);
-    await assert.rejects(
+    await NodeAssert.rejects(
       createRuntimePackageManifest(fixture),
       /Pi extension-loader conformance failed: .*missing 'createPrivateApi'/,
     );
   } finally {
-    await FileSystem.rm(fixture.root, {
+    await NodeFSP.rm(fixture.root, {
       recursive: true,
       force: true,
       maxRetries: 3,
@@ -568,40 +611,40 @@ test("rejects a private export missing behind a textual comment", async () => {
   }
 });
 
-test("rejects isolated package drift and wrong dependency identity", async () => {
+NodeTest.test("rejects isolated package drift and wrong dependency identity", async () => {
   const fixture = await writeFixture();
   try {
     const manifest = await createRuntimePackageManifest(fixture);
-    await FileSystem.writeFile(Path.join(fixture.installedPackage, "runtime.mjs"), "tampered\n");
-    await assert.rejects(
+    await NodeFSP.writeFile(NodePath.join(fixture.installedPackage, "runtime.mjs"), "tampered\n");
+    await NodeAssert.rejects(
       verifyRuntimeProvenance(fixture, manifest),
       /Isolated installed package file integrity/,
     );
-    await FileSystem.writeFile(Path.join(fixture.installedPackage, "runtime.mjs"), "export {};\n");
+    await NodeFSP.writeFile(NodePath.join(fixture.installedPackage, "runtime.mjs"), "export {};\n");
     await writeJson(
-      Path.join(fixture.installedPackage, "node_modules", "pi-subagents", "package.json"),
+      NodePath.join(fixture.installedPackage, "node_modules", "pi-subagents", "package.json"),
       {
         name: "not-pi-subagents",
         version: "0.31.0",
       },
     );
-    await assert.rejects(
+    await NodeAssert.rejects(
       verifyRuntimeProvenance(fixture, manifest),
       /must be 'pi-subagents@0.31.0'/,
     );
     await writeJson(
-      Path.join(fixture.installedPackage, "node_modules", "pi-subagents", "package.json"),
+      NodePath.join(fixture.installedPackage, "node_modules", "pi-subagents", "package.json"),
       {
         name: "pi-subagents",
         version: "0.31.1",
       },
     );
-    await assert.rejects(
+    await NodeAssert.rejects(
       verifyRuntimeProvenance(fixture, manifest),
       /must be 'pi-subagents@0.31.0'/,
     );
   } finally {
-    await FileSystem.rm(fixture.root, {
+    await NodeFSP.rm(fixture.root, {
       recursive: true,
       force: true,
       maxRetries: 3,
@@ -610,27 +653,24 @@ test("rejects isolated package drift and wrong dependency identity", async () =>
   }
 });
 
-test("rejects ambiguous dependency installations", async () => {
+NodeTest.test("rejects ambiguous dependency installations", async () => {
   const fixture = await writeFixture();
   try {
     const manifest = await createRuntimePackageManifest(fixture);
-    const duplicate = Path.join(Path.dirname(fixture.installedPackage), "pi-subagents");
-    await writeJson(Path.join(duplicate, "package.json"), {
+    const duplicate = NodePath.join(NodePath.dirname(fixture.installedPackage), "pi-subagents");
+    await writeJson(NodePath.join(duplicate, "package.json"), {
       name: "pi-subagents",
       version: "0.31.0",
     });
-    const duplicateModule = Path.join(duplicate, "src", "private-api.ts");
-    await FileSystem.mkdir(Path.dirname(duplicateModule), { recursive: true });
-    await FileSystem.writeFile(
-      duplicateModule,
-      "export const createPrivateApi = () => undefined;\n",
-    );
-    await assert.rejects(
+    const duplicateModule = NodePath.join(duplicate, "src", "private-api.ts");
+    await NodeFSP.mkdir(NodePath.dirname(duplicateModule), { recursive: true });
+    await NodeFSP.writeFile(duplicateModule, "export const createPrivateApi = () => undefined;\n");
+    await NodeAssert.rejects(
       verifyRuntimeProvenance(fixture, manifest),
       /ambiguous 'pi-subagents' installations/,
     );
   } finally {
-    await FileSystem.rm(fixture.root, {
+    await NodeFSP.rm(fixture.root, {
       recursive: true,
       force: true,
       maxRetries: 3,
@@ -639,34 +679,37 @@ test("rejects ambiguous dependency installations", async () => {
   }
 });
 
-test("reports ownership states and never follows symlink entries", async () => {
+NodeTest.test("reports ownership states and never follows symlink entries", async () => {
   const fixture = await writeFixture();
   try {
     const manifest = await createRuntimePackageManifest(fixture);
-    assert.deepEqual(
+    NodeAssert.deepEqual(
       diffOwnership(
         { "removed.ts": "before", "runtime.mjs": "before" },
         { "added.ts": "after", "runtime.mjs": "after" },
       ),
       { added: ["added.ts"], changed: ["runtime.mjs"], removed: ["removed.ts"] },
     );
-    await FileSystem.writeFile(Path.join(fixture.installedPackage, "runtime.mjs"), "changed\n");
-    await FileSystem.writeFile(Path.join(fixture.installedPackage, "user-file.txt"), "unmanaged\n");
-    const outside = Path.join(fixture.root, "outside.txt");
-    await FileSystem.writeFile(outside, "outside\n");
-    await FileSystem.symlink(outside, Path.join(fixture.installedPackage, "outside-link"));
+    await NodeFSP.writeFile(NodePath.join(fixture.installedPackage, "runtime.mjs"), "changed\n");
+    await NodeFSP.writeFile(
+      NodePath.join(fixture.installedPackage, "user-file.txt"),
+      "unmanaged\n",
+    );
+    const outside = NodePath.join(fixture.root, "outside.txt");
+    await NodeFSP.writeFile(outside, "outside\n");
+    await NodeFSP.symlink(outside, NodePath.join(fixture.installedPackage, "outside-link"));
     const inspection = await inspectOwnership(fixture.installedPackage, manifest.files);
-    assert.deepEqual(inspection.conflicted, ["runtime.mjs"]);
-    assert.deepEqual(inspection.unmanaged, ["outside-link", "user-file.txt"]);
-    assert.deepEqual(inspection.unsafe, ["outside-link"]);
+    NodeAssert.deepEqual(inspection.conflicted, ["runtime.mjs"]);
+    NodeAssert.deepEqual(inspection.unmanaged, ["outside-link", "user-file.txt"]);
+    NodeAssert.deepEqual(inspection.unsafe, ["outside-link"]);
 
-    await FileSystem.rm(Path.join(fixture.installedPackage, "runtime.mjs"), { force: true });
-    await FileSystem.symlink(outside, Path.join(fixture.installedPackage, "runtime.mjs"));
+    await NodeFSP.rm(NodePath.join(fixture.installedPackage, "runtime.mjs"), { force: true });
+    await NodeFSP.symlink(outside, NodePath.join(fixture.installedPackage, "runtime.mjs"));
     const ownedLink = await inspectOwnership(fixture.installedPackage, manifest.files);
-    assert.ok(ownedLink.conflicted.includes("runtime.mjs"));
-    assert.deepEqual(ownedLink.unsafe, ["outside-link", "runtime.mjs"]);
+    NodeAssert.ok(ownedLink.conflicted.includes("runtime.mjs"));
+    NodeAssert.deepEqual(ownedLink.unsafe, ["outside-link", "runtime.mjs"]);
   } finally {
-    await FileSystem.rm(fixture.root, {
+    await NodeFSP.rm(fixture.root, {
       recursive: true,
       force: true,
       maxRetries: 3,

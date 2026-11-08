@@ -6,7 +6,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 
-import { localBuildOutput, runLocalBuild } from "./local-build.ts";
+import { localBuildOutput, readMobileVersion, runLocalBuild } from "./local-build.ts";
 
 const now = new Date("2026-10-05T12:34:56.789Z");
 type Output = ReturnType<typeof localBuildOutput>;
@@ -24,6 +24,22 @@ function desktopName(output: Output, arch = "x64"): string {
 function androidName(output: Output): string {
   return `Takomi-Code-Preview-2.0.0-9b452f8b-${output.stamp}-dirty.apk`;
 }
+
+NodeTest.test(
+  "reads literal and environment-backed mobile source versions without building",
+  (t) => {
+    const root = fixtureRoot(t);
+    const config = NodePath.join(root, "apps/mobile/app.config.ts");
+    NodeFS.mkdirSync(NodePath.dirname(config), { recursive: true });
+    for (const version of ['"2.2.0"', 'repoEnv.T3CODE_MOBILE_VERSION ?? "2.2.0"']) {
+      NodeFS.writeFileSync(config, `  version: ${version},\n`);
+      NodeAssert.equal(readMobileVersion(root, {}), "2.2.0");
+    }
+    NodeFS.writeFileSync(NodePath.join(root, ".env.local"), "T3CODE_MOBILE_VERSION=2.3.0\n");
+    NodeAssert.equal(readMobileVersion(root), "2.3.0");
+    NodeAssert.equal(readMobileVersion(root, { T3CODE_MOBILE_VERSION: "2.4.0" }), "2.4.0");
+  },
+);
 
 NodeTest.test("reservations separate concurrent attempts and skip existing releases", (t) => {
   const root = fixtureRoot(t);

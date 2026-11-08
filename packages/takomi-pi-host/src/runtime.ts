@@ -1,11 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off - This isolated host validates a package tree before an Effect runtime or Pi session exists.
-import * as ChildProcess from "node:child_process";
-import * as Crypto from "node:crypto";
-import * as FileSystem from "node:fs/promises";
-import * as Os from "node:os";
-import * as Path from "node:path";
-import { pathToFileURL } from "node:url";
-import * as Zlib from "node:zlib";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
+import * as NodeZlib from "node:zlib";
 
 const PACKAGE_NAME = "takomi";
 const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
@@ -167,11 +167,11 @@ function readStringRecord(value: unknown, description: string): Readonly<Record<
 }
 
 function sha256(value: Uint8Array): string {
-  return Crypto.createHash("sha256").update(value).digest("hex");
+  return NodeCrypto.createHash("sha256").update(value).digest("hex");
 }
 
 async function hashFile(path: string): Promise<string> {
-  return sha256(await FileSystem.readFile(path));
+  return sha256(await NodeFSP.readFile(path));
 }
 
 function safeRelativePath(path: string): string {
@@ -188,8 +188,8 @@ function safeRelativePath(path: string): string {
 }
 
 async function readPackageJson(packageRoot: string): Promise<PackageJson> {
-  const path = Path.join(packageRoot, "package.json");
-  const parsed: unknown = JSON.parse(await FileSystem.readFile(path, "utf8"));
+  const path = NodePath.join(packageRoot, "package.json");
+  const parsed: unknown = JSON.parse(await NodeFSP.readFile(path, "utf8"));
   if (!isRecord(parsed)) throw new Error(`Runtime package manifest '${path}' must be an object.`);
 
   return {
@@ -202,8 +202,8 @@ async function readPackageJson(packageRoot: string): Promise<PackageJson> {
 }
 
 async function requireLicenseFile(packageRoot: string): Promise<void> {
-  const license = Path.join(packageRoot, "LICENSE");
-  const stat = await FileSystem.lstat(license).catch(() => undefined);
+  const license = NodePath.join(packageRoot, "LICENSE");
+  const stat = await NodeFSP.lstat(license).catch(() => undefined);
   if (stat === undefined || !stat.isFile()) {
     throw new Error(`Runtime package '${packageRoot}' must include a regular LICENSE file.`);
   }
@@ -212,12 +212,12 @@ async function requireLicenseFile(packageRoot: string): Promise<void> {
 async function scanPackageTree(root: string, current = root): Promise<PackageTree> {
   const files: Record<string, string> = {};
   const unsafe: Array<string> = [];
-  const entries = await FileSystem.readdir(current, { withFileTypes: true });
+  const entries = await NodeFSP.readdir(current, { withFileTypes: true });
 
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (entry.isDirectory() && EXCLUDED_DIRECTORIES.has(entry.name)) continue;
-    const path = Path.join(current, entry.name);
-    const relativePath = safeRelativePath(Path.relative(root, path));
+    const path = NodePath.join(current, entry.name);
+    const relativePath = safeRelativePath(NodePath.relative(root, path));
     if (entry.isDirectory()) {
       const nested = await scanPackageTree(root, path);
       Object.assign(files, nested.files);
@@ -235,8 +235,8 @@ async function scanPackageTree(root: string, current = root): Promise<PackageTre
 }
 
 async function readCompatibility(packageRoot: string): Promise<PiSubagentsCompatibility> {
-  const path = Path.join(packageRoot, COMPATIBILITY_FILE);
-  const parsed: unknown = JSON.parse(await FileSystem.readFile(path, "utf8"));
+  const path = NodePath.join(packageRoot, COMPATIBILITY_FILE);
+  const parsed: unknown = JSON.parse(await NodeFSP.readFile(path, "utf8"));
   if (!isRecord(parsed) || parsed.schemaVersion !== 1 || !Array.isArray(parsed.privateModules)) {
     throw new Error(`Runtime compatibility manifest '${path}' is invalid.`);
   }
@@ -418,11 +418,11 @@ function paxPath(content: Uint8Array): string | undefined {
 }
 
 async function readPackedFiles(artifactPath: string): Promise<Readonly<Record<string, string>>> {
-  const artifactStat = await FileSystem.stat(artifactPath);
+  const artifactStat = await NodeFSP.stat(artifactPath);
   if (!artifactStat.isFile() || artifactStat.size > MAX_PACKED_ARTIFACT_BYTES) {
     throw new Error("Packed artifact exceeds the maximum supported size.");
   }
-  const archive = Zlib.gunzipSync(await FileSystem.readFile(artifactPath), {
+  const archive = NodeZlib.gunzipSync(await NodeFSP.readFile(artifactPath), {
     maxOutputLength: MAX_UNPACKED_ARTIFACT_BYTES,
   });
   const files: Record<string, string> = {};
@@ -477,11 +477,17 @@ async function readPackedFiles(artifactPath: string): Promise<Readonly<Record<st
 async function git(canonicalSource: string, args: ReadonlyArray<string>): Promise<string> {
   const result = await new Promise<{ readonly stdout: string; readonly stderr: string }>(
     (resolve, reject) => {
-      ChildProcess.execFile("git", ["-C", canonicalSource, ...args], (error, stdout, stderr) => {
-        if (error !== null)
-          reject(new Error(`Cannot inspect canonical source with git: ${stderr || error.message}`));
-        else resolve({ stdout, stderr });
-      });
+      NodeChildProcess.execFile(
+        "git",
+        ["-C", canonicalSource, ...args],
+        (error, stdout, stderr) => {
+          if (error !== null)
+            reject(
+              new Error(`Cannot inspect canonical source with git: ${stderr || error.message}`),
+            );
+          else resolve({ stdout, stderr });
+        },
+      );
     },
   );
   return result.stdout.trim();
@@ -493,7 +499,7 @@ async function readCanonicalState(canonicalSource: string): Promise<{
   readonly sourceTree: string;
   readonly dirty: boolean;
 }> {
-  const root = await FileSystem.realpath(canonicalSource);
+  const root = await NodeFSP.realpath(canonicalSource);
   const [sourceCommit, sourceTree, status] = await Promise.all([
     git(root, ["rev-parse", "HEAD"]),
     git(root, ["rev-parse", "HEAD^{tree}"]),
@@ -507,8 +513,8 @@ async function assertCanonicalFiles(
   packedFiles: Readonly<Record<string, string>>,
 ): Promise<void> {
   for (const [relativePath, expectedHash] of Object.entries(packedFiles)) {
-    const path = Path.join(canonicalSource, relativePath);
-    const stat = await FileSystem.lstat(path).catch(() => undefined);
+    const path = NodePath.join(canonicalSource, relativePath);
+    const stat = await NodeFSP.lstat(path).catch(() => undefined);
     if (stat === undefined || !stat.isFile() || (await hashFile(path)) !== expectedHash) {
       throw new Error(`Canonical source does not match packed file '${relativePath}'.`);
     }
@@ -537,8 +543,8 @@ async function assertOwnedTree(
 function resolutionBoundary(packageRoot: string): string {
   let directory = packageRoot;
   while (true) {
-    if (Path.basename(directory) === "node_modules") return Path.dirname(directory);
-    const parent = Path.dirname(directory);
+    if (NodePath.basename(directory) === "node_modules") return NodePath.dirname(directory);
+    const parent = NodePath.dirname(directory);
     if (parent === directory) return packageRoot;
     directory = parent;
   }
@@ -553,13 +559,13 @@ async function dependencyCandidates(
   const boundary = resolutionBoundary(packageRoot);
   let directory = packageRoot;
   while (true) {
-    const packageJsonPath = Path.join(directory, "node_modules", packageName, "package.json");
-    const stat = await FileSystem.lstat(packageJsonPath).catch(() => undefined);
+    const packageJsonPath = NodePath.join(directory, "node_modules", packageName, "package.json");
+    const stat = await NodeFSP.lstat(packageJsonPath).catch(() => undefined);
     if (stat?.isFile()) {
-      const path = await FileSystem.realpath(Path.dirname(packageJsonPath));
+      const path = await NodeFSP.realpath(NodePath.dirname(packageJsonPath));
       if (!seen.has(path)) {
         seen.add(path);
-        const parsed: unknown = JSON.parse(await FileSystem.readFile(packageJsonPath, "utf8"));
+        const parsed: unknown = JSON.parse(await NodeFSP.readFile(packageJsonPath, "utf8"));
         if (!isRecord(parsed))
           throw new Error(`Resolved package manifest '${packageJsonPath}' must be an object.`);
         candidates.push({
@@ -571,7 +577,7 @@ async function dependencyCandidates(
       }
     }
     if (directory === boundary) break;
-    const parent = Path.dirname(directory);
+    const parent = NodePath.dirname(directory);
     if (parent === directory) break;
     directory = parent;
   }
@@ -614,8 +620,8 @@ async function resolvePinnedPackage(
 }
 
 async function publicImportEntryPoint(resolvedPackage: ResolvedPackage): Promise<string> {
-  const packageJsonPath = Path.join(resolvedPackage.path, "package.json");
-  const parsed: unknown = JSON.parse(await FileSystem.readFile(packageJsonPath, "utf8"));
+  const packageJsonPath = NodePath.join(resolvedPackage.path, "package.json");
+  const parsed: unknown = JSON.parse(await NodeFSP.readFile(packageJsonPath, "utf8"));
   if (!isRecord(parsed))
     throw new Error(`Resolved package manifest '${packageJsonPath}' must be an object.`);
   if (
@@ -643,20 +649,20 @@ async function publicImportEntryPoint(resolvedPackage: ResolvedPackage): Promise
     );
   }
 
-  const entryPoint = Path.join(resolvedPackage.path, safeRelativePath(target.slice(2)));
+  const entryPoint = NodePath.join(resolvedPackage.path, safeRelativePath(target.slice(2)));
   const [root, resolvedEntryPoint, stat] = await Promise.all([
-    FileSystem.realpath(resolvedPackage.path),
-    FileSystem.realpath(entryPoint),
-    FileSystem.stat(entryPoint).catch(() => undefined),
+    NodeFSP.realpath(resolvedPackage.path),
+    NodeFSP.realpath(entryPoint),
+    NodeFSP.stat(entryPoint).catch(() => undefined),
   ]);
-  const relativeEntryPoint = Path.relative(root, resolvedEntryPoint);
+  const relativeEntryPoint = NodePath.relative(root, resolvedEntryPoint);
   if (
     stat === undefined ||
     !stat.isFile() ||
     relativeEntryPoint === "" ||
     relativeEntryPoint === ".." ||
-    relativeEntryPoint.startsWith(`..${Path.sep}`) ||
-    Path.isAbsolute(relativeEntryPoint)
+    relativeEntryPoint.startsWith(`..${NodePath.sep}`) ||
+    NodePath.isAbsolute(relativeEntryPoint)
   ) {
     throw new Error(
       `Resolved '${resolvedPackage.name}' public entry point is outside its package root.`,
@@ -685,8 +691,8 @@ async function privateModulePath(
   privateModule: PrivateModuleCompatibility,
 ): Promise<string> {
   const relativePath = safeRelativePath(privateModule.specifier.slice("pi-subagents/".length));
-  const path = Path.join(piSubagents.path, relativePath);
-  const stat = await FileSystem.lstat(path).catch(() => undefined);
+  const path = NodePath.join(piSubagents.path, relativePath);
+  const stat = await NodeFSP.lstat(path).catch(() => undefined);
   if (stat === undefined || !stat.isFile()) {
     throw new Error(
       `Resolved pi-subagents is missing private module '${privateModule.specifier}'.`,
@@ -743,12 +749,12 @@ async function assertPrivateModuleExports(
   piSubagents: ResolvedPackage,
   compatibility: PiSubagentsCompatibility,
 ): Promise<void> {
-  const directory = await FileSystem.mkdtemp(Path.join(Os.tmpdir(), "takomi-pi-conformance-"));
+  const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "takomi-pi-conformance-"));
   try {
     const imports = await Promise.all(
       compatibility.privateModules.map(async (privateModule, index) => {
         const path = await privateModulePath(piSubagents, privateModule);
-        return `import * as privateModule${index} from ${JSON.stringify(pathToFileURL(path).href)};`;
+        return `import * as privateModule${index} from ${JSON.stringify(NodeURL.pathToFileURL(path).href)};`;
       }),
     );
     const assertions = compatibility.privateModules.flatMap((privateModule, index) =>
@@ -757,14 +763,14 @@ async function assertPrivateModuleExports(
           `if (!Object.hasOwn(privateModule${index}, ${JSON.stringify(exportName)})) throw new Error(${JSON.stringify(`Resolved pi-subagents private module '${privateModule.specifier}' is missing '${exportName}'.`)});`,
       ),
     );
-    const extensionPath = Path.join(directory, "private-module-conformance.ts");
-    await FileSystem.writeFile(
+    const extensionPath = NodePath.join(directory, "private-module-conformance.ts");
+    await NodeFSP.writeFile(
       extensionPath,
       `${imports.join("\n")}\n${assertions.join("\n")}\nexport default function conformanceExtension() {}\n`,
     );
 
     const piEntryPoint = await publicImportEntryPoint(pi);
-    const piModule: unknown = await import(pathToFileURL(piEntryPoint).href);
+    const piModule: unknown = await import(NodeURL.pathToFileURL(piEntryPoint).href);
     if (!isRecord(piModule) || typeof piModule.DefaultResourceLoader !== "function") {
       throw new Error(
         `Resolved '${PI_PACKAGE_NAME}' does not expose its public DefaultResourceLoader.`,
@@ -788,7 +794,7 @@ async function assertPrivateModuleExports(
       );
     }
   } finally {
-    await FileSystem.rm(directory, {
+    await NodeFSP.rm(directory, {
       recursive: true,
       force: true,
       maxRetries: 3,
@@ -887,7 +893,9 @@ export async function createRuntimePackageManifest(
       name: canonicalInputs.packageJson.name,
       version: canonicalInputs.packageJson.version,
       license: canonicalInputs.packageJson.license,
-      packageJsonSha256: await hashFile(Path.join(canonicalState.canonicalSource, "package.json")),
+      packageJsonSha256: await hashFile(
+        NodePath.join(canonicalState.canonicalSource, "package.json"),
+      ),
     },
     dependencies: canonicalInputs.dependencies,
     files: packedFiles,
@@ -926,7 +934,7 @@ export async function verifyRuntimeProvenance(
     canonicalInputs.packageJson.name !== manifest.package.name ||
     canonicalInputs.packageJson.version !== manifest.package.version ||
     canonicalInputs.packageJson.license !== manifest.package.license ||
-    (await hashFile(Path.join(canonicalState.canonicalSource, "package.json"))) !==
+    (await hashFile(NodePath.join(canonicalState.canonicalSource, "package.json"))) !==
       manifest.package.packageJsonSha256 ||
     !equalCompatibility(canonicalInputs.compatibility, manifest.compatibility) ||
     JSON.stringify(canonicalInputs.dependencies) !== JSON.stringify(manifest.dependencies)
@@ -1037,7 +1045,7 @@ export async function inspectOwnership(
 }
 
 export async function readRuntimePackageManifest(path: string): Promise<RuntimePackageManifest> {
-  const parsed: unknown = JSON.parse(await FileSystem.readFile(path, "utf8"));
+  const parsed: unknown = JSON.parse(await NodeFSP.readFile(path, "utf8"));
   if (
     !isRecord(parsed) ||
     parsed.schemaVersion !== 1 ||

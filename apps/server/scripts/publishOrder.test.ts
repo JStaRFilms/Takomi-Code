@@ -51,7 +51,13 @@ it.effect("finishes the other uploads and skips the launcher when one fails", ()
       publishPlatformsThenLauncher({ platformTarballs, launcherTarball, publish }),
     );
 
-    assert.deepStrictEqual(exit, Exit.fail("b.tgz failed"));
+    assert.isTrue(Exit.isFailure(exit));
+    if (Exit.isFailure(exit)) {
+      assert.deepStrictEqual(
+        exit.cause.reasons.map((reason) => (reason._tag === "Fail" ? reason.error : reason._tag)),
+        ["b.tgz failed"],
+      );
+    }
     assert.includeMembers(events, ["end a.tgz", "end c.tgz"]);
     assert.notInclude(events, `start ${launcherTarball}`);
   }),

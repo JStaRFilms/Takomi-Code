@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - The child boundary resolves only its isolated runtime path before it can load Pi.
-import * as FileSystem from "node:fs/promises";
-import * as Path from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 
 import {
   type ResolvedPackage,
@@ -32,7 +32,7 @@ export async function probePiHost(input: {
   readonly packageRoot: string;
   readonly manifestPath: string;
 }): Promise<PiHostProbe> {
-  const packageRoot = await FileSystem.realpath(Path.resolve(input.packageRoot));
+  const packageRoot = await NodeFSP.realpath(NodePath.resolve(input.packageRoot));
   const manifest = await readRuntimePackageManifest(input.manifestPath);
   const diagnostics = await verifyRuntimePackageManifest(packageRoot, manifest);
 

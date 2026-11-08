@@ -58,13 +58,13 @@ function packageExtensionEntries(raw: string): readonly string[] {
     : [];
 }
 
-function discoverPiCompanionExtensions(input: {
-  readonly fileSystem: FileSystem.FileSystem;
-  readonly path: Path.Path;
-  readonly environment: NodeJS.ProcessEnv;
-  readonly homePath: string;
-}) {
-  return Effect.gen(function* () {
+const discoverPiCompanionExtensions = Effect.fn("PiLaunchResources.discoverPiCompanionExtensions")(
+  function* (input: {
+    readonly fileSystem: FileSystem.FileSystem;
+    readonly path: Path.Path;
+    readonly environment: NodeJS.ProcessEnv;
+    readonly homePath: string;
+  }) {
     const configuredHome = input.homePath.trim() || input.environment.PI_CODING_AGENT_DIR?.trim();
     const userHome = input.environment.USERPROFILE?.trim() || input.environment.HOME?.trim();
     const agentDir =
@@ -134,17 +134,17 @@ function discoverPiCompanionExtensions(input: {
     return yield* Effect.filter([...new Set(candidates)], (candidate) =>
       input.fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false)),
     );
-  });
-}
+  },
+);
 
 /** Keep project discovery and session startup on the same Pi resource set. */
-export function resolvePiLaunchResources(input: {
-  readonly settings: PiSettings;
-  readonly cwd: string;
-  readonly environment: NodeJS.ProcessEnv;
-  readonly allowInferredSuite?: boolean;
-}) {
-  return Effect.gen(function* () {
+export const resolvePiLaunchResources = Effect.fn("PiLaunchResources.resolvePiLaunchResources")(
+  function* (input: {
+    readonly settings: PiSettings;
+    readonly cwd: string;
+    readonly environment: NodeJS.ProcessEnv;
+    readonly allowInferredSuite?: boolean;
+  }) {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     let suiteRoot = input.settings.suiteRoot;
@@ -212,5 +212,5 @@ export function resolvePiLaunchResources(input: {
       ],
       missingPaths,
     };
-  });
-}
+  },
+);

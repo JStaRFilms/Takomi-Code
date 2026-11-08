@@ -1,10 +1,12 @@
-import { pathToFileURL } from "node:url";
-import { join } from "node:path";
+import * as NodeURL from "node:url";
+import * as NodePath from "node:path";
 
 const [packagePath, directory, fixturePath] = process.argv.slice(2);
 if (!packagePath || !directory || !fixturePath) throw new Error("Missing conformance paths.");
 
-const { SessionManager } = await import(pathToFileURL(join(packagePath, "dist", "index.js")).href);
+const { SessionManager } = await import(
+  NodeURL.pathToFileURL(NodePath.join(packagePath, "dist", "index.js")).href
+);
 
 function treeEntryIds(nodes) {
   return nodes.flatMap((node) => [node.entry.id, ...treeEntryIds(node.children)]);

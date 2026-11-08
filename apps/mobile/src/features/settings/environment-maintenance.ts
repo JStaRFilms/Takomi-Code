@@ -6,8 +6,11 @@ import {
   type ServerProvider,
   type ServerDistribution,
 } from "@t3tools/contracts";
-import { cliReleaseChannelOf, newestCliReleaseVersion } from "@t3tools/shared/cliRelease";
-import { SERVER_DISTRIBUTIONS } from "@t3tools/shared/cliRelease";
+import {
+  SERVER_DISTRIBUTIONS,
+  cliReleaseChannelOf,
+  newestCliReleaseVersion,
+} from "@t3tools/shared/cliRelease";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
 
@@ -45,13 +48,18 @@ export function canUpdateEnvironmentProvider(provider: ServerProvider) {
   );
 }
 
-const Releases = Schema.Array(
-  Schema.Struct({
-    tag_name: Schema.String,
-    draft: Schema.optionalKey(Schema.Boolean),
-  }),
-);
-const decodeReleases = Schema.decodeUnknownSync(Releases);
+const Release = Schema.Struct({
+  tag_name: Schema.String,
+  draft: Schema.optionalKey(Schema.Boolean),
+});
+const decodeRelease = Schema.decodeUnknownSync(Release);
+const decodeReleases = Schema.decodeUnknownSync(Schema.Array(Release));
+
+async function fetchReleases(url: string, accept: string, signal: AbortSignal) {
+  const response = await fetch(url, { signal, headers: { Accept: accept } });
+  if (!response.ok) throw new Error(`Could not check releases (${response.status}). Try again.`);
+  return response;
+}
 
 export async function findEnvironmentUpdate(
   currentVersion: string,
@@ -60,18 +68,38 @@ export async function findEnvironmentUpdate(
 ) {
   if (distribution === undefined)
     throw new Error("Unknown server distribution. Update it manually on that machine.");
+  const repository = SERVER_DISTRIBUTIONS[distribution].repository;
+  const releasesUrl = `https://github.com/${repository}/releases`;
   const channel = cliReleaseChannelOf(currentVersion);
-  for (let page = 1; ; page++) {
-    const response = await fetch(
-      `https://api.github.com/repos/${SERVER_DISTRIBUTIONS[distribution].repository}/releases?per_page=100&page=${page}`,
-      { signal },
+  // Public release pages avoid the anonymous API quota shared by devices on the same network.
+  const response = await fetchReleases(
+    channel === "stable" ? `${releasesUrl}/latest` : `${releasesUrl}.atom`,
+    channel === "stable" ? "application/json" : "application/atom+xml",
+    signal,
+  );
+  const releases =
+    channel === "stable"
+      ? [decodeRelease(await response.json())]
+      : Array.from(
+          (await response.text()).matchAll(
+            /<id>tag:github\.com,2008:Repository\/\d+\/([^<]+)<\/id>/g,
+          ),
+          ([, tag_name = ""]) => ({ tag_name }),
+        );
+  let version = newestCliReleaseVersion(releases, channel);
+
+  // The feed only includes ten releases, so later nightlies can displace a published preview.
+  for (let page = 1; version === undefined; page++) {
+    const response = await fetchReleases(
+      `https://api.github.com/repos/${repository}/releases?per_page=100&page=${page}`,
+      "application/vnd.github+json",
+      signal,
     );
-    if (!response.ok) throw new Error(`Could not check releases (${response.status}). Try again.`);
     const releases = decodeReleases(await response.json());
-    const version = newestCliReleaseVersion(releases, channel);
-    if (version !== undefined) {
-      return compareSemverVersions(version, currentVersion) > 0 ? version : null;
-    }
-    if (releases.length < 100) throw new Error(`No ${channel} release was found.`);
+    version = newestCliReleaseVersion(releases, channel);
+    if (releases.length < 100) break;
   }
+
+  if (version === undefined) throw new Error(`No ${channel} release was found.`);
+  return compareSemverVersions(version, currentVersion) > 0 ? version : null;
 }

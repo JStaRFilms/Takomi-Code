@@ -64,20 +64,8 @@ export interface PiSyncCheckResult {
 }
 
 /**
- * Messages in the file the thread has not shown yet, by role + text.
- * Timestamps are deliberately ignored: a continued thread shares its session
- * file with the CLI, so a message sent from T3 lands in the file with the
- * file's own timestamp while the thread holds the same text with T3's
- * timestamp. Matching the full triple would mistake that echo for a new CLI
- * message (banner after your own send) and re-import it on sync (visible
- * duplicates). Counting duplicates preserves genuine repeats: two identical
- * file texts still need two visible copies to count as seen.
- *
- * Text is whitespace-normalized and user echoes also match by containment:
- * the CLI can reformat an outgoing T3 prompt (line breaks, wrappers) before
- * appending it to the session file, so the file copy is longer/shorter but
- * still contains the thread's text. Containment needs a 32-char minimum on
- * the shorter side so short repeats ("hehe") still count exactly.
+ * File timestamps differ from T3 echoes; match normalized text and role while counting genuine repeats.
+ * User echoes may contain wrappers, so allow containment only when the shorter text has 32+ characters.
  */
 function normalizePiText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
@@ -228,7 +216,7 @@ export const checkPiSessionUpdates = Effect.fn("PiSessionSync.checkPiSessionUpda
     } as const;
   });
   return yield* check.pipe(
-    Effect.catch(() => Effect.succeed({ available: false, newMessages: 0 } as const)),
+    Effect.orElseSucceed(() => ({ available: false, newMessages: 0 }) as const),
   );
 });
 

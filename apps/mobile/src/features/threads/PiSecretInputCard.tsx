@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
-import { RequestActionButton } from "./RequestActionButton";
+import { Button as RequestActionButton } from "../../components/ui/Button";
 
 interface PiSecretInputCardProps {
   requestId: RuntimeRequestId;

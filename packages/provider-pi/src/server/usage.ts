@@ -18,7 +18,7 @@ import type { PiSettings } from "../settings.ts";
 
 const PiScanState = Schema.Struct({
   sessionId: Schema.mutableKey(Schema.String),
-  model: Schema.mutableKey(Schema.String),
+  model: Schema.mutableKey(Schema.optionalKey(Schema.String)),
 });
 const Usage = Schema.Struct({
   input: Schema.optional(Schema.Unknown),
@@ -89,6 +89,7 @@ function parseRecord(parsed: unknown, state: typeof PiScanState.Type): readonly 
     timestamp(entry.timestamp) ?? ("timestamp" in source ? timestamp(source.timestamp) : null);
   if (timestampMs === null) return [];
   const usage = source.usage;
+  // Auxiliary tool/summary records lack model attribution; match Pi's breakdown.
   const rateModel =
     entry.type === "usage" || ("role" in source && source.role === "assistant")
       ? (("responseModel" in source ? source.responseModel : undefined) ??
@@ -193,7 +194,7 @@ export const piUsageReader = {
       }
       return [{ dir: root }];
     }
-    const current = path.join(home, ".pi", "agent", "sessions");
+    const current = resolvePiSessionsDir(environment, home, path);
     const legacy = path.join(home, ".pi", "sessions");
     return [
       {
@@ -202,3 +203,18 @@ export const piUsageReader = {
     ];
   }),
 } satisfies ProviderUsageReader<PiSettings, Path.Path | FileSystem.FileSystem>;
+
+/** Where Pi stores session JSONL files for a provider environment, matching Pi's own lookup. */
+export function resolvePiSessionsDir(
+  environment: NodeJS.ProcessEnv,
+  home: string,
+  path: Path.Path,
+): string {
+  const sessionDir = environment.PI_CODING_AGENT_SESSION_DIR?.trim();
+  if (sessionDir) return path.resolve(expandHomePath(sessionDir, home));
+  const agentDir = environment.PI_CODING_AGENT_DIR?.trim();
+  return path.resolve(
+    agentDir ? expandHomePath(agentDir, home) : path.join(home, ".pi", "agent"),
+    "sessions",
+  );
+}

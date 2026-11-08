@@ -14,6 +14,7 @@ export function AndroidAppUpdateRows() {
   const [state, setState] = useState<CheckState>({ status: "idle" });
   const inFlight = useRef(false);
   const mounted = useRef(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- End the native update-alert lifetime on unmount so pending checks cannot show an orphan alert.
   useEffect(() => {
     mounted.current = true;
     return () => {

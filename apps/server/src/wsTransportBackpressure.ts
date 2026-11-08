@@ -20,15 +20,8 @@ function frameBytes(frame: Uint8Array | string | Socket.CloseEvent): number {
 }
 
 /**
- * Enforces one aggregate output budget at the actual WebSocket writer boundary.
- * RPC stream queues cannot drain into unbounded native socket memory because
- * every write is budgeted before it reaches the transport.
- *
- * The transport applies its own native backpressure (a write resolves once the
- * frame is flushed), so bytes are counted as outstanding from budget check
- * until the write settles. An idle writer may send one frame larger than the
- * budget so a large RPC response does not cause a permanent reconnect loop.
- * The high-water mark includes that frame and writes that later fail.
+ * Count outstanding bytes until each native write settles, including failed writes.
+ * Allow one oversized frame only while idle to avoid permanent reconnect loops.
  */
 export function withWebSocketBackpressure(
   socket: Socket.Socket,

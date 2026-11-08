@@ -26,6 +26,7 @@ export const UsageProviderKind = Schema.Literals([
   "opencode",
   "antigravity",
   "pi",
+  "muse",
 ]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
@@ -42,12 +43,7 @@ export type UsageResolution = typeof UsageResolution.Type;
 export const UsageCostSource = Schema.Literals(["providerReported", "modelPriced", "unpriced"]);
 export type UsageCostSource = typeof UsageCostSource.Type;
 
-/**
- * `cachedInputTokens` and `cacheCreationTokens` are disjoint from
- * `uncachedInputTokens`; summing all three gives total input. `reasoningTokens`
- * is a *subset* of `outputTokens` (Codex reports it that way, and Anthropic
- * folds thinking into output), so it must never be added on top.
- */
+/** Sum uncached input, cache reads, and cache writes for input totals; reasoning is already included in output. */
 export const UsageTokenTotals = Schema.Struct({
   uncachedInputTokens: NonNegativeInt,
   cachedInputTokens: NonNegativeInt,
@@ -66,19 +62,8 @@ export const UsageCategoryCost = Schema.Struct({
 export type UsageCategoryCost = typeof UsageCategoryCost.Type;
 
 /**
- * One `(day, hourStart?, provider, sourcePath?, model)` cell. `hourStart` is
- * the UTC start instant of a rolling bucket and is present only for hourly
- * requests.
- *
- * `sourcePath` identifies the physical database a bucket's records came from.
- * It is set by providers that can read several databases at once (OpenCode's
- * stable and channel stores) so the client can attribute ownership per
- * database rather than per provider; transcript providers leave it unset.
- *
- * `costUsd` is the raw API-equivalent cost of these tokens. It is not money
- * spent: subscription plans bill separately. `unpricedRecords` counts records
- * whose tokens are included in the token totals but which contributed nothing
- * to `costUsd`.
+ * sourcePath attributes multi-database ownership; hourStart is the UTC hourly bucket instant.
+ * costUsd is API-equivalent, not subscription spending; unpricedRecords still contribute tokens.
  */
 export const UsageBucket = Schema.Struct({
   day: UsageDay,
@@ -101,24 +86,12 @@ export const UsageBucket = Schema.Struct({
 });
 export type UsageBucket = typeof UsageBucket.Type;
 
-/**
- * Identifies the physical transcript directory or usage database a source
- * read from.
- *
- * Two environments on the same machine (worktree servers, for example) resolve
- * the same provider home and would otherwise double count. The client drops
- * duplicate fingerprints before merging.
- */
+/** Same-machine environments share provider homes; clients deduplicate these physical-source fingerprints. */
 export const UsageSourceFingerprint = Schema.Struct({
   hostId: TrimmedNonEmptyString,
   provider: UsageProviderKind,
   resolvedHomePath: TrimmedNonEmptyString,
-  /**
-   * Filesystem identity of the transcript directory, as `device:inode`.
-   * Hostname and path alone are not enough: every Mac in a fleet resolves
-   * `/Users/<user>/.claude`, so two machines that happen to share a hostname
-   * would look like one source and have their usage silently dropped.
-   */
+  /** Transcript directory device:inode distinguishes machines sharing a hostname and home path. */
   volumeId: Schema.String,
 });
 export type UsageSourceFingerprint = typeof UsageSourceFingerprint.Type;
@@ -132,19 +105,11 @@ export const UsageSource = Schema.Struct({
   scannedFiles: NonNegativeInt,
   skippedFiles: NonNegativeInt,
   malformedRecords: NonNegativeInt,
-  /**
-   * Buckets also carry per-bucket session counts, but a session spans days and
-   * models, so summing those overcounts; this is the figure clients should
-   * total.
-   */
+  /** Total this count; bucket counts double-count sessions spanning days or models. */
   distinctSessions: NonNegativeInt,
   message: Schema.NullOr(TrimmedNonEmptyString),
   action: Schema.optionalKey(Schema.Literal("enableCursorKeychain")),
-  /**
-   * Present when this source answered from its cache while a slow refresh (an
-   * account API, for example) runs. Repeat the request with `awaitRefresh` to
-   * get the refreshed source.
-   */
+  /** Cached response during refresh; repeat with awaitRefresh for fresh data. */
   refreshing: Schema.optionalKey(Schema.Literal(true)),
 });
 export type UsageSource = typeof UsageSource.Type;
@@ -160,18 +125,33 @@ export const UsagePricing = Schema.Struct({
 });
 export type UsagePricing = typeof UsagePricing.Type;
 
+/**
+ * Matches a provider's original model ID, before usage model aliases apply. Omit provider to
+ * match any; a string provider lets older clients carry selectors for providers they lack.
+ */
+export const UsageModelSelector = Schema.Struct({
+  provider: Schema.optional(TrimmedNonEmptyString),
+  model: TrimmedNonEmptyString,
+});
+export type UsageModelSelector = typeof UsageModelSelector.Type;
+
+/** Keeps records matching `include` (all when omitted) and not matching `exclude`. */
+export const UsageModelFilter = Schema.Struct({
+  include: Schema.optional(Schema.Array(UsageModelSelector)),
+  exclude: Schema.optional(Schema.Array(UsageModelSelector)),
+});
+export type UsageModelFilter = typeof UsageModelFilter.Type;
+
 export const UsageSummaryInput = Schema.Struct({
   sinceDay: UsageDay,
   untilDay: UsageDay,
-  /**
-   * IANA zone the client wants days bucketed in. An offset would be wrong for
-   * any window that crosses a DST boundary.
-   */
+  /** IANA bucketing zone; offsets fail across DST boundaries. */
   timeZone: TrimmedNonEmptyString,
   resolution: Schema.optional(UsageResolution),
   sinceTime: Schema.optional(TrimmedNonEmptyString),
   untilTime: Schema.optional(TrimmedNonEmptyString),
   awaitRefresh: Schema.optional(Schema.Boolean),
+  modelFilter: Schema.optional(UsageModelFilter),
 });
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;
 
@@ -185,6 +165,8 @@ export const UsageSummary = Schema.Struct({
   sources: ForwardCompatibleArray(UsageSource),
   pricing: UsagePricing,
   scanDurationMs: NonNegativeInt,
+  /** The filter the server applied; absent means unfiltered, including servers that predate filters. */
+  modelFilter: Schema.optional(UsageModelFilter),
 });
 export type UsageSummary = typeof UsageSummary.Type;
 

@@ -22,13 +22,7 @@ export interface PiContinueTarget {
   readonly canFork: boolean;
 }
 
-/**
- * Resolve the Pi instance behind "Continue Pi session" for one environment's
- * provider snapshots. Returns null when nothing can continue (hidden UI),
- * so callers never offer a flow the server would refuse for capability
- * reasons. The default instance wins; any capable Pi instance is better
- * than none.
- */
+/** Prefer the default capable Pi instance; return null rather than offering unsupported continuation. */
 export function resolvePiContinueTarget(
   providers: ReadonlyArray<ServerProvider>,
 ): PiContinueTarget | null {
@@ -112,13 +106,7 @@ export function buildPiSyncBannerId(threadId: string, updateKey: string): string
   return `pi-sync:${threadId}:${updateKey}`;
 }
 
-/**
- * Whether a catalog entry can be continued. Fully-scanned v3 sessions always
- * qualify; large sessions the catalog could only prefix-read ("truncated")
- * still qualify when their header proves version 3 — attach re-verifies the
- * header and file identity itself, so a partial entry count is no blocker.
- * Anything else (legacy, malformed, unknown) stays disabled.
- */
+/** Truncated v3 headers qualify because attach re-verifies file identity and version. */
 export function isPiSessionContinuable(
   entry: Pick<PiSessionCatalogEntry, "compatibility" | "formatVersion">,
 ): boolean {
