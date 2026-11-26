@@ -475,9 +475,9 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
         const upstream = yield* fs.readFileString(
           yield* path.fromFileUrl(new URL("../.github/workflows/release.yml", import.meta.url)),
         );
-        assert.include(
+        assert.match(
           upstream,
-          "resolve_commit:\n    if: github.repository == 'pingdotgg/t3code'",
+          /^  resolve_commit:\n(?:    name: [^\n]+\n)?    if: github\.repository == 'pingdotgg\/t3code'(?: && [^\n]+)?$/m,
         );
       }),
   );
