@@ -1,11 +1,11 @@
-import { Observe } from "expo-observe";
 import { T, useGT } from "gt-react-native";
 import { Component, type ReactNode } from "react";
 import { ScrollView, View } from "react-native";
 
+import { reportCrashError } from "../features/observability/observe";
+import { copyTextWithHaptic } from "../lib/copyTextWithHaptic";
 import { AppText as Text } from "./ui/AppText";
 import { Button } from "./ui/Button";
-import { copyTextWithHaptic } from "../lib/copyTextWithHaptic";
 
 interface RenderErrorBoundaryProps {
   readonly children: ReactNode;
@@ -68,7 +68,7 @@ export class RenderErrorBoundary extends Component<
 
   override componentDidCatch(error: unknown, info: { componentStack?: string }) {
     // A caught render error never reaches Observe's global handler.
-    Observe.reportError(error);
+    reportCrashError(error);
     this.setState({ componentStack: info.componentStack });
   }
 
