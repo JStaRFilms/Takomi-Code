@@ -83,14 +83,14 @@ async function makeFixture(): Promise<Fixture> {
 function withFixture<A, E, R>(
   run: (value: Fixture) => Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E, R> {
-  const acquire: Effect.Effect<Fixture, never, never> = Effect.tryPromise(() => makeFixture()).pipe(
+  const acquire: Effect.Effect<Fixture, never, never> = Effect.promise(() => makeFixture()).pipe(
     Effect.orDie,
   );
   return acquire.pipe(
     Effect.flatMap((value) =>
       run(value).pipe(
         Effect.ensuring(
-          Effect.tryPromise(() => NodeFSP.rm(value.root, { recursive: true, force: true })).pipe(
+          Effect.promise(() => NodeFSP.rm(value.root, { recursive: true, force: true })).pipe(
             Effect.ignore,
           ),
         ),
@@ -183,7 +183,7 @@ describe("Pi session attach/fork continuation", () => {
   it.effect("tolerates CLI-appended records after listing (the refetch case)", () =>
     withLiveHandle(({ value, lifecycle, scope, handle }) =>
       Effect.gen(function* () {
-        yield* Effect.tryPromise(() =>
+        yield* Effect.promise(() =>
           NodeFSP.appendFile(
             value.sourceFile,
             `${JSON.stringify({ type: "message", id: "m2", parentId: "m1" })}\n`,
@@ -200,13 +200,13 @@ describe("Pi session attach/fork continuation", () => {
   it.effect("forks into a child file that points at the source as parent", () =>
     withLiveHandle(({ value, lifecycle, scope, handle }) =>
       Effect.gen(function* () {
-        const before = yield* Effect.tryPromise(() => NodeFSP.readFile(value.sourceFile, "utf8"));
+        const before = yield* Effect.promise(() => NodeFSP.readFile(value.sourceFile, "utf8"));
         const resolution = yield* continuePiSessionInThread(
           context(value, lifecycle, scope, handle, { mode: "fork" }),
         );
         expect(resolution.sessionFile).not.toBe(value.sourceFile);
         expect(NodePath.dirname(resolution.sessionFile)).toBe(value.directory);
-        const lines = (yield* Effect.tryPromise(() =>
+        const lines = (yield* Effect.promise(() =>
           NodeFSP.readFile(resolution.sessionFile, "utf8"),
         ))
           .split("\n")
@@ -215,7 +215,7 @@ describe("Pi session attach/fork continuation", () => {
         const header = JSON.parse(lines[0]!);
         expect(header.parentSession).toBe(value.sourceFile);
         expect(header.id).not.toBe("source-session");
-        expect(yield* Effect.tryPromise(() => NodeFSP.readFile(value.sourceFile, "utf8"))).toBe(
+        expect(yield* Effect.promise(() => NodeFSP.readFile(value.sourceFile, "utf8"))).toBe(
           before,
         );
       }),
@@ -249,8 +249,8 @@ describe("Pi session attach/fork continuation", () => {
         expect(yield* reason(context(value, lifecycle, scope, "tampered-handle"))).toBe(
           "invalid_cursor",
         );
-        yield* Effect.tryPromise(() => NodeFSP.rm(value.sourceFile));
-        yield* Effect.tryPromise(() =>
+        yield* Effect.promise(() => NodeFSP.rm(value.sourceFile));
+        yield* Effect.promise(() =>
           NodeFSP.writeFile(
             value.sourceFile,
             `${JSON.stringify({
@@ -305,7 +305,7 @@ describe("Pi point-split forks and message preview", () => {
           context(value, lifecycle, scope, handle, { mode: "fork", maxRecords: 1 }),
         );
         expect(resolution.sessionFile).not.toBe(value.sourceFile);
-        const lines = (yield* Effect.tryPromise(() =>
+        const lines = (yield* Effect.promise(() =>
           NodeFSP.readFile(resolution.sessionFile, "utf8"),
         ))
           .split("\n")
@@ -334,7 +334,7 @@ describe("Pi point-split forks and message preview", () => {
   it.effect("previews messages with record positions for point picking", () =>
     withLiveHandle(({ value, lifecycle, scope, handle }) =>
       Effect.gen(function* () {
-        yield* Effect.tryPromise(() =>
+        yield* Effect.promise(() =>
           NodeFSP.appendFile(
             value.sourceFile,
             [

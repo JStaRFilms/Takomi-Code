@@ -12,7 +12,10 @@
     "./sessionInspect": "./src/sessionInspect.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsrs --noEmit",
     "test": "node --experimental-strip-types --test src/*.test.ts"
+  },
+  "devDependencies": {
+    "tsrs": "7.1.0-beta.tsrs4"
   }
 }

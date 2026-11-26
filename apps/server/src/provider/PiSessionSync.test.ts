@@ -277,12 +277,12 @@ describe("check and sync with stub deps", () => {
   it.effect("check never fails and reports newcomers", () =>
     Effect.gen(function* () {
       // Stub extraction by pointing at a real temp file through readSessionFile.
-      const root = yield* Effect.tryPromise(() =>
+      const root = yield* Effect.promise(() =>
         NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "takomi-sync-")),
       );
       yield* Effect.gen(function* () {
         const file = NodePath.join(root, "session.jsonl");
-        yield* Effect.tryPromise(() =>
+        yield* Effect.promise(() =>
           NodeFSP.writeFile(
             file,
             [
@@ -321,7 +321,7 @@ describe("check and sync with stub deps", () => {
         expect(synced.added).toBe(1);
       }).pipe(
         Effect.ensuring(
-          Effect.tryPromise(() => NodeFSP.rm(root, { recursive: true, force: true })).pipe(
+          Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true })).pipe(
             Effect.ignore,
           ),
         ),
@@ -331,7 +331,7 @@ describe("check and sync with stub deps", () => {
 
   it.effect("ignores UI image echoes in both check and sync while keeping CLI updates", () =>
     Effect.gen(function* () {
-      const root = yield* Effect.tryPromise(() =>
+      const root = yield* Effect.promise(() =>
         NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "takomi-sync-image-")),
       );
       yield* Effect.gen(function* () {
@@ -368,7 +368,7 @@ describe("check and sync with stub deps", () => {
             message: { role: "assistant", content: [{ type: "text", text: "Reply" }] },
           },
         ];
-        yield* Effect.tryPromise(() =>
+        yield* Effect.promise(() =>
           NodeFSP.writeFile(file, entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")),
         );
         const appended: Array<string> = [];
@@ -410,7 +410,7 @@ describe("check and sync with stub deps", () => {
           timestamp: "2026-09-13T19:00:04.000Z",
           message: { role: "user", content: "From the CLI" },
         });
-        yield* Effect.tryPromise(() =>
+        yield* Effect.promise(() =>
           NodeFSP.writeFile(file, entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")),
         );
         expect((yield* checkPiSessionUpdates(threadId, deps)).newMessages).toBe(1);
@@ -418,7 +418,7 @@ describe("check and sync with stub deps", () => {
         expect(appended).toEqual(["From the CLI"]);
       }).pipe(
         Effect.ensuring(
-          Effect.tryPromise(() => NodeFSP.rm(root, { recursive: true, force: true })).pipe(
+          Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true })).pipe(
             Effect.ignore,
           ),
         ),
@@ -428,7 +428,7 @@ describe("check and sync with stub deps", () => {
 
   it.effect("syncs messages after the first bounded hydration page", () =>
     Effect.gen(function* () {
-      const root = yield* Effect.tryPromise(() =>
+      const root = yield* Effect.promise(() =>
         NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "takomi-sync-page-")),
       );
       yield* Effect.gen(function* () {
@@ -451,7 +451,7 @@ describe("check and sync with stub deps", () => {
             message: { role: "user", content: `message ${index}` },
           });
         }
-        yield* Effect.tryPromise(() =>
+        yield* Effect.promise(() =>
           NodeFSP.writeFile(file, entries.map((entry) => `${JSON.stringify(entry)}\n`).join("")),
         );
         const appendedIds: Array<string> = [];
@@ -478,7 +478,7 @@ describe("check and sync with stub deps", () => {
         expect(appendedIds).toEqual(["import:pi:thread-sync:r1000", "import:pi:thread-sync:r1001"]);
       }).pipe(
         Effect.ensuring(
-          Effect.tryPromise(() => NodeFSP.rm(root, { recursive: true, force: true })).pipe(
+          Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true })).pipe(
             Effect.ignore,
           ),
         ),

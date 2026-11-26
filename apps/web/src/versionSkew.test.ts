@@ -31,6 +31,30 @@ describe("versionSkew", () => {
         "takomi",
       ),
     ).toBe("npm install --global --prefix '/opt/maria'\\''s node' takomi-code@0.0.45");
+    expect(
+      manualServerUpdateCommand(
+        "0.0.45",
+        {
+          kind: "t3-launcher",
+          launcher: "t3",
+          baseDir: "/home/u/.t3",
+        },
+        "t3",
+        "0.0.44",
+      ),
+    ).toBe("'t3' update --base-dir '/home/u/.t3' --channel stable");
+    expect(
+      manualServerUpdateCommand(
+        "0.0.45",
+        {
+          kind: "t3-launcher",
+          launcher: "/opt/maria's bin/t3",
+          baseDir: "/data/t3 home",
+        },
+        "t3",
+        "0.0.44-nightly.20261124.1",
+      ),
+    ).toBe("'/opt/maria'\\''s bin/t3' update --base-dir '/data/t3 home' --channel nightly");
   });
   beforeEach(() => {
     branding.APP_VERSION = "0.0.34";

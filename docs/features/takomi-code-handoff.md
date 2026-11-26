@@ -13,7 +13,7 @@ This is the maintained status summary for the Takomi fork. Detailed documentatio
 - [Takomi / Pi provider](./takomi-pi-provider.md)
 - [Takomi tool-call UI](./takomi-tool-call-ui-audit.md)
 - [Desktop and Android builds](./takomi-desktop-and-android.md)
-- [Provider architecture](../internals/providers.md)
+- [Provider architecture](../internals/03_providers.md)
 - [Local release procedure](../../release/README.md)
 
 The material under `docs/tasks/orchestrator-sessions/` is historical planning evidence, not current
@@ -107,8 +107,8 @@ For suite development, set **Takomi suite root** to the VibeCode Protocol Suite 
 
 ## Current local release workflow
 
-Current source defaults are desktop/server `0.1.7` and mobile `2.2.0`. They do not replace the
-published stable `0.1.2` release or its artifacts. The source merge itself produces no binaries.
+Read the source versions from `apps/desktop/package.json`, `apps/server/package.json`, and
+`apps/mobile/app.config.ts`. A source merge does not publish or replace any release artifacts.
 Each attempt reserves a separate output directory:
 
 ```text

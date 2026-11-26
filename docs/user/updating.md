@@ -82,13 +82,15 @@ different value, use **Apply to all** in Settings after it connects.
 T3 Code must start again on that machine;
 the setting does not enable automatic startup. Terminal commands may still be
 interrupted, and threads without saved provider resume state need a new message.
-A thread that finished its turn to wait on a subagent, a background task, or a
-command or monitor the agent said it was waiting on is woken and told that this work
+A thread that finished its turn to wait on a subagent, a background task, a Claude
+monitor or `sleep` timer, or a command or other monitor the agent said it was waiting on is woken and told that this work
 stopped. Other background shells and monitors, such as a dev server and its
 watchdog, do not wake it; the thread learns about them with your next message.
 A thread is not resumed while it waits for your approval, answer, or secret, or
-while it is archived, snoozed, or settled. After three automatic resumes in a row,
-the thread waits for your next message.
+while it is archived, snoozed, or settled. After three consecutive crash recoveries
+of an unfinished turn, the thread waits for your next message, even when crashes
+are more than five minutes apart. A completed turn or a planned shutdown resets
+that limit.
 
 Updates from the previous orchestration system preserve conversation transcripts but cannot carry
 every kind of runtime history forward. Read [Threads from older T3 Code versions](./thread-migration.md)
@@ -113,8 +115,8 @@ The offered action depends on how the server runs:
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Update server**          | Keep the client open while it installs and reconnects. Supported background services update remotely. For a desktop-hosted server, this also closes and relaunches the desktop app on the host. |
 | **Update the desktop app** | Update the desktop app on the machine running the server, then reopen it if needed.                                                                                                             |
-| **Copy update command**    | Run the command on the named host to update the detected global npm install, then restart the server with your usual options.                                                                   |
-| **Copy relaunch command**  | Stop the command-line server on its host and relaunch with the copied command, keeping your usual subcommand and options. This does not update an installed server command.                     |
+| **Copy update command**    | Run the command on the named host to update the detected global npm install or installed launcher, then restart the server with your usual options.                                             |
+| **Copy relaunch command**  | Stop the command-line server on its host and relaunch with the copied command, keeping your usual subcommand and options. This does not update an installed launcher.                           |
 
 For a Takomi host with the installed command, run:
 
@@ -127,6 +129,10 @@ The command asks before restarting a background service. If you decline,
 run `takomi-code service restart` when ready. For a server started by hand,
 stop it and relaunch it with the same options, including `--host`, data-directory,
 and `--tailscale-serve` options.
+
+If you decline the restart for a background service installed by an older
+release, the service can stay down after a crash or reboot until you run
+`t3 service restart`.
 
 An `npx` host can relaunch with `npx takomi-code@<takomi-version>` and the same
 subcommand and options. A detected global installation needs the offered
@@ -183,8 +189,11 @@ Machines without npm check the public npm registry directly.
 
 **Settings → Providers** shows provider updates for the selected environment.
 **Update all** updates every outdated provider on every connected environment
-at once. Hover it to see which providers it will update. Providers that only
-offer a manual update command are not included.
+at once. Hover it to see which providers it will update. A provider is left out
+when any of its enabled, outdated instances offers only a manual update command,
+or when its instances use different update commands, such as two instances that
+run different CLI installs. Update those by hand, or point every instance of the
+provider at the same CLI.
 
 After a successful provider CLI update, T3 Code refreshes model discovery for
 every enabled instance of that provider using its own configuration. Connected

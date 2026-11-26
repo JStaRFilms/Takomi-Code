@@ -4,6 +4,7 @@ import { ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as FileSystem from "effect/FileSystem";
@@ -80,7 +81,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
   it.effect("publishes proven install ownership only for manually updated servers", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const baseDir = yield* fs.makeTempDirectoryScoped();
+      const platform = yield* HostProcess.Platform;
+      const baseDir = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
       const prefix = `${baseDir}/node`;
       const entry = `${prefix}/lib/node_modules/takomi-code/dist/bin.mjs`;
       yield* fs.makeDirectory(`${prefix}/lib/node_modules/takomi-code/dist`, { recursive: true });
@@ -110,12 +112,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
           ),
           Effect.provideService(HostProcess.Arguments, ["node", entry]),
           Effect.provideService(HostProcess.IsExecutable, false),
-          Effect.provideService(HostProcess.Platform, "linux"),
           Effect.provideService(HostProcess.Environment, {}),
         );
         expect(descriptor.distribution).toBe("takomi");
         expect(descriptor.capabilities.serverInstallation).toEqual(
-          mode === "web"
+          mode === "web" && platform !== "win32"
             ? { kind: "npm-global", prefix: (yield* Path.Path).normalize(prefix) }
             : undefined,
         );
@@ -130,6 +131,103 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
           threadAutoSettlementScope: true,
         });
       }
+    }),
+  );
+  it.effect.each([
+    { desktopAppUpdate: false, advertised: undefined },
+    { desktopAppUpdate: true, advertised: true },
+  ])(
+    "advertises desktop app updates only when the desktop can install them ($desktopAppUpdate)",
+    ({ desktopAppUpdate, advertised }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped();
+        const config = yield* makeServerConfig(baseDir);
+        yield* fs.makeDirectory(config.stateDir, { recursive: true });
+        const descriptor = yield* Effect.gen(function* () {
+          const environment = yield* ServerEnvironment.ServerEnvironment;
+          return yield* environment.getDescriptor;
+        }).pipe(
+          Effect.provide(
+            ServerEnvironment.layer.pipe(
+              Layer.provide(layerEmptySecretStore),
+              Layer.provide(
+                ServerConfig.layer({
+                  ...config,
+                  mode: "desktop",
+                  desktopTelemetryControlFd: 5,
+                  desktopAppUpdate,
+                }),
+              ),
+            ),
+          ),
+          Effect.provideService(HostProcess.Environment, {}),
+        );
+        const capabilities = descriptor.capabilities;
+        expect({
+          serverSelfUpdate: capabilities.serverSelfUpdate,
+          desktopAppUpdate: capabilities.desktopAppUpdate,
+          desktopAppChannelSwitch: capabilities.desktopAppChannelSwitch,
+          serverSelfUpdateProgress: capabilities.serverSelfUpdateProgress,
+        }).toEqual({
+          serverSelfUpdate: "desktop-managed",
+          desktopAppUpdate: advertised,
+          desktopAppChannelSwitch: undefined,
+          serverSelfUpdateProgress: advertised,
+        });
+      }),
+  );
+  it.effect("names the environment and its machine from the overrides", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-server-environment-override-test-",
+      });
+      const descriptor = yield* Effect.gen(function* () {
+        const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+        return yield* serverEnvironment.getDescriptor;
+      }).pipe(
+        Effect.provide(
+          layerServerEnvironment(baseDir).pipe(
+            Layer.provide(
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({
+                  env: {
+                    T3CODE_ENVIRONMENT_LABEL: " MacBook ",
+                    T3CODE_ENVIRONMENT_MACHINE_KIND: "laptop",
+                  },
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(descriptor.label).toBe("MacBook");
+      expect(descriptor.platform.machine).toBe("laptop");
+    }),
+  );
+  it.effect.each([
+    { platform: "darwin", architecture: "arm64", supported: true },
+    { platform: "linux", architecture: "x64", supported: true },
+    { platform: "linux", architecture: "x64", libc: "musl", supported: false },
+    { platform: "win32", architecture: "arm64", supported: false },
+    { platform: "linux", architecture: "arm", supported: false },
+  ] as const)("advertises voice transcription on $platform-$architecture: $supported", (host) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-server-environment-speech-test-",
+      });
+      const descriptor = yield* Effect.gen(function* () {
+        const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+        return yield* serverEnvironment.getDescriptor;
+      }).pipe(
+        Effect.provide(layerServerEnvironment(baseDir)),
+        Effect.provideService(HostProcess.Platform, host.platform),
+        Effect.provideService(HostProcess.Architecture, host.architecture),
+        Effect.provideService(HostProcess.LinuxLibc, "libc" in host ? host.libc : "gnu"),
+      );
+      expect(descriptor.capabilities.voiceTranscription).toBe(host.supported);
     }),
   );
   it.effect.each([

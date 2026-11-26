@@ -1,7 +1,4 @@
-/**
- * Pi state (sessions, settings, extensions, auth) lives in the user's own
- * `~/.pi/agent`, so continuation identity uses the default instance grouping.
- */
+// User-wide ~/.pi/agent state makes continuation identity use default instance grouping.
 import { PI_PROVIDER_IDENTITY, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { PiSettings } from "../settings.ts";
 import * as Effect from "effect/Effect";
@@ -44,10 +41,11 @@ import {
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
 
-const DRIVER_KIND = ProviderDriverKind.make(PI_PROVIDER_IDENTITY.driverKind);
+const DRIVER_KIND = ProviderDriverKind.make("pi");
 const UPDATE = makePackageManagedProviderMaintenanceResolver({
   provider: DRIVER_KIND,
   npmPackageName: "@earendil-works/pi-coding-agent",
+  mise: { tool: "pi" },
   nativeUpdate: { args: ["update", "--self"] },
 });
 
@@ -100,7 +98,8 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path | FileS
       const httpClient = yield* HttpClient.HttpClient;
       const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
       const host = yield* ProviderHost.ProviderHost;
-      const { cwd } = host.paths;
+      // Pi runs extensions' session_start in its cwd; the server's cwd is $HOME on packaged desktop.
+      const probeCwd = pathService.join(host.paths.providerStatusCacheDir, "pi-status-probe");
       const piEnvironment = config.homePath
         ? [
             ...environment.filter((variable) => variable.name !== "PI_CODING_AGENT_DIR"),
@@ -123,6 +122,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path | FileS
         resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
           binaryPath: effectiveConfig.binaryPath,
           env: processEnv,
+          npmCacheDir: pathService.join(host.paths.providerStatusCacheDir, "npm"),
         }).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -148,12 +148,22 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv, Path.Path | FileS
             }),
         ),
       );
-      const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
-
-      const checkProvider = checkPiProviderStatus(effectiveConfig, processEnv, cwd).pipe(
-        Effect.map(stampIdentity),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      const textGeneration = yield* makePiTextGeneration(
+        effectiveConfig,
+        processEnv,
+        host.compatibility,
       );
+
+      const checkProvider = fileSystem
+        .makeDirectory(probeCwd, { recursive: true })
+        .pipe(
+          Effect.ignore,
+          Effect.andThen(
+            checkPiProviderStatus(effectiveConfig, processEnv, probeCwd, host.compatibility),
+          ),
+          Effect.map(stampIdentity),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
 
       const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
       const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<PiSettings>>({

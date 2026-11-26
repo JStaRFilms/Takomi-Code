@@ -1,17 +1,41 @@
+import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import type { EnvironmentId, ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { msg } from "gt-react-native";
 
+import { m } from "../../i18n/messages";
 import { findEnvironmentUpdate } from "./environment-maintenance";
 
 export interface EnvironmentReleaseCheck {
   readonly fromVersion: string;
   readonly targetVersion: string | null;
+  readonly distribution: ExecutionEnvironmentDescriptor["distribution"];
 }
 
+export function outdatedServerUpdateTarget(release: EnvironmentReleaseCheck | null): string | null {
+  // The protocol-gated update path accepts only Takomi hosts.
+  return release?.distribution === "takomi" ? release.targetVersion : null;
+}
+
+export class EnvironmentUpdateCheckError extends Schema.TaggedError<EnvironmentUpdateCheckError>()(
+  "EnvironmentUpdateCheckError",
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
 const asError = (cause: unknown) =>
-  cause instanceof Error ? cause : new Error("Could not check for updates.");
+  new EnvironmentUpdateCheckError({
+    message:
+      cause instanceof Error
+        ? (errorDisplayMessage(cause, m) ?? cause.message)
+        : m(msg("Could not check for updates.")),
+    cause,
+  });
 
 /**
  * Looks up a release from the described server distribution. The atom is not
@@ -35,10 +59,19 @@ export const environmentReleaseCheckAtom = Atom.family((environmentId: Environme
         }).pipe(
           Effect.timeoutOrElse({
             duration: "20 seconds",
-            orElse: () => Effect.fail(new Error("Checking for updates timed out. Try again.")),
+            orElse: () =>
+              Effect.fail(
+                new EnvironmentUpdateCheckError({
+                  message: m(msg("Checking for updates timed out. Try again.")),
+                }),
+              ),
           }),
         );
-        return { fromVersion, targetVersion } satisfies EnvironmentReleaseCheck;
+        return {
+          fromVersion,
+          targetVersion,
+          distribution: server.distribution,
+        } satisfies EnvironmentReleaseCheck;
       }),
   ).pipe(Atom.withLabel(`mobile:environment-release-check:${environmentId}`)),
 );

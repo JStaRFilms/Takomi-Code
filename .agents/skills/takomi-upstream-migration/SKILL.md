@@ -123,7 +123,7 @@ Canonical maintained files include:
 - `README.md`
 - `release/README.md`
 - `docs/README.md`
-- `docs/internals/providers.md`
+- `docs/internals/03_providers.md`
 - `docs/features/takomi-code-handoff.md`
 - `docs/features/takomi-pi-provider.md`
 - `docs/features/takomi-tool-call-ui-audit.md`

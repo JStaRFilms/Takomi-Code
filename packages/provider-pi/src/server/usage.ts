@@ -15,6 +15,7 @@ import {
 } from "@t3tools/provider-core/server/usage";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type { PiSettings } from "../settings.ts";
+import { PI_ARGUMENTS_WITH_VALUES, resolvePiLaunchArgs } from "./mcpInjection.ts";
 
 const PiScanState = Schema.Struct({
   sessionId: Schema.mutableKey(Schema.String),
@@ -180,29 +181,65 @@ export const piUsageReader = {
   kind: "transcripts",
   provider: "takomi",
   format: piUsageFormat,
-  directories: Effect.fn("piUsageReader.directories")(function* ({ environment, config }) {
+  // Pi model IDs are `<provider>/<rate model>`.
+  rateModel: (model) => model.slice(model.indexOf("/") + 1),
+  directories: Effect.fn("piUsageReader.directories")(function* ({ config, environment }) {
     const path = yield* Path.Path;
     const fs = yield* FileSystem.FileSystem;
     const home = yield* HostProcess.HomeDirectory;
+    const platform = yield* HostProcess.Platform;
+    const launchHome = piHome(environment, home, platform);
+    const sessionDirArg = config === undefined ? undefined : piLaunchSessionDir(config.launchArgs);
+    const launchDir =
+      sessionDirArg === undefined ? undefined : expandHomePath(sessionDirArg, launchHome);
+    const directories: { dir: string }[] =
+      launchDir !== undefined && path.isAbsolute(launchDir)
+        ? [{ dir: path.resolve(launchDir) }]
+        : [];
     const sessionDir = environment.PI_CODING_AGENT_SESSION_DIR?.trim();
-    if (sessionDir) return [{ dir: path.resolve(expandHomePath(sessionDir, home)) }];
+    if (sessionDir)
+      return [...directories, { dir: path.resolve(expandHomePath(sessionDir, home)) }];
     const agentDir = config?.homePath.trim() || environment.PI_CODING_AGENT_DIR?.trim();
     if (agentDir) {
-      const root = path.resolve(expandHomePath(agentDir, home));
+      const root = path.resolve(expandHomePath(agentDir, launchHome));
       for (const dir of [path.join(root, "agent", "sessions"), path.join(root, "sessions")]) {
-        if (yield* fs.exists(dir).pipe(Effect.orElseSucceed(() => false))) return [{ dir }];
+        if (yield* fs.exists(dir).pipe(Effect.orElseSucceed(() => false)))
+          return [...directories, { dir }];
       }
-      return [{ dir: root }];
+      return [...directories, { dir: root }];
     }
-    const current = resolvePiSessionsDir(environment, home, path);
-    const legacy = path.join(home, ".pi", "sessions");
+    const current = resolvePiSessionsDir(environment, launchHome, path);
+    const legacy = path.join(launchHome, ".pi", "sessions");
     return [
+      ...directories,
       {
         dir: (yield* fs.exists(current).pipe(Effect.orElseSucceed(() => false))) ? current : legacy,
       },
     ];
   }),
 } satisfies ProviderUsageReader<PiSettings, Path.Path | FileSystem.FileSystem>;
+
+function piLaunchSessionDir(launchArgs: string): string | undefined {
+  const resolved = resolvePiLaunchArgs(launchArgs);
+  if (!resolved.ok) return undefined;
+  let sessionDir: string | undefined;
+  for (let index = 0; index < resolved.args.length; index += 1) {
+    const arg = resolved.args[index];
+    if (arg === undefined || !PI_ARGUMENTS_WITH_VALUES.has(arg)) continue;
+    index += 1;
+    if (arg === "--session-dir") sessionDir = resolved.args[index] || undefined;
+  }
+  return sessionDir;
+}
+
+/** The home Pi resolves `~` against: the instance's HOME (USERPROFILE on Windows), else the host's. */
+export function piHome(
+  environment: NodeJS.ProcessEnv,
+  hostHome: string,
+  platform: NodeJS.Platform,
+): string {
+  return (platform === "win32" ? environment.USERPROFILE : environment.HOME) || hostHome;
+}
 
 /** Where Pi stores session JSONL files for a provider environment, matching Pi's own lookup. */
 export function resolvePiSessionsDir(

@@ -6,7 +6,9 @@ import {
   aggregateUsageMonths,
   enumerateMonths,
   formatMonthShort,
+  formatDateTimeShort,
   formatHourShort,
+  formatTokens,
   makeWindow,
   usageSourceMessages,
 } from "./usageFormat.ts";
@@ -123,12 +125,11 @@ describe("usage source messages", () => {
     ]);
   });
 
-  it("omits empty missing sources, healthy sources, and diagnostics handled by an action", () => {
+  it("omits empty missing sources and healthy sources", () => {
     expect(
       usageSourceMessages([
         malformedSource(0, { status: "missing" }),
         malformedSource(1, { status: "ok" }),
-        malformedSource(1, { action: "enableCursorKeychain" }),
       ]),
     ).toEqual([]);
     expect(usageSourceMessages([])).toEqual([]);
@@ -158,6 +159,15 @@ describe("hourly usage formatting", () => {
     expect(formatHourShort("2026-11-01T06:37:00.000Z", "America/New_York", false)).toBe(
       "01:00 EST",
     );
+  });
+
+  it("uses a 12-hour clock in locales that default to 24-hour", () => {
+    const instant = "2026-11-24T18:03:00.000Z";
+    for (const locale of ["fr", "de", "es"]) {
+      expect(formatHourShort(instant, "UTC", true, locale)).not.toContain("18");
+    }
+    expect(formatDateTimeShort(instant, "UTC", true, "fr")).not.toContain("18");
+    expect(formatHourShort(instant, "UTC", false, "es")).toBe("18:00");
   });
 
   it("builds an exact minute-aligned 24-hour request", () => {
@@ -224,5 +234,13 @@ describe("hourly usage formatting", () => {
     } finally {
       resolvedOptions.mockRestore();
     }
+  });
+});
+
+describe("token formatting", () => {
+  it("moves to the next unit when rounding reaches it", () => {
+    expect(formatTokens(999_999)).toBe("1M");
+    expect(formatTokens(999_999_999)).toBe("1B");
+    expect(formatTokens(-999_999)).toBe("-1M");
   });
 });
