@@ -298,3 +298,21 @@ it.effect("a linked environment from before client pairing is never asked", () =
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
+
+it.effect("strips legacy T3 Code peer-link prefixes when issuing a client pairing", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* serveBox();
+      const legacyLink = yield* b.auth.issueMcpClientSession({
+        label: "T3 Code · StockLaptop",
+        access: "full-access",
+        peerLink: true,
+        client: { deviceType: "bot" },
+      });
+      expect(yield* askBox(b, legacyLink.token)).toBe(200);
+      expect(yield* b.auth.listPairingLinks()).toMatchObject([
+        { label: "Phone · via StockLaptop" },
+      ]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);

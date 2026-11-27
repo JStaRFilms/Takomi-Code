@@ -186,7 +186,9 @@ export const servePeer = <E, R, E2 = never, R2 = never>(
         .listSessions()
         .pipe(
           Effect.map((sessions) =>
-            sessions.filter((session) => session.client.label?.startsWith("T3 Code · ")),
+            sessions.filter((session) =>
+              session.client.label?.startsWith(PeerLinks.LINK_CLIENT_NAME_PREFIX),
+            ),
           ),
         ),
     };

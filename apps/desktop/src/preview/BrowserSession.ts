@@ -193,10 +193,10 @@ const mediaRequestMessage = (devices: ReadonlyArray<MediaDevice>, origin: string
 
 const mediaBlockedMessage = (devices: ReadonlyArray<MediaDevice>): string =>
   devices.length === 2
-    ? m(msg("macOS blocked T3 Code from using your camera and microphone"))
+    ? m(msg("macOS blocked Takomi Code from using your camera and microphone"))
     : devices[0] === "microphone"
-      ? m(msg("macOS blocked T3 Code from using your microphone"))
-      : m(msg("macOS blocked T3 Code from using your camera"));
+      ? m(msg("macOS blocked Takomi Code from using your microphone"))
+      : m(msg("macOS blocked Takomi Code from using your camera"));
 
 /**
  * macOS gates capture devices per app and lists an app under Privacy & Security
@@ -599,7 +599,7 @@ export const make = Effect.gen(function* BrowserSessionMake() {
                           m(msg("Could not trust the certificate for {host}"), { host }),
                           m(
                             msg(
-                              "T3 Code could not save this approval, so the page stays blocked. Check that the disk is not full and its data folder is writable, then try again.",
+                              "Takomi Code could not save this approval, so the page stays blocked. Check that the disk is not full and its data folder is writable, then try again.",
                             ),
                           ),
                         ),

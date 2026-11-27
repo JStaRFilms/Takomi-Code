@@ -56,7 +56,7 @@ const results = (state: SupervisorConnectionState, via?: "relay" | "direct") =>
 describe("presentConnectionDiagnosis", () => {
   it("tells a working tunnel apart from T3 Code not answering", () => {
     expect(diagnose(backoff(unavailable("origin_unreachable")))?.headline).toBe(
-      "Tunnel works, but T3 Code on Mac mini did not answer",
+      "Tunnel works, but the server on Mac mini did not answer",
     );
     expect(results(backoff(unavailable("origin_unreachable")), "direct")).toEqual([
       "device:ok",
@@ -173,7 +173,7 @@ describe("presentConnectionDiagnosis", () => {
       }),
     );
     const steps = diagnose(backoff(failure), "direct")?.steps.join(" ");
-    expect(steps).not.toContain("Make sure T3 Code is running");
+    expect(steps).not.toContain("Make sure the server is running");
     expect(steps).toMatch(/pair|sign in/i);
   });
 

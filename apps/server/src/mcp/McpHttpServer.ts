@@ -1498,7 +1498,7 @@ export const layerInProcessMcpServer = McpServer.middleware<{
 
 export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE, RR>) =>
   McpServer.layerHttp({
-    name: "T3 Code",
+    name: "Takomi Code",
     version: packageJson.version,
     path: MCP_HTTP_PATH,
     protocols: mcpProtocols,

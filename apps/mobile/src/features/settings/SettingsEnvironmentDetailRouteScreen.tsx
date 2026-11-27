@@ -259,7 +259,15 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
             {notice ? <Text className="px-2 text-sm text-foreground-muted">{notice}</Text> : null}
             {config && !outdated ? (
               <>
-                <SettingsSection title="T3 Code">
+                <SettingsSection
+                  title={
+                    config.environment.distribution === "takomi"
+                      ? "Takomi Code"
+                      : config.environment.distribution === "t3"
+                        ? "T3 Code"
+                        : gt("Server")
+                  }
+                >
                   <View className="gap-1 p-4">
                     <Text className="text-base text-foreground">
                       <T>
@@ -305,9 +313,15 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                       <Text className="text-sm text-foreground-muted">
                         {capabilities?.serverSelfUpdate === "desktop-managed"
                           ? gt("Update the desktop app on this machine.")
-                          : gt("Update and restart {product} on this machine.", {
-                              product: "T3 Code",
-                            })}
+                          : config.environment.distribution === "takomi" ||
+                              config.environment.distribution === "t3"
+                            ? gt("Update and restart {product} on this machine.", {
+                                product:
+                                  config.environment.distribution === "takomi"
+                                    ? "Takomi Code"
+                                    : "T3 Code",
+                              })
+                            : gt("Update and restart the server on this machine.")}
                       </Text>
                     ) : null}
                   </View>

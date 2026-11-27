@@ -31,7 +31,7 @@ const GNOME_ACCESS_COPY = {
   "not-installed": {
     title: msg("Install the extension"),
     description: msg(
-      "The T3 Code GNOME extension lets you capture other windows and bring them into your draft. Sign out once after installing.",
+      "The Takomi Code GNOME extension lets you capture other windows and bring them into your draft. Sign out once after installing.",
     ),
   },
   "restart-required": {
