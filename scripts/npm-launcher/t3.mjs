@@ -77,18 +77,21 @@ async function download(url, file) {
 }
 
 async function install(dir, key) {
-  const archive = `t3-${version}-${key}.${process.platform === "win32" ? "zip" : "tar.gz"}`;
+  const suffix = `${version}-${key}.${process.platform === "win32" ? "zip" : "tar.gz"}`;
+  const legacyArchive = `t3-${suffix}`;
+  const brandedArchive = `Takomi-Code-${suffix}`;
   const base = (
     process.env.T3CODE_RELEASE_BASE_URL ||
     "https://github.com/JStaRFilms/Takomi-Code/releases/download"
   ).replace(/\/+$/, "");
   const sums = await (await get(`${base}/v${version}/SHA256SUMS`)).text();
   const expected = /^([0-9a-f]{64})\s+\*?(.+)$/im;
-  const line = sums
-    .split(/\r?\n/)
-    .map((l) => expected.exec(l.trim()))
-    .find((m) => m && m[2] === archive);
-  if (!line) throw new Error(`${archive} is not listed in the release's SHA256SUMS`);
+  const entries = sums.split(/\r?\n/).map((line) => expected.exec(line.trim()));
+  const line =
+    entries.find((match) => match?.[2] === brandedArchive) ??
+    entries.find((match) => match?.[2] === legacyArchive);
+  if (!line) throw new Error(`No ${key} archive is listed in the release's SHA256SUMS`);
+  const archive = line[2];
 
   // Stage beside the destination and rename atomically to avoid half-installed versions.
   fs.mkdirSync(path.dirname(dir), { recursive: true });

@@ -383,5 +383,9 @@ jobs:
           test -f "t3-${VERSION}-linux-x64.tar.gz"
           test -f "t3-${VERSION}-win32-x64.zip"
           test -s "Takomi-Code-${VERSION}-android-arm64-v8a.apk"
-          sha256sum *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip *.apk > SHA256SUMS
-          gh release create "v${VERSION}" --repo JStaRFilms/Takomi-Code --target "$RELEASE_COMMIT" --title "Takomi Code ${VERSION}" --generate-notes --latest *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip *.apk SHA256SUMS
+          # Keep the legacy filenames for clients updating across the branding transition.
+          for suffix in darwin-arm64.tar.gz linux-x64.tar.gz win32-x64.zip; do
+            cp "t3-${VERSION}-${suffix}" "Takomi-Code-${VERSION}-${suffix}"
+          done
+          sha256sum *.exe *.blockmap latest.yml Takomi-Code-*.tar.gz Takomi-Code-*.zip t3-*.tar.gz t3-*.zip *.apk > SHA256SUMS
+          gh release create "v${VERSION}" --repo JStaRFilms/Takomi-Code --target "$RELEASE_COMMIT" --title "Takomi Code ${VERSION}" --generate-notes --latest *.exe *.blockmap latest.yml Takomi-Code-*.tar.gz Takomi-Code-*.zip t3-*.tar.gz t3-*.zip *.apk SHA256SUMS

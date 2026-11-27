@@ -75,7 +75,7 @@ const extractingRunner = (fs: FileSystem.FileSystem, path: Path.Path, commands: 
   });
 
 it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
-  it.effect("installs the verified release archive as the runtime executable", () =>
+  it.effect.each([false, true])("installs the verified release archive (branded: %s)", (branded) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -89,7 +89,12 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         path,
         platform: "linux",
         arch: "x64",
-        httpClient: releaseHttpClient(yield* validChecksums, requests),
+        httpClient: releaseHttpClient(
+          branded
+            ? `${yield* validChecksums}${yield* archiveHex(archiveBytes)}  Takomi-Code-${version}-linux-x64.tar.gz\n`
+            : yield* validChecksums,
+          requests,
+        ),
         releaseBaseUrl: "https://releases.example/download",
         runner: extractingRunner(fs, path, commands),
         validate: (staging) =>
@@ -102,7 +107,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       assert.deepEqual(pinnedRuntimeCommand(paths), { command: paths.entryPath, args: [] });
       assert.deepEqual(requests, [
         `https://releases.example/download/v${version}/SHA256SUMS`,
-        `https://releases.example/download/v${version}/${archiveName}`,
+        `https://releases.example/download/v${version}/${branded ? `Takomi-Code-${version}-linux-x64.tar.gz` : archiveName}`,
       ]);
       assert.deepEqual(commands, ["tar"]);
       assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);

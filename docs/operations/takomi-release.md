@@ -181,7 +181,9 @@ Windows downloads are unsigned. SmartScreen may warn or block them according to 
 policy. Verify the repository and checksum before choosing to run an installer.
 
 Internal `@t3tools` names, `T3CODE_*` variables, state directories, MCP identifiers,
-T3 Connect identifiers, `t3` executable/archive names, and `dist/bin.mjs` remain compatible.
-The archive installers and CLI self-update resolve downloads from the fork. Archive
-installers retain their existing `t3` shim behavior; use npm for the public `takomi-code`
-command without that alias.
+T3 Connect identifiers, the `t3` executable inside each archive, and `dist/bin.mjs` remain compatible.
+Public CLI downloads are named `Takomi-Code-<version>-<platform>`. The branding transition release
+also publishes byte-identical `t3-` archives for older clients. Updated installers and self-update
+prefer the Takomi names and fall back to the old names when the release checksum list only has those.
+Remove the legacy downloads after the transition; older clients that skip it may need a manual update.
+Archive installers retain their `t3` shim. Use npm for the public `takomi-code` command without that alias.

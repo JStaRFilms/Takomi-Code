@@ -80,10 +80,10 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chan
       if (failures-- > 0) return response.writeHead(504).end();
       const url = new URL(request.url ?? "/", "http://fixture");
       const body =
-        url.pathname === "/pingdotgg/t3code/releases/latest" &&
+        url.pathname === "/JStaRFilms/Takomi-Code/releases/latest" &&
         request.headers.accept === "application/json"
           ? { tag_name: "v1.2.3" }
-          : url.pathname === "/repos/pingdotgg/t3code/releases"
+          : url.pathname === "/repos/JStaRFilms/Takomi-Code/releases"
             ? { "1": nightlies, "2": [{ tag_name: `v${version}` }, { tag_name: "v1.2.3" }] }[
                 url.searchParams.get("page") ?? ""
               ]
@@ -437,7 +437,9 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
         const home = NodePath.join(root, homeName);
         const version = "1.2.3";
         const stem = `t3-${version}-linux-${HostProcess.Architecture.defaultValue()}`;
-        const archiveName = `${stem}.tar.gz`;
+        const archiveName = validChecksum
+          ? `Takomi-Code-${stem.slice(3)}.tar.gz`
+          : `${stem}.tar.gz`;
         const server = NodeHttp.createServer();
         try {
           const tools = NodePath.join(root, "tools");
@@ -477,11 +479,13 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "linux")("installer chec
           const archive = await NodeFSP.readFile(archivePath);
           const digest = NodeCrypto.createHash("sha256").update(archive).digest("hex");
           server.on("request", (request, response) => {
-            response.end(
-              request.url?.endsWith("/SHA256SUMS")
-                ? `${validChecksum ? digest : "0".repeat(64)}  ${archiveName}\n`
-                : archive,
-            );
+            if (request.url?.endsWith("/SHA256SUMS")) {
+              response.end(`${validChecksum ? digest : "0".repeat(64)}  ${archiveName}\n`);
+            } else if (request.url?.endsWith(`/${archiveName}`)) {
+              response.end(archive);
+            } else {
+              response.writeHead(404).end();
+            }
           });
           await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
           const address = server.address();

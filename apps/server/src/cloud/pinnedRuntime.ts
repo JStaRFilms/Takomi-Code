@@ -338,7 +338,8 @@ const publishedArchive = Effect.fn("cloud.pinned_runtime.published_archive")(fun
   input: PinnedRuntimeInstallInput,
   platformKey: CliArchivePlatformKey,
 ) {
-  const fileName = cliArchiveFileName(input.version, platformKey);
+  const legacyFileName = cliArchiveFileName(input.version, platformKey);
+  const brandedFileName = `Takomi-Code-${legacyFileName.slice("t3-".length)}`;
   const checksums = parseChecksums(
     new TextDecoder().decode(
       yield* fetchReleaseAsset(
@@ -349,6 +350,7 @@ const publishedArchive = Effect.fn("cloud.pinned_runtime.published_archive")(fun
       ),
     ),
   );
+  const fileName = checksums.has(brandedFileName) ? brandedFileName : legacyFileName;
   const expected = checksums.get(fileName);
   if (expected === undefined) {
     return yield* new PinnedRuntimeInstallError({

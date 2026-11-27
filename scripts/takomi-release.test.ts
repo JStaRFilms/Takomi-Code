@@ -288,14 +288,13 @@ it.layer(NodeServices.layer)("Takomi release safety", (it) => {
         if (name === "npm") {
           assert.include(runs, "node scripts/build-npm-platform-packages.ts");
         } else {
+          assert.include(runs, 'cp "t3-${VERSION}-${suffix}" "Takomi-Code-${VERSION}-${suffix}"');
+          const archives = "Takomi-Code-*.tar.gz Takomi-Code-*.zip t3-*.tar.gz t3-*.zip";
           assert.include(
             runs,
-            "sha256sum *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip *.apk > SHA256SUMS",
+            `sha256sum *.exe *.blockmap latest.yml ${archives} *.apk > SHA256SUMS`,
           );
-          assert.include(
-            runs,
-            "--latest *.exe *.blockmap latest.yml t3-*.tar.gz t3-*.zip *.apk SHA256SUMS",
-          );
+          assert.include(runs, `--latest *.exe *.blockmap latest.yml ${archives} *.apk SHA256SUMS`);
         }
       }
       for (const forbidden of [

@@ -246,7 +246,21 @@ else
   elif [ "$fetch_status" -ne 0 ]; then
     fail "could not download the release checksums"
   fi
-  expected="$(grep " \*\{0,1\}${archive}\$" "${staging}/SHA256SUMS" | cut -d' ' -f1)"
+  archive_checksum() {
+    while read -r digest name; do
+      if [ "${name#\*}" = "$1" ]; then
+        printf '%s\n' "$digest"
+        return
+      fi
+    done < "${staging}/SHA256SUMS"
+  }
+  branded_archive="Takomi-Code-${version}-${platform}-${arch}.tar.gz"
+  expected="$(archive_checksum "$branded_archive")"
+  if [ -n "$expected" ]; then
+    archive="$branded_archive"
+  else
+    expected="$(archive_checksum "$archive")"
+  fi
   [ -n "$expected" ] || fail "t3 ${version} has no release archive for ${platform}-${arch}"
   download "${base_url}/v${version}/${archive}" "${staging}/${archive}" || fail "could not download ${archive}"
 
