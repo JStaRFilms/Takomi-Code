@@ -1422,7 +1422,7 @@ describe("CursorAdapterV2", () => {
       );
       assert.include(
         steered,
-        "<runtime_info>",
+        "<runtime_info>In case you're asked: you are running in Takomi Code through the Cursor harness",
         "an interrupted first run did not deliver runtime instructions",
       );
 

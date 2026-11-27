@@ -38,7 +38,12 @@ describe("Codex runtime context", () => {
       reasoningEffort: " high\neffort ",
     });
 
-    NodeAssert.match(instructions, /as gpt 5\.3 codex with high effort reasoning effort/);
+    NodeAssert.match(
+      instructions,
+      /you are running in Takomi Code through the Codex harness, as gpt 5\.3 codex with high effort reasoning effort/,
+    );
+    NodeAssert.ok(instructions.includes("in Takomi Code's files viewer.</runtime_info>"));
+    NodeAssert.ok(!instructions.includes("running in T3 Code"));
     NodeAssert.doesNotMatch(instructions, /<runtime_info>[^<]*\n/);
   });
 });

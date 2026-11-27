@@ -954,7 +954,11 @@ function assertReinjectedInstructions(
   assert.include(text, "## T3 Code browser");
   assert.include(text, "T3 Code orchestration");
   assert.include(text, `<user_request>\n${request}\n</user_request>`);
-  assert.include(blocks[1]?.text ?? "", "<runtime_info>");
+  assert.include(
+    blocks[1]?.text ?? "",
+    "<runtime_info>In case you're asked: you are running in Takomi Code through the ",
+  );
+  assert.include(blocks[1]?.text ?? "", "in Takomi Code's files viewer.</runtime_info>");
 }
 
 const makeAdvertisedCompactionHarness = Effect.fnUntraced(function* (

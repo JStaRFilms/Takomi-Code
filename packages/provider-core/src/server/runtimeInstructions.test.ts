@@ -7,6 +7,25 @@ import {
 } from "./runtimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
+  it("reports Takomi Code identity and files viewer in runtime_info", () => {
+    const instructions = buildRuntimeInstructions({
+      harness: "Antigravity",
+      model: "gemini-4-neon",
+      reasoningEffort: "high",
+    });
+
+    assert.include(
+      instructions,
+      "<runtime_info>In case you're asked: you are running in Takomi Code through the Antigravity harness, as gemini-4-neon with high reasoning effort.",
+    );
+    assert.include(
+      instructions,
+      "so the user can open it in Takomi Code's files viewer.</runtime_info>",
+    );
+    assert.notInclude(instructions, "running in T3 Code");
+    assert.notInclude(instructions, "T3 Code's files viewer");
+  });
+
   it("leaves PR linking to a session that already carries it, and keeps runtime identity", () => {
     const instructions = buildRuntimeInstructions({
       harness: "Antigravity",
@@ -14,7 +33,10 @@ describe("buildRuntimeInstructions", () => {
       pullRequestLinking: false,
     });
 
-    assert.include(instructions, "through the Antigravity harness, as gemini-3.8-flash.");
+    assert.include(
+      instructions,
+      "you are running in Takomi Code through the Antigravity harness, as gemini-3.8-flash.",
+    );
     assert.notInclude(instructions, "<pull_request_linking>");
   });
 

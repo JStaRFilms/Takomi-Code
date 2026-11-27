@@ -6,6 +6,28 @@ export function materializeReplayTranscriptRuntimeInstructions(
   transcript: ProviderReplayTranscript,
   runtime: { readonly driver: ProviderDriverKind; readonly model: string },
 ): ProviderReplayTranscript {
+  if (runtime.driver === "muse") {
+    return {
+      ...transcript,
+      entries: transcript.entries.map((entry) => {
+        if (entry.type !== "expect_outbound") return entry;
+        const frame = asFrame(entry.frame);
+        const params =
+          frame?.method === "turn/start" && isRecord(frame.params) ? frame.params : undefined;
+        if (params === undefined || !Array.isArray(params.input)) return entry;
+        let changed = false;
+        const input = params.input.map((part) => {
+          const text = promptPartText(part);
+          if (text === undefined || !text.startsWith("<runtime_info>")) return part;
+          const rebranded = rebrandRecordedRuntimeInfo(text);
+          if (rebranded === text) return part;
+          changed = true;
+          return { ...(part as Record<string, unknown>), text: rebranded };
+        });
+        return changed ? { ...entry, frame: { ...frame, params: { ...params, input } } } : entry;
+      }),
+    };
+  }
   const harness =
     runtime.driver === "cursor"
       ? "Cursor"
@@ -316,7 +338,28 @@ export function materializeReplayTranscriptRuntimeInstructions(
           compact: false,
           compactionsAtSend: compactionCounts.get(promptSessionId) ?? 0,
         };
-        if (!resend) return entry;
+        if (!resend) {
+          if (recordedNotes !== undefined) {
+            const rebranded = rebrandRecordedRuntimeInfo(recordedNotes);
+            if (rebranded !== recordedNotes) {
+              const lastPart = prompt.at(-1);
+              return {
+                ...entry,
+                frame: {
+                  ...frame,
+                  params: {
+                    ...frame.params,
+                    prompt: [
+                      ...prompt.slice(0, -1),
+                      { ...(lastPart as Record<string, unknown>), text: rebranded },
+                    ],
+                  },
+                },
+              };
+            }
+          }
+          return entry;
+        }
         return {
           ...entry,
           frame: {
@@ -328,6 +371,14 @@ export function materializeReplayTranscriptRuntimeInstructions(
       return entry;
     }),
   };
+}
+
+/** Upstream recordings capture T3 Code in outbound <runtime_info>; expect Takomi Code here. */
+function rebrandRecordedRuntimeInfo(text: string): string {
+  return text.replace(
+    /<runtime_info>In case you're asked: you are running in T3 Code through ([^<]*)so the user can open it in T3 Code's files viewer\.<\/runtime_info>/,
+    "<runtime_info>In case you're asked: you are running in Takomi Code through $1so the user can open it in Takomi Code's files viewer.</runtime_info>",
+  );
 }
 
 function promptPartText(part: unknown): string | undefined {

@@ -2946,7 +2946,12 @@ describe("AntigravityAdapterV2 session system prompt", () => {
           .find((request) => request.method === "session/new");
         const append = JSON.stringify(sessionNew?.params?._meta ?? null);
         // Identity stays per turn either way.
-        assert.include(sent, "through the Antigravity harness, as gemini-test-low");
+        assert.include(
+          sent,
+          "you are running in Takomi Code through the Antigravity harness, as gemini-test-low",
+        );
+        assert.include(sent, "in Takomi Code's files viewer.</runtime_info>");
+        assert.notInclude(sent, "running in T3 Code");
         assert.notInclude(append, "systemPrompt");
         assert.include(sent, "<pull_request_linking>");
       }).pipe(Effect.provide(layerSession)),
