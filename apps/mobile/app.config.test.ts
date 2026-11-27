@@ -6,7 +6,10 @@ import assetLinks from "../web/public/.well-known/assetlinks.json";
 
 // Keep config parsing independent of local env files and build credentials.
 vi.mock("../../scripts/lib/public-config.ts", () => ({
-  loadRepoEnv: () => ({ APP_VARIANT: process.env.APP_VARIANT }),
+  loadRepoEnv: () => ({
+    APP_VARIANT: process.env.APP_VARIANT,
+    TAKOMI_EXPO_PROJECT_ID: process.env.TAKOMI_EXPO_PROJECT_ID,
+  }),
 }));
 
 afterEach(() => {
@@ -18,6 +21,17 @@ async function loadConfig(variant: string | undefined) {
   vi.stubEnv("APP_VARIANT", variant);
   return (await import("./app.config.ts")).default;
 }
+
+it.each([undefined, "   ", " configured-project "])(
+  "excludes Expo Observe from Android autolinking only without a project ID (%j)",
+  async (projectId) => {
+    vi.stubEnv("TAKOMI_EXPO_PROJECT_ID", projectId);
+    const config = await loadConfig("preview");
+    expect(config.plugins?.includes("./plugins/withoutAndroidExpoObserve.cjs")).toBe(
+      !projectId?.trim(),
+    );
+  },
+);
 
 it.each(["prod", ""])("rejects APP_VARIANT=%j before selecting production IDs", async (value) => {
   await expect(loadConfig(value)).rejects.toThrow(
