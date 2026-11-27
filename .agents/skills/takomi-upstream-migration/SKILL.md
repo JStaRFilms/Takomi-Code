@@ -90,7 +90,7 @@ Pay special attention to:
 
 If Takomi behavior overrides upstream globally, either narrow it to Takomi/Pi or present the user with the tradeoff.
 
-Audit visible branding in onboarding, Settings/About, timeline author labels and desktop permission/error messages. Use Takomi for this fork's product copy and neutral wording for remote servers whose distribution is unknown. Preserve CLI commands and aliases, persisted identifiers, profile paths, provider names, T3 Connect and upstream attribution. Attribute the existing upstream privacy policy accurately; renaming text does not change telemetry ownership or behavior. Keep this guidance on `Takomi-Code`, not in the dormant `feat/pi-debrand` worktree.
+Audit visible branding against `docs/features/takomi-branding-and-compatibility.md` (onboarding, Settings/About, timeline author labels, `<runtime_info>`, peer-link sender prefixes, and desktop permission/error messages). Use Takomi Code for this fork's self-identity and provenance, neutral or distribution-aware wording for remote servers whose distribution may be stock T3 Code or Takomi Code, and dual-prefix stripping for `Takomi Code · ` and `T3 Code · ` peer links. Preserve CLI commands and aliases, persisted identifiers, profile paths, provider names, T3 Connect, `t3_feedback`, `"T3 Code SnapShots"`, `"T3 Code for GitHub"`, and upstream attribution. Attribute the existing upstream privacy policy accurately; renaming text does not change telemetry ownership or behavior. Whenever translated copy changes, verify non-English i18n catalogs did not silently revert to English fallbacks (`vp run i18n:check` does not catch that). Keep this guidance on `Takomi-Code`, not in the dormant `feat/pi-debrand` worktree.
 
 ## 4. Verify proportionally
 
@@ -125,6 +125,7 @@ Canonical maintained files include:
 - `docs/README.md`
 - `docs/internals/03_providers.md`
 - `docs/features/takomi-code-handoff.md`
+- `docs/features/takomi-branding-and-compatibility.md`
 - `docs/features/takomi-pi-provider.md`
 - `docs/features/takomi-tool-call-ui-audit.md`
 - `docs/features/takomi-desktop-and-android.md`

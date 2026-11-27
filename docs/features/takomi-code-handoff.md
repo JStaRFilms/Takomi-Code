@@ -1,6 +1,6 @@
 # Takomi Code handoff
 
-**Updated:** 2026-11-04
+**Updated:** 2026-11-27
 
 **Branch:** `Takomi-Code`
 
@@ -10,6 +10,7 @@
 
 This is the maintained status summary for the Takomi fork. Detailed documentation:
 
+- [Branding and compatibility boundaries](./takomi-branding-and-compatibility.md)
 - [Takomi / Pi provider](./takomi-pi-provider.md)
 - [Takomi tool-call UI](./takomi-tool-call-ui-audit.md)
 - [Desktop and Android builds](./takomi-desktop-and-android.md)
@@ -158,7 +159,8 @@ Use focused package checks for the area changed. For local release preparation, 
 - Do not copy `.git` directories between legacy Takomi and T3 repositories.
 - Do not merge unrelated histories merely to connect old and new implementations.
 - Do not globally replace `T3` or `t3code`; internal package names, environment variables, and
-  compatibility identifiers intentionally remain.
+  compatibility identifiers intentionally remain. See
+  [Branding and compatibility boundaries](./takomi-branding-and-compatibility.md).
 - Do not publish through the upstream `pingdotgg` Expo/EAS project.
 - Do not open the same Pi session file in terminal Pi while Takomi Code is writing it.
 - Do not describe Pi permission modes as a sandbox or as permission enforcement for extension startup code.

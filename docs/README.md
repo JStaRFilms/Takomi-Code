@@ -37,6 +37,7 @@
 ## Takomi Code
 
 - [Current handoff](./features/takomi-code-handoff.md)
+- [Branding and compatibility boundaries](./features/takomi-branding-and-compatibility.md)
 - [Takomi / Pi provider](./features/takomi-pi-provider.md)
 - [Takomi tool-call UI](./features/takomi-tool-call-ui-audit.md)
 - [Desktop and Android builds](./features/takomi-desktop-and-android.md)
